@@ -4,7 +4,7 @@ import type { Dict } from './en';
 const frCA: Dict = {
   brand: { ghost: 'Ghost', bus: 'Bus' },
   tagline: "L'horaire est une promesse. GhostBus vous dit la vérité.",
-  nav: { nearby: 'À proximité', plan: 'Trajet', saved: 'Enregistrés', alerts: 'Alertes' },
+  nav: { nearby: 'À proximité', plan: 'Trajet', saved: 'Enregistrés', alerts: 'Alertes', primary: 'Principal' },
   search: {
     placeholder: 'Où allez-vous?',
     hint: '⌘K',
@@ -27,6 +27,7 @@ const frCA: Dict = {
     scheduledTimes: 'Horaires prévus',
     offlineSince: 'hors ligne — dernières données en direct {{time}}',
     feedDown: 'Flux {{agency}} injoignable depuis {{time}}',
+    feedDownGeneric: 'Flux TTC injoignable — affichage des horaires prévus.',
     demoBadge: 'DÉMO',
     demoNote: 'Rejoue une tranche enregistrée de vraies données {{agency}}. Rien ici n’est en direct.',
   },
@@ -37,6 +38,7 @@ const frCA: Dict = {
     viewAll: 'Tout voir',
     alerts: 'Alertes',
     ghosts: 'Fantômes',
+    nextService: 'Prochain service prévu',
   },
   stop: {
     directionStop: '{{direction}} · Arrêt {{code}}',
@@ -71,6 +73,8 @@ const frCA: Dict = {
     gradeDetail: '{{grade}} · {{n}} observations · écart typique ±{{spread}} min',
     untracked: 'aucune note — non suivi',
     leaveBy: 'Partez avant {{time}}',
+    evidence: '±{{spread}} min · {{n}} observations',
+    windowDays: '{{days}} derniers jours',
   },
   forecast: {
     high: 'Risque de fantôme : élevé',
@@ -100,6 +104,8 @@ const frCA: Dict = {
     home: 'Domicile',
     liveContext: '{{route}} · {{min}} min',
     empty: 'Aucun lieu enregistré. Ajoutez un arrêt en favori pour l’épingler ici.',
+    title: 'Lieux enregistrés',
+    body: 'Ajoutez un arrêt en favori depuis son en-tête et il apparaîtra ici.',
   },
   empty: {
     farStop: 'L’arrêt le plus proche est à {{dist}} — ouvrez la carte.',
@@ -109,6 +115,12 @@ const frCA: Dict = {
     scheduleOnlyAgency: 'horaire seulement — {{agency}} ne publie pas de données en direct',
     requestCity: 'Demander ma ville',
     noCoverage: 'Aucune couverture de transport ici pour l’instant.',
+    apiDownTitle: 'Flux en direct injoignable',
+    apiDownBody: 'GhostBus n’arrive pas à joindre les données de la TTC. Vérifiez votre connexion et réessayez.',
+    defaultLocation: 'Position par défaut utilisée — touchez pour utiliser la vôtre',
+    noWindow: 'Aucun départ dans les {{min}} prochaines minutes',
+    nextServiceNote: 'Le tableau en direct de cet arrêt n’est pas encore actif — voici son service prévu.',
+    noneScheduled: 'Aucun départ prévu dans cette période.',
   },
   catch: {
     title: 'Attraper',
@@ -158,6 +170,7 @@ const frCA: Dict = {
   },
   settings: {
     title: 'Réglages',
+    done: 'Terminé',
     theme: 'Thème',
     system: 'Système',
     light: 'Clair',
@@ -218,6 +231,18 @@ const frCA: Dict = {
     zoomOut: 'Zoom arrière',
     layers: 'Couches de la carte',
     expand: 'Agrandir la carte',
+  },
+  map: {
+    placeholder: 'La carte arrive dans la prochaine version',
+    placeholderAlt: 'Espace carte — arrive dans une version ultérieure',
+  },
+  plan: {
+    title: 'Planifier un trajet',
+    body: 'La planification de trajet est conçue — elle n’est pas encore branchée dans cette version.',
+  },
+  alerts: {
+    title: 'Alertes de service',
+    body: 'Les alertes et le Fil des fantômes ne sont pas encore branchés dans cette version.',
   },
   time: { now: 'maintenant', min: 'min' },
 };

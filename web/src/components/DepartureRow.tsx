@@ -1,106 +1,116 @@
-import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { Departure } from '@shared/types';
+import type { DepartureDto } from '@shared/types';
 import { RouteBadge } from './Primitives';
-import { SignalIcon, ChevronIcon, GhostIcon } from './icons';
+import { SignalIcon, ChevronIcon } from './icons';
 import { useTick } from '@/hooks/useTick';
-import { useLive, liveNow } from '@/hooks/useLive';
-import { useStore } from '@/store';
+import { liveNow } from '@/hooks/useLive';
+import { useStore, paceMps } from '@/store';
+import { fmtClock, walkSeconds } from '@/lib/format';
 
 interface Props {
-  dep: Departure;
+  dep: DepartureDto;
+  /** Minutes until the *following* departure of this route, if any. */
   nextMin?: number | null;
-  layout: 'bar' | 'compact';
-  onCatch?: (d: Departure) => void;
-  onOpen?: (d: Departure) => void;
+  /** Walking distance from the rider to this stop, for the leave-by chip. */
+  distanceM?: number;
+  onCatch?: (d: DepartureDto) => void;
+  onOpen?: (d: DepartureDto) => void;
 }
 
-export function DepartureRow({ dep, nextMin, layout, onCatch, onOpen }: Props) {
+/** Departures within this horizon show a live minute countdown; further-out
+ *  scheduled service shows a clock time instead (a 2-day-out "2880 min" is noise). */
+const COUNTDOWN_HORIZON_MIN = 90;
+
+export function DepartureRow({ dep, nextMin, distanceM, onCatch, onOpen }: Props) {
   const { t } = useTranslation();
   useTick(1000);
-  const [showEvidence, setShowEvidence] = useState(false);
-  const access = useStore((s) => s.access);
-  const hideInacc = useStore((s) => s.hideInaccessible);
+  const pace = useStore((s) => s.pace);
 
-  const now = liveNow() + useLive.getState().skewMs * 0;
-  const etaMin = Math.max(0, (dep.estimateMs - now) / 60000);
-  const mins = etaMin < 0.5 ? 0 : Math.round(etaMin);
-  const isLive = dep.freshness === 'live';
+  const now = liveNow();
+  const isLive = dep.liveEtaMs != null;
+  const arrivalMs = dep.liveEtaMs ?? dep.honest.estimateMs ?? dep.scheduledMs;
+  const minsUntil = (arrivalMs - now) / 60000;
+  const countdown = minsUntil <= COUNTDOWN_HORIZON_MIN;
+  const mins = minsUntil < 0.5 ? 0 : Math.round(minsUntil);
+
   const ev = dep.evidence;
+  const hasEvidence = ev.bucket !== 'none' && dep.honest.bandLowMs != null && dep.honest.bandHighMs != null;
+  const spreadMin = hasEvidence
+    ? Math.max(0, Math.round(((dep.honest.bandHighMs as number) - (dep.honest.bandLowMs as number)) / 2 / 60000))
+    : 0;
 
-  const notBoardable = access !== 'none' && dep.wheelchairAccessible === false;
-  if (notBoardable && hideInacc) return null;
+  // Leave-by only makes sense for a near-term departure with a known walk distance.
+  const walkSec = distanceM != null ? walkSeconds(distanceM, paceMps(pace)) : 0;
+  const leaveByMs = arrivalMs - walkSec * 1000;
+  const showLeaveBy = countdown && walkSec > 0 && leaveByMs > now - 60_000;
 
-  const action =
-    isLive ? (
-      <button className="btn btn-primary dep-catch" onClick={() => onCatch?.(dep)}>
-        <SignalIcon width={15} height={15} />
-        {t('row.catch')}
-        {layout === 'bar' && <ChevronIcon width={16} height={16} />}
-      </button>
-    ) : (
-      <button className="btn btn-quiet dep-viewroute" onClick={() => onOpen?.(dep)}>
-        {t('row.viewRoute')}
-        <ChevronIcon width={16} height={16} />
-      </button>
-    );
+  const routeName = dep.longName ?? dep.shortName ?? dep.routeId ?? '';
+  const short = dep.shortName ?? dep.routeId ?? '—';
+
+  const action = isLive ? (
+    <button className="btn btn-primary dep-catch" onClick={() => onCatch?.(dep)}>
+      <SignalIcon width={15} height={15} />
+      <span className="dep-action-label">{t('row.catch')}</span>
+      <ChevronIcon width={16} height={16} />
+    </button>
+  ) : (
+    <button className="btn btn-quiet dep-viewroute" onClick={() => onOpen?.(dep)} aria-label={t('row.viewRoute')}>
+      <span className="dep-action-label">{t('row.viewRoute')}</span>
+      <ChevronIcon width={16} height={16} />
+    </button>
+  );
 
   return (
-    <article className={`dep-card ${layout === 'bar' ? 'dep-bar' : 'dep-compact'} ${notBoardable ? 'dep-inacc' : ''}`}>
-      <div className="dep-main">
-        <button className="dep-info" onClick={() => onOpen?.(dep)} aria-label={t('row.toward', { route: dep.routeShortName, headsign: dep.headsign })}>
+    <article className="dep-card" role="listitem">
+      <div className="dep-top">
+        <button
+          className="dep-info"
+          onClick={() => onOpen?.(dep)}
+          aria-label={t('row.toward', { route: short, headsign: dep.directionLabel })}
+        >
           <div className="dep-line1">
-            <RouteBadge color={dep.routeColor} short={dep.routeShortName} size="md" />
-            <span className="dep-long truncate">{dep.routeLongName}</span>
+            <RouteBadge color={dep.color} short={short} size="md" />
+            <span className="dep-long truncate">{routeName}</span>
           </div>
-          <div className="dep-dest truncate">→ {dep.headsign}</div>
+          <div className="dep-dest truncate">→ {dep.directionLabel}</div>
           <div className="dep-next truncate">
-            {typeof nextMin === 'number' ? t('row.next', { min: Math.round(nextMin) }) : t('row.nextNone')}
+            {typeof nextMin === 'number' ? t('row.next', { min: Math.max(0, Math.round(nextMin)) }) : t('row.nextNone')}
           </div>
         </button>
 
         <div className="dep-times">
           <div className="dep-min tnum">
-            {mins === 0 ? <span className="dep-due">{t('row.due')}</span> : mins}
-            {mins > 0 && <span className="dep-unit">{t('row.min')}</span>}
+            {countdown ? (
+              mins === 0 ? (
+                <span className="dep-due">{t('row.due')}</span>
+              ) : (
+                <>
+                  {mins}
+                  <span className="dep-unit">{t('row.min')}</span>
+                </>
+              )
+            ) : (
+              <span className="dep-clock">{fmtClock(arrivalMs)}</span>
+            )}
           </div>
           <span className={`pill ${isLive ? 'pill-live' : 'pill-sched'}`}>
-            {isLive ? <span className="live-dot" /> : null}
+            {isLive ? <span className="live-dot" aria-hidden /> : null}
             {isLive ? t('status.live') : t('status.scheduled')}
           </span>
-          {layout === 'compact' && <div className="dep-compact-action">{action}</div>}
         </div>
+
+        <div className="dep-action">{action}</div>
       </div>
 
-      {/* evidence + forecast — the brand: never a number without its receipts */}
+      {/* evidence — the brand: never a number without its receipts */}
       <div className="dep-evidence-row">
-        {ev.hasEvidence ? (
-          <button className="evidence-chip" onClick={() => setShowEvidence((v) => !v)} aria-expanded={showEvidence}>
-            <span className={`grade grade-${ev.grade}`}>{ev.grade}</span>
-            <span className="truncate">
-              {showEvidence
-                ? t('eta.gradeDetail', { grade: ev.grade, n: ev.n, spread: ev.spreadMin })
-                : t('eta.basedOn', { n: ev.n, days: ev.windowDays })}
-            </span>
-          </button>
+        {hasEvidence ? (
+          <span className="evidence-chip truncate">{t('eta.evidence', { spread: spreadMin, n: ev.n })}</span>
         ) : (
           <span className="evidence-chip evidence-thin truncate">{t('eta.scheduleOnly')}</span>
         )}
-        {notBoardable && <span className="inacc-chip">{t('access.notBoardable')}</span>}
+        {showLeaveBy && <span className="leaveby-chip truncate">{t('eta.leaveBy', { time: fmtClock(leaveByMs) })}</span>}
       </div>
-
-      {dep.forecast && (
-        <div className={`forecast-chip fc-${dep.forecast.level}`}>
-          <GhostIcon width={14} height={14} />
-          <span className="truncate">
-            {t(dep.forecast.level === 'high' ? 'forecast.high' : 'forecast.medium')} ·{' '}
-            {t('forecast.detail', { v: dep.forecast.vanished, o: dep.forecast.of })}
-            {dep.forecast.granularity === 'route-hour' ? ` · ${t('forecast.routeHour')}` : ''}
-          </span>
-        </div>
-      )}
-
-      {layout === 'bar' && <div className="dep-action">{action}</div>}
     </article>
   );
 }

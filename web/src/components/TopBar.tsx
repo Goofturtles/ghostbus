@@ -1,22 +1,23 @@
 import { useTranslation } from 'react-i18next';
 import { Wordmark, StatusPill } from './Primitives';
-import { SearchIcon, SlidersIcon } from './icons';
+import { SearchIcon, SlidersIcon, PersonIcon } from './icons';
 import { useStore } from '@/store';
 
+/** Presentational search field. Non-functional this phase (Plan/search lands
+ *  later) — hidden from assistive tech so it never reads as a live control. */
 export function SearchField({ variant }: { variant: 'bar' | 'mobile' }) {
   const { t } = useTranslation();
-  const openSearch = useStore((s) => s.openSearch);
   return (
-    <div className={`searchfield sf-${variant}`}>
-      <button className="searchfield-input" onClick={() => openSearch(true)} aria-label={t('search.placeholder')}>
+    <div className={`searchfield sf-${variant}`} aria-hidden="true">
+      <div className="searchfield-input">
         <SearchIcon width={18} height={18} />
         <span className="sf-placeholder truncate">{t('search.placeholder')}</span>
         {variant === 'bar' && <kbd className="sf-kbd">{t('search.hint')}</kbd>}
-      </button>
+      </div>
       {variant === 'mobile' && (
-        <button className="sf-filters" aria-label={t('search.filters')} onClick={() => openSearch(true)}>
+        <div className="sf-filters">
           <SlidersIcon width={20} height={20} />
-        </button>
+        </div>
       )}
     </div>
   );
@@ -27,7 +28,7 @@ export function ProfileButton() {
   const openSettings = useStore((s) => s.openSettings);
   return (
     <button className="profile-btn" aria-label={t('a11y.profile')} onClick={() => openSettings(true)}>
-      <span className="profile-glyph" aria-hidden>A</span>
+      <PersonIcon width={19} height={19} />
     </button>
   );
 }

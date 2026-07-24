@@ -1,32 +1,32 @@
+// Typed client for the real GhostBus API. One source of truth: @shared/types.
+// Every response shape is imported from the server's contract so the UI cannot
+// drift from what the API actually returns.
 import type {
-  StopArrivals, VehiclesResponse, GhostEvent, CityStats, RouteReport, ServiceAlert,
+  HealthResponse, StopsResponse, ArrivalsResponse,
 } from '@shared/types';
 
-async function j<T>(url: string): Promise<T> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`${res.status} ${url}`);
+/** A fetch that rejects on non-2xx and surfaces the API's JSON error message. */
+async function j<T>(url: string, signal?: AbortSignal): Promise<T> {
+  const res = await fetch(url, { signal, headers: { accept: 'application/json' } });
+  if (!res.ok) {
+    let msg = `${res.status}`;
+    try { msg = ((await res.json()) as { error?: string }).error ?? msg; } catch { /* non-JSON body */ }
+    throw new Error(msg);
+  }
   return res.json() as Promise<T>;
 }
 
-export interface Scene {
-  cityId: string;
-  center: [number, number];
-  user: [number, number];
-  board: { stopId: string; name: string; code: string; direction: string; cross: string; ll: [number, number]; routeIds: string[]; wheelchair: number };
-  streets: { name: string; pts: [number, number][] }[];
-  routes: { routeId: string; short: string; long: string; color: string; mode: string; headsign: string; shape: [number, number][] }[];
-  stops: { stopId: string; name: string; code: string; direction: string; cross: string; ll: [number, number]; routeIds: string[]; wheelchair: number }[];
-  walkPath: [number, number][];
-}
-
 export const api = {
-  health: () => j<{ ok: boolean; serverNowMs: number; feeds: Record<string, { reachable: boolean; lastOkMs: number; vehicleCount: number | null; error: string | null }> }>('/api/health'),
-  scene: (city: string) => j<Scene>(`/api/${city}/scene`),
-  vehicles: (city: string) => j<VehiclesResponse>(`/api/${city}/vehicles`),
-  arrivals: (city: string, id: string) => j<StopArrivals>(`/api/${city}/stops/${id}/arrivals`),
-  stops: (city: string, q: string) => j<{ stops: { stopId: string; name: string; code: string; direction: string; distanceM: number; nextEtaMin: number | null; nextRoute: string | null }[] }>(`/api/${city}/stops?q=${encodeURIComponent(q)}`),
-  alerts: (city: string) => j<{ alerts: ServiceAlert[] }>(`/api/${city}/alerts`),
-  ghosts: (city: string) => j<{ ghosts: GhostEvent[] }>(`/api/${city}/ghosts`),
-  stats: (city: string) => j<CityStats>(`/api/${city}/stats`),
-  report: (city: string, id: string) => j<RouteReport>(`/api/${city}/routes/${id}/report`),
+  health: (signal?: AbortSignal) => j<HealthResponse>('/api/health', signal),
+
+  nearby: (lat: number, lon: number, radiusM: number, signal?: AbortSignal) =>
+    j<StopsResponse>(`/api/stops/nearby?lat=${lat}&lon=${lon}&radius=${radiusM}`, signal),
+
+  arrivals: (stopId: string, opts: { atMs?: number; windowMin?: number } = {}, signal?: AbortSignal) => {
+    const p = new URLSearchParams();
+    if (opts.atMs != null) p.set('at', String(Math.round(opts.atMs)));
+    if (opts.windowMin != null) p.set('windowMin', String(opts.windowMin));
+    const qs = p.toString();
+    return j<ArrivalsResponse>(`/api/stops/${encodeURIComponent(stopId)}/arrivals${qs ? `?${qs}` : ''}`, signal);
+  },
 };

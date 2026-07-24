@@ -12,6 +12,14 @@ export function fmtClock(ms: number, tz = AGENCY_TZ): string {
   }).format(new Date(ms));
 }
 
+/** A weekday + date label in the agency zone, e.g. "Fri, Jul 31" — used to
+ *  stamp the date once on the "next scheduled service" section header. */
+export function fmtServiceDate(ms: number, tz = AGENCY_TZ): string {
+  return new Intl.DateTimeFormat(i18n.language, {
+    weekday: 'short', month: 'short', day: 'numeric', timeZone: tz,
+  }).format(new Date(ms));
+}
+
 export function fmtNum(n: number): string {
   return new Intl.NumberFormat(i18n.language).format(n);
 }
@@ -37,4 +45,11 @@ export function etaLabel(etaMin: number): string {
 
 export function relSeconds(ms: number, now: number): number {
   return Math.max(0, Math.round((now - ms) / 1000));
+}
+
+/** Walking seconds to cover `metres` at `mps`, inflated by a route factor to
+ *  account for real (non-straight-line) walking paths. Default 1.25. */
+export function walkSeconds(metres: number, mps: number, routeFactor = 1.25): number {
+  if (!Number.isFinite(metres) || metres <= 0 || mps <= 0) return 0;
+  return Math.round((metres / mps) * routeFactor);
 }

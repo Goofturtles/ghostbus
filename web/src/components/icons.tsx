@@ -61,6 +61,9 @@ export const SignalIcon = (p: P) => (
 export const GearIcon = (p: P) => (
   <svg {...base(p)}><circle cx="12" cy="12" r="3" /><path d="M12 3v2M12 19v2M4.5 7l1.7 1M17.8 16l1.7 1M4.5 17l1.7-1M17.8 8l1.7-1" /></svg>
 );
+export const PersonIcon = (p: P) => (
+  <svg {...base(p)}><circle cx="12" cy="8" r="3.4" /><path d="M5.5 20a6.5 6.5 0 0 1 13 0" /></svg>
+);
 export const GhostIcon = (p: P) => (
   <svg {...base(p)} fill="currentColor" stroke="none">
     <path d="M12 3a7 7 0 0 0-7 7v9l2.2-1.6L9.4 19l2-1.6 2 1.6 2.2-1.6L19 19v-9a7 7 0 0 0-7-7Z" opacity="0.9" />

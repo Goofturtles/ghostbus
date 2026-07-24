@@ -27,8 +27,6 @@ export default defineConfig({
   build: {
     outDir: '../dist',
     emptyOutDir: true,
-    // Keep the initial payload lean: the heavy voxel scene is split out and
-    // loaded after first paint (see App.tsx lazy import).
     chunkSizeWarningLimit: 700,
   },
 });

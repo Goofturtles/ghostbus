@@ -18,6 +18,11 @@
   --live: #34c759;          /* the small live dot + the word "Live" only */
   --warn: #ffb020;          /* stale / warning */
   --danger: #ff453a;        /* cancelled / error only */
+  /* Text-on-tint variants of the status colors — the base hues fail AA as small
+     text in Daylight, so the light theme darkens these (see below). */
+  --live-text: #34c759;
+  --warn-text: #ffb020;
+  --danger-text: #ff6b61;
   --you: #0a84ff;           /* platform-convention blue, the You beacon */
   --ghost: #7fe7dc;         /* ghost cyan */
 
@@ -53,7 +58,7 @@
 
   --text: #f5f5f7;
   --text-2: #a1a1a6;
-  --text-3: #6f7280;
+  --text-3: #9096a2;
   --on-brand: #ffffff;
 
   /* Map diorama palette — violet-charcoal family. */
@@ -86,8 +91,13 @@
 
   --text: #14161d;
   --text-2: #565a66;
-  --text-3: #8a8e99;
+  --text-3: #666a76;
   --on-brand: #ffffff;
+
+  /* Status text darkened for AA on light tinted pills. */
+  --live-text: #157a37;
+  --warn-text: #8a5a00;
+  --danger-text: #c62828;
 
   /* Daylight map — real navigational contrast: darker ground, shaded roofs. */
   --map-ground: #c9cede;

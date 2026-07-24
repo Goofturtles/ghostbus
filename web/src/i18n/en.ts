@@ -2,7 +2,7 @@
 const en = {
   brand: { ghost: 'Ghost', bus: 'Bus' },
   tagline: 'The schedule is a promise. GhostBus tells you the truth.',
-  nav: { nearby: 'Nearby', plan: 'Plan', saved: 'Saved', alerts: 'Alerts' },
+  nav: { nearby: 'Nearby', plan: 'Plan', saved: 'Saved', alerts: 'Alerts', primary: 'Primary' },
   search: {
     placeholder: 'Where to?',
     hint: '⌘K',
@@ -25,6 +25,7 @@ const en = {
     scheduledTimes: 'Scheduled times',
     offlineSince: 'offline — last live data {{time}}',
     feedDown: '{{agency}} feed unreachable since {{time}}',
+    feedDownGeneric: 'TTC feed unreachable — showing scheduled times.',
     demoBadge: 'DEMO',
     demoNote: 'Replaying a recorded slice of real {{agency}} data. Nothing here is live.',
   },
@@ -35,6 +36,7 @@ const en = {
     viewAll: 'View all',
     alerts: 'Alerts',
     ghosts: 'Ghosts',
+    nextService: 'Next scheduled service',
   },
   stop: {
     directionStop: '{{direction}} · Stop {{code}}',
@@ -69,6 +71,8 @@ const en = {
     gradeDetail: '{{grade}} · {{n}} observations · typical spread ±{{spread}} min',
     untracked: 'no grade — untracked',
     leaveBy: 'Leave by {{time}}',
+    evidence: '±{{spread}} min · {{n}} observations',
+    windowDays: 'last {{days}} days',
   },
   forecast: {
     high: 'Ghost risk: high',
@@ -98,6 +102,8 @@ const en = {
     home: 'Home',
     liveContext: '{{route}} · {{min}} min',
     empty: 'No saved places yet. Star a stop to pin it here.',
+    title: 'Saved places',
+    body: "Star a stop from its header and it'll live here.",
   },
   empty: {
     farStop: 'Nearest stop is {{dist}} away — open the map.',
@@ -107,6 +113,12 @@ const en = {
     scheduleOnlyAgency: "schedule only — {{agency}} doesn't publish live data",
     requestCity: 'Request my city',
     noCoverage: 'No transit coverage here yet.',
+    apiDownTitle: "Can't reach the live feed",
+    apiDownBody: "GhostBus can't reach the TTC data right now. Check your connection and try again.",
+    defaultLocation: 'Using a default location — tap to use yours',
+    noWindow: 'No departures in the next {{min}} minutes',
+    nextServiceNote: "This stop's live board isn't active yet — here's its scheduled service.",
+    noneScheduled: 'No scheduled departures in this window.',
   },
   catch: {
     title: 'Catch',
@@ -156,6 +168,7 @@ const en = {
   },
   settings: {
     title: 'Settings',
+    done: 'Done',
     theme: 'Theme',
     system: 'System',
     light: 'Light',
@@ -216,6 +229,18 @@ const en = {
     zoomOut: 'Zoom out',
     layers: 'Map layers',
     expand: 'Expand map',
+  },
+  map: {
+    placeholder: 'Map arrives in the next build',
+    placeholderAlt: 'Map placeholder — arrives in a later build',
+  },
+  plan: {
+    title: 'Plan a trip',
+    body: "Trip planning is designed — it isn't wired up in this build yet.",
+  },
+  alerts: {
+    title: 'Service alerts',
+    body: "Alerts and the Ghost Feed aren't wired up in this build yet.",
   },
   time: { now: 'now', min: 'min' },
 };

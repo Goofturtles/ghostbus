@@ -4,7 +4,7 @@ import type { Dict } from './en';
 const es: Dict = {
   brand: { ghost: 'Ghost', bus: 'Bus' },
   tagline: 'El horario es una promesa. GhostBus te dice la verdad.',
-  nav: { nearby: 'Cerca', plan: 'Ruta', saved: 'Guardados', alerts: 'Alertas' },
+  nav: { nearby: 'Cerca', plan: 'Ruta', saved: 'Guardados', alerts: 'Alertas', primary: 'Principal' },
   search: {
     placeholder: '¿A dónde vas?',
     hint: '⌘K',
@@ -27,6 +27,7 @@ const es: Dict = {
     scheduledTimes: 'Horarios programados',
     offlineSince: 'sin conexión — últimos datos en vivo {{time}}',
     feedDown: 'Fuente de {{agency}} inaccesible desde {{time}}',
+    feedDownGeneric: 'Fuente de TTC inaccesible — mostrando horarios programados.',
     demoBadge: 'DEMO',
     demoNote: 'Reproduciendo un tramo grabado de datos reales de {{agency}}. Nada aquí es en vivo.',
   },
@@ -37,6 +38,7 @@ const es: Dict = {
     viewAll: 'Ver todo',
     alerts: 'Alertas',
     ghosts: 'Fantasmas',
+    nextService: 'Próximo servicio programado',
   },
   stop: {
     directionStop: '{{direction}} · Parada {{code}}',
@@ -71,6 +73,8 @@ const es: Dict = {
     gradeDetail: '{{grade}} · {{n}} observaciones · dispersión típica ±{{spread}} min',
     untracked: 'sin nota — no rastreado',
     leaveBy: 'Sal antes de las {{time}}',
+    evidence: '±{{spread}} min · {{n}} observaciones',
+    windowDays: 'últimos {{days}} días',
   },
   forecast: {
     high: 'Riesgo de fantasma: alto',
@@ -100,6 +104,8 @@ const es: Dict = {
     home: 'Casa',
     liveContext: '{{route}} · {{min}} min',
     empty: 'Sin lugares guardados. Marca una parada para fijarla aquí.',
+    title: 'Lugares guardados',
+    body: 'Marca una parada desde su encabezado y aparecerá aquí.',
   },
   empty: {
     farStop: 'La parada más cercana está a {{dist}} — abre el mapa.',
@@ -109,6 +115,12 @@ const es: Dict = {
     scheduleOnlyAgency: 'solo horario — {{agency}} no publica datos en vivo',
     requestCity: 'Solicitar mi ciudad',
     noCoverage: 'Aún no hay cobertura de transporte aquí.',
+    apiDownTitle: 'No se puede acceder a los datos en vivo',
+    apiDownBody: 'GhostBus no puede acceder a los datos de TTC ahora. Revisa tu conexión e inténtalo de nuevo.',
+    defaultLocation: 'Usando una ubicación predeterminada — toca para usar la tuya',
+    noWindow: 'No hay salidas en los próximos {{min}} minutos',
+    nextServiceNote: 'El tablero en vivo de esta parada aún no está activo — aquí tienes su servicio programado.',
+    noneScheduled: 'No hay salidas programadas en este período.',
   },
   catch: {
     title: 'Alcanzar',
@@ -158,6 +170,7 @@ const es: Dict = {
   },
   settings: {
     title: 'Ajustes',
+    done: 'Listo',
     theme: 'Tema',
     system: 'Sistema',
     light: 'Claro',
@@ -218,6 +231,18 @@ const es: Dict = {
     zoomOut: 'Alejar',
     layers: 'Capas del mapa',
     expand: 'Ampliar el mapa',
+  },
+  map: {
+    placeholder: 'El mapa llega en la próxima versión',
+    placeholderAlt: 'Espacio para el mapa — llega en una versión posterior',
+  },
+  plan: {
+    title: 'Planificar un viaje',
+    body: 'La planificación de viajes está diseñada — aún no está conectada en esta versión.',
+  },
+  alerts: {
+    title: 'Alertas de servicio',
+    body: 'Las alertas y el Muro de fantasmas aún no están conectados en esta versión.',
   },
   time: { now: 'ahora', min: 'min' },
 };
