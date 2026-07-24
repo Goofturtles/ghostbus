@@ -43,6 +43,9 @@ const MAX_SANE_DELAY_S = 24 * 3600;
 const JOIN_TOL_SEC = 75;               // ± window for a reconstructed schedule second
 const JOIN_MIN_VOTES = 2;              // need >=2 consistent stops to claim a static trip
 const MASS_GHOST_FRACTION = 0.30;      // suppress a cycle emitting ghosts for >30% of due trips
+const MASS_GHOST_ROUTE_MIN_DUE = 4;    // per-route breaker only applies once a route has >=4 due trips
+const GHOST_CONFIRM_MISSES = 2;        // a trip must be absent this many consecutive cycles before it's a ghost
+const STATIC_RELOAD_MS = 6 * 3_600_000; // reload calendar/trips/index every 6h (and on service-day rollover)
 
 // ---------- protobuf numeric coercion ----------
 function toNum(v: unknown): number | null {
@@ -96,6 +99,12 @@ export interface JoinStats {
   massGhostTrippedCycles: number;
   lastUnmatchedRt: number;
   lastUnmatchedVehicles: number;
+  retractionsTotal: number;         // ghosts retracted after the trip was later claimed
+  lastRetracted: number;
+  lastCanceledSeen: number;         // CANCELED RT entities seen last cycle
+  lastCanceledIdentified: number;   // ...that we could tie to a static trip
+  lastCanceledUnidentified: number; // ...that we could not (anonymous — counted, never faked)
+  boardCoverage: string;            // min..max calendar date of the loaded static board
 }
 
 export interface PollerHandle {
@@ -128,17 +137,25 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
   // static trip id -> (stop id -> predicted epoch ms), for arrivals' liveEtaMs.
   let livePredictions = new Map<string, Map<string, number>>();
 
-  // ----- static context (loaded once) -----
+  // ----- static context (reloaded on service-day rollover and every 6h) -----
   interface TripStart { routeId: string | null; serviceId: string | null; startS: number | null }
-  const tripStarts = new Map<string, TripStart>();
+  let tripStarts = new Map<string, TripStart>();
+  let staticTripIds = new Set<string>();               // for direct CANCELED trip_id matching
   let calendar: CalendarRow[] = [];
   let calendarDates: CalendarDateRow[] = [];
   const activeServiceCache = new Map<number, Set<string>>();
   const midnightCache = new Map<number, number>();
   let routeStopIndex: RouteStopIndex = new Map();
   let indexReady = false;
+  let boardCoverage = '?..?';
+  let lastStaticLoadAt = 0;
+  let lastStaticLoadYmd = 0;
+  let staticReloading = false;
 
   const delayDedupe = new Map<string, number>();
+  // Ghost confirmation/retraction state (keyed `${tripId}|${startEpoch}`):
+  const ghostMissStreak = new Map<string, number>();   // consecutive cycles a due trip has been absent
+  const ghostInserted = new Map<string, { tripId: string; startEpoch: number }>(); // ghost rows we wrote this run
 
   const feedState: Record<FeedId, FetchState> = {
     vehicles: { fails: 0, nextAttemptAt: 0, status: 'down', lastOkMs: null, sinceMs: null },
@@ -152,6 +169,8 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
     indexReady: false, lastJoinRate: null, cumulativeClaimed: 0, cumulativeRt: 0,
     lastGhosts: 0, lastCancelled: 0, lastDueTrips: 0, massGhostTrippedCycles: 0,
     lastUnmatchedRt: 0, lastUnmatchedVehicles: 0,
+    retractionsTotal: 0, lastRetracted: 0, lastCanceledSeen: 0, lastCanceledIdentified: 0,
+    lastCanceledUnidentified: 0, boardCoverage: '?..?',
   };
   let lastRetentionYmd = 0;
   let stopping = false;
@@ -200,25 +219,66 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
   }
 
   // ---------- static context ----------
+  // Builds fresh structures and swaps them in atomically, so a concurrent poll cycle
+  // never sees a half-cleared calendar/trip map during a reload.
   async function loadStaticContext(): Promise<void> {
     const cal = await db.query<{ service_id: string; mon: boolean; tue: boolean; wed: boolean; thu: boolean; fri: boolean; sat: boolean; sun: boolean; start_date: number; end_date: number }>(
       'SELECT service_id, mon, tue, wed, thu, fri, sat, sun, start_date, end_date FROM calendar WHERE agency=$1', [AGENCY]);
-    calendar = cal.rows.map((r) => ({
+    const newCalendar: CalendarRow[] = cal.rows.map((r) => ({
       service_id: r.service_id, days: [r.mon, r.tue, r.wed, r.thu, r.fri, r.sat, r.sun],
       start_date: Number(r.start_date), end_date: Number(r.end_date),
     }));
     const cd = await db.query<{ service_id: string; date: number; exception_type: number }>(
       'SELECT service_id, date, exception_type FROM calendar_dates WHERE agency=$1', [AGENCY]);
-    calendarDates = cd.rows.map((r) => ({ service_id: r.service_id, date: Number(r.date), exception_type: Number(r.exception_type) }));
+    const newCalendarDates: CalendarDateRow[] = cd.rows.map((r) => ({ service_id: r.service_id, date: Number(r.date), exception_type: Number(r.exception_type) }));
 
     const starts = await db.query<{ trip_id: string; route_id: string | null; service_id: string | null; start_s: number | null }>(
       `SELECT DISTINCT ON (t.trip_id) t.trip_id, t.route_id, t.service_id, COALESCE(st.departure_s, st.arrival_s) AS start_s
        FROM trips t JOIN stop_times st ON st.agency = t.agency AND st.trip_id = t.trip_id
        WHERE t.agency = $1 ORDER BY t.trip_id, st.stop_sequence`, [AGENCY]);
+    const newStarts = new Map<string, TripStart>();
+    const newStaticIds = new Set<string>();
     for (const r of starts.rows) {
-      tripStarts.set(r.trip_id, { routeId: r.route_id, serviceId: r.service_id, startS: r.start_s == null ? null : Number(r.start_s) });
+      newStarts.set(r.trip_id, { routeId: r.route_id, serviceId: r.service_id, startS: r.start_s == null ? null : Number(r.start_s) });
+      newStaticIds.add(r.trip_id);
     }
-    console.log(`[poller] static context: ${calendar.length} calendar, ${calendarDates.length} calendar_dates, ${tripStarts.size} trips`);
+    let minStart = Infinity, maxEnd = 0;
+    for (const c of newCalendar) { if (c.start_date < minStart) minStart = c.start_date; if (c.end_date > maxEnd) maxEnd = c.end_date; }
+    boardCoverage = Number.isFinite(minStart) ? `${minStart}..${maxEnd}` : '?..?';
+
+    // atomic swap
+    calendar = newCalendar;
+    calendarDates = newCalendarDates;
+    tripStarts = newStarts;
+    staticTripIds = newStaticIds;
+    activeServiceCache.clear(); // active-service sets depend on the calendar we just replaced
+    joinStats.boardCoverage = boardCoverage;
+    console.log(`[poller] static context: ${calendar.length} calendar, ${calendarDates.length} calendar_dates, ${tripStarts.size} trips, board ${boardCoverage}`);
+  }
+
+  // Reload the static context (calendar/trips/index) on a service-day rollover or every
+  // STATIC_RELOAD_MS, so a re-seed / board swap is picked up without a restart. Runs in
+  // the background (rebuilding the index is heavy); one reload at a time.
+  function maybeReloadStatic(now: number): void {
+    if (staticReloading || lastStaticLoadAt === 0) return;
+    const ymd = torontoYmd(now);
+    const rollover = ymd !== lastStaticLoadYmd;
+    const stale = now - lastStaticLoadAt > STATIC_RELOAD_MS;
+    if (!rollover && !stale) return;
+    staticReloading = true;
+    console.log(`[poller] static reload triggered (${rollover ? 'service-day rollover' : '6h refresh'})`);
+    void (async () => {
+      try {
+        await loadStaticContext();
+        await buildIndex();
+        lastStaticLoadAt = Date.now();
+        lastStaticLoadYmd = torontoYmd(lastStaticLoadAt);
+      } catch (e) {
+        console.error('[poller] static reload failed (keeping previous context):', e);
+      } finally {
+        staticReloading = false;
+      }
+    })();
   }
 
   // Build the (route, stop) -> [{trip, depSec}] index over ALL loaded static trips.
@@ -332,9 +392,14 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
         const stopId = stu.stopId ?? null;
         if (!stopId) continue;
         const stopSeq = stu.stopSequence && stu.stopSequence > 0 ? stu.stopSequence : null;
-        const evTime = toNum(stu.departure?.time) ?? toNum(stu.arrival?.time);
-        const rawDelay = stu.departure?.delay ?? stu.arrival?.delay;
-        const delay = rawDelay == null ? null : toNum(rawDelay);
+        // Read time AND delay from the SAME StopTimeEvent (prefer departure when it has a
+        // time, else arrival) — never mix a departure time with an arrival delay, or the
+        // reconstructed schedule second would be garbage.
+        const ev = stu.departure?.time != null ? stu.departure
+          : stu.arrival?.time != null ? stu.arrival
+          : (stu.departure ?? stu.arrival ?? null);
+        const evTime = ev ? toNum(ev.time) : null;
+        const delay = ev && ev.delay != null ? toNum(ev.delay) : null;
 
         // Live prediction for arrivals (future stops): keep the predicted event time.
         if (evTime != null) predictions.push({ stopId, timeMs: evTime * 1000 });
@@ -370,12 +435,15 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
     return { count: n, parsed };
   }
 
-  // Active, due-but-absent static trips -> ghost candidates.
-  function computeDueAndGhosts(now: number, present: Set<string>): { due: string[]; ghosts: unknown[][] } {
+  // A calendar-active static trip whose scheduled start is inside the ghost scan window.
+  interface DueTrip { tripId: string; routeId: string | null; startEpoch: number; key: string; present: boolean }
+
+  // Active static trips currently due (scheduled start 6..30 min ago), annotated with
+  // whether the identity join found them present this cycle.
+  function computeDue(now: number, present: Set<string>): DueTrip[] {
     const days = [torontoDay(now), torontoDay(now - 86_400_000)];
-    const due: string[] = [];
-    const ghosts: unknown[][] = [];
-    const seenDue = new Set<string>();
+    const out: DueTrip[] = [];
+    const seen = new Set<string>();
     for (const day of days) {
       const svc = servicesForYmd(day.ymd, day.dow);
       if (svc.size === 0) continue;
@@ -385,14 +453,13 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
         const startEpoch = midnight + info.startS * 1000;
         const age = now - startEpoch;
         if (age < GHOST_MIN_AGE_MS || age > GHOST_MAX_AGE_MS) continue;
-        const dedupe = `${tripId}|${startEpoch}`;
-        if (seenDue.has(dedupe)) continue;
-        seenDue.add(dedupe);
-        due.push(tripId);
-        if (!present.has(tripId)) ghosts.push([AGENCY, tripId, info.routeId, new Date(startEpoch).toISOString(), 'ghost']);
+        const key = `${tripId}|${startEpoch}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({ tripId, routeId: info.routeId, startEpoch, key, present: present.has(tripId) });
       }
     }
-    return { due, ghosts };
+    return out;
   }
 
   function cancelledRows(canceledStatic: Set<string>, now: number): unknown[][] {
@@ -464,6 +531,7 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
   async function poll(cycle: number): Promise<void> {
     const now = Date.now();
     await retention(now);
+    maybeReloadStatic(now);
     const midToday = midnightForYmd(torontoDay(now).ymd);
 
     const [vr, tr, ar] = await Promise.all([fetchFeed('vehicles'), fetchFeed('trips'), fetchFeed('alerts')]);
@@ -493,8 +561,14 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
     }
 
     // ----- Phase-2 identity join -----
+    // NOTE: TTC sends no ETag/Last-Modified and never returns 304 (measured — see
+    // BLOCKERS.md), so a fresh cycle is always a real 200. feedsFresh therefore gates the
+    // ghost scan on actually having this cycle's vehicle+trip snapshots, never on reusing
+    // a stale-but-unchanged one; the conditional-request headers are harmless no-ops.
     const feedsFresh = vr.status === 'ok' && tr.status === 'ok';
-    let ghostsIns = 0, cancelledIns = 0, joinRate: number | null = null, dueCount = 0, unmatchedRt = 0, unmatchedVehicles = 0;
+    let ghostsIns = 0, cancelledIns = 0, retracted = 0, joinRate: number | null = null;
+    let dueCount = 0, unmatchedRt = 0, unmatchedVehicles = 0;
+    let canceledSeen = 0, canceledIdentified = 0, canceledUnidentified = 0;
     if (indexReady) {
       const rtTrips: RtTripInput[] = parsed
         .filter((p) => p.routeId && p.reconstructed.length > 0)
@@ -505,20 +579,31 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
       unmatchedRt = consideredRt - claim.claims.size;
       joinStats.cumulativeClaimed += claim.claims.size;
       joinStats.cumulativeRt += consideredRt;
-
-      // Rebuild the live-prediction store from this cycle's claimed trips.
-      const preds = new Map<string, Map<string, number>>();
       const rtById = new Map(parsed.map((p) => [p.rtTripId, p]));
-      const canceledStatic = new Set<string>();
+
+      // Rebuild the live-prediction store from this cycle's claimed (non-canceled) trips.
+      const preds = new Map<string, Map<string, number>>();
       for (const [rtTripId, staticTripId] of claim.claims) {
         const p = rtById.get(rtTripId);
-        if (!p) continue;
-        if (p.canceled) { canceledStatic.add(staticTripId); continue; }
+        if (!p || p.canceled) continue;
         const m = new Map<string, number>();
         for (const pr of p.predictions) m.set(pr.stopId, pr.timeMs);
         preds.set(staticTripId, m);
       }
       livePredictions = preds;
+
+      // CANCELED entities (MAJOR 3): they ship no stop_time_update, so they cannot win the
+      // >=2-stop join. Identify them by a direct static trip_id match first, then by any join
+      // claim; anything left is genuinely anonymous — counted, never guessed. On the live TTC
+      // feed CANCELED entities are ~0 (measured), so this path is honestly dormant today.
+      const canceledStatic = new Set<string>();
+      for (const p of parsed) {
+        if (!p.canceled) continue;
+        canceledSeen++;
+        if (staticTripIds.has(p.rtTripId)) { canceledStatic.add(p.rtTripId); canceledIdentified++; }
+        else if (claim.claims.has(p.rtTripId)) { canceledStatic.add(claim.claims.get(p.rtTripId)!); canceledIdentified++; }
+        else canceledUnidentified++;
+      }
 
       // Vehicles with an RT trip id that never appeared in a claimed trip update can't
       // be stop-matched — count them honestly (they may leave a trip looking absent).
@@ -526,37 +611,107 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
       for (const tid of vehicleTripIds) if (!claimedRt.has(tid)) unmatchedVehicles++;
 
       const present = claim.claimedStatic;
-      if (feedsFresh) {
-        const { due, ghosts } = computeDueAndGhosts(now, present);
-        dueCount = due.length;
-        const wouldEmit = ghosts.length;
-        if (dueCount > 0 && wouldEmit / dueCount > MASS_GHOST_FRACTION) {
-          joinStats.massGhostTrippedCycles++;
-          console.log(`[poller][cycle ${cycle}] MASS-GHOST BREAKER: would flag ${wouldEmit}/${dueCount} due trips (> ${MASS_GHOST_FRACTION * 100}%) — suppressing (feed outage or our bug, not reality)`);
-        } else {
-          if (ghosts.length > 0) { ghostsIns = await insertRows('ghosts', ['agency', 'trip_id', 'route_id', 'scheduled_start', 'kind'], ghosts, 'ON CONFLICT (agency, trip_id, scheduled_start) DO NOTHING'); totals.ghosts += ghostsIns; }
-          const canc = cancelledRows(canceledStatic, now);
-          if (canc.length > 0) { cancelledIns = await insertRows('ghosts', ['agency', 'trip_id', 'route_id', 'scheduled_start', 'kind'], canc, 'ON CONFLICT (agency, trip_id, scheduled_start) DO NOTHING'); totals.cancelled += cancelledIns; }
+      // Skip the ghost scan mid-reload too: tripStarts may already be the new board while
+      // the join index is still the old one, which would make new-board trips look absent.
+      if (feedsFresh && !staticReloading) {
+        const dueList = computeDue(now, present);
+        dueCount = dueList.length;
+        const currentDueKeys = new Set<string>();
+
+        // Confirmation + retraction. A ghost is only real after GHOST_CONFIRM_MISSES
+        // consecutive absent cycles; a ghost we already wrote is RETRACTED (deleted) if the
+        // trip is later claimed (or cancelled) while still inside the due window — a false
+        // positive that is never reconciled would violate the product's core promise.
+        const confirmed: DueTrip[] = [];
+        const toRetract: DueTrip[] = [];
+        for (const d of dueList) {
+          currentDueKeys.add(d.key);
+          if (canceledStatic.has(d.tripId)) {
+            // An explicitly-cancelled trip is NOT a ghost — the cancelled path owns it.
+            // Retract any ghost already written so the cancellation wins the ON CONFLICT,
+            // and never let it enter the ghost `confirmed` set.
+            ghostMissStreak.delete(d.key);
+            if (ghostInserted.has(d.key)) toRetract.push(d);
+            continue;
+          }
+          if (d.present) {
+            ghostMissStreak.delete(d.key);
+            if (ghostInserted.has(d.key)) toRetract.push(d);
+          } else {
+            const s = (ghostMissStreak.get(d.key) ?? 0) + 1;
+            ghostMissStreak.set(d.key, s);
+            if (s >= GHOST_CONFIRM_MISSES && !ghostInserted.has(d.key)) confirmed.push(d);
+          }
         }
+        for (const d of toRetract) {
+          const r = await db.query("DELETE FROM ghosts WHERE agency=$1 AND trip_id=$2 AND scheduled_start=$3 AND kind='ghost'", [AGENCY, d.tripId, new Date(d.startEpoch).toISOString()]);
+          retracted += r.rowCount;
+          ghostInserted.delete(d.key);
+          ghostMissStreak.delete(d.key);
+        }
+        if (retracted > 0) { joinStats.retractionsTotal += retracted; console.log(`[poller][cycle ${cycle}] retracted ${retracted} ghost(s) — trip(s) later claimed or cancelled within the due window`); }
+
+        // Mass-ghost breakers on the confirmed set: GLOBAL (>30% of all due) plus PER-ROUTE
+        // (>30% of a route's due, once it has >=4 due) — a board swap touching a few routes
+        // would slip past a global-only breaker.
+        const duePerRoute = new Map<string, number>();
+        for (const d of dueList) { const k = d.routeId ?? '?'; duePerRoute.set(k, (duePerRoute.get(k) ?? 0) + 1); }
+        const confirmedByRoute = new Map<string, DueTrip[]>();
+        for (const d of confirmed) { const k = d.routeId ?? '?'; (confirmedByRoute.get(k) ?? confirmedByRoute.set(k, []).get(k)!).push(d); }
+
+        const toInsert: DueTrip[] = [];
+        let suppressed = false;
+        if (dueCount > 0 && confirmed.length / dueCount > MASS_GHOST_FRACTION) {
+          suppressed = true;
+          console.log(`[poller][cycle ${cycle}] GLOBAL MASS-GHOST BREAKER: ${confirmed.length}/${dueCount} due (> ${MASS_GHOST_FRACTION * 100}%) — suppressing all (feed outage or our bug, not reality)`);
+        } else {
+          const suppressedRoutes: string[] = [];
+          for (const [route, list] of confirmedByRoute) {
+            const dueR = duePerRoute.get(route) ?? 0;
+            if (dueR >= MASS_GHOST_ROUTE_MIN_DUE && list.length / dueR > MASS_GHOST_FRACTION) suppressedRoutes.push(`${route}:${list.length}/${dueR}`);
+            else toInsert.push(...list);
+          }
+          if (suppressedRoutes.length > 0) { suppressed = true; console.log(`[poller][cycle ${cycle}] PER-ROUTE MASS-GHOST BREAKER suppressed ${suppressedRoutes.length} route(s): ${suppressedRoutes.join(' ')}`); }
+        }
+        if (suppressed) joinStats.massGhostTrippedCycles++;
+
+        if (toInsert.length > 0) {
+          const rows = toInsert.map((d) => [AGENCY, d.tripId, d.routeId, new Date(d.startEpoch).toISOString(), 'ghost']);
+          ghostsIns = await insertRows('ghosts', ['agency', 'trip_id', 'route_id', 'scheduled_start', 'kind'], rows, 'ON CONFLICT (agency, trip_id, scheduled_start) DO NOTHING');
+          for (const d of toInsert) ghostInserted.set(d.key, { tripId: d.tripId, startEpoch: d.startEpoch });
+          totals.ghosts += ghostsIns;
+        }
+
+        const canc = cancelledRows(canceledStatic, now);
+        if (canc.length > 0) { cancelledIns = await insertRows('ghosts', ['agency', 'trip_id', 'route_id', 'scheduled_start', 'kind'], canc, 'ON CONFLICT (agency, trip_id, scheduled_start) DO NOTHING'); totals.cancelled += cancelledIns; }
+
+        // Prune confirmation/retraction bookkeeping for trips that have left the due window.
+        for (const k of ghostMissStreak.keys()) if (!currentDueKeys.has(k)) ghostMissStreak.delete(k);
+        for (const [k, v] of ghostInserted) if (now - v.startEpoch > GHOST_MAX_AGE_MS + 60_000) ghostInserted.delete(k);
       } else {
-        console.log(`[poller][cycle ${cycle}] ghost scan skipped (vehicles/trips feed not fresh)`);
+        console.log(`[poller][cycle ${cycle}] ghost scan skipped (${!feedsFresh ? 'vehicles/trips feed not fresh' : 'static reload in progress'})`);
       }
     }
     joinStats.lastJoinRate = joinRate;
     joinStats.lastGhosts = ghostsIns;
     joinStats.lastCancelled = cancelledIns;
+    joinStats.lastRetracted = retracted;
     joinStats.lastDueTrips = dueCount;
     joinStats.lastUnmatchedRt = unmatchedRt;
     joinStats.lastUnmatchedVehicles = unmatchedVehicles;
+    joinStats.lastCanceledSeen = canceledSeen;
+    joinStats.lastCanceledIdentified = canceledIdentified;
+    joinStats.lastCanceledUnidentified = canceledUnidentified;
 
     let alerts = 0;
     if (ar.status === 'ok') { alerts = await processAlerts(ar.msg); totals.alerts = alerts; }
     else if (ar.status !== 'notmodified') console.log(`[poller][cycle ${cycle}] alerts ${ar.status}${'reason' in ar && ar.reason ? `: ${ar.reason}` : ''}`);
 
     const jr = joinRate == null ? 'n/a(index warming)' : `${(joinRate * 100).toFixed(1)}%`;
+    const cancTag = canceledSeen > 0 ? ` canceled(seen=${canceledSeen} id=${canceledIdentified} anon=${canceledUnidentified})` : '';
     console.log(
       `[poller][cycle ${cycle}] vehicles=${vehicles} tripUpdates=${tripUpdates} obs+=${obsInserted} ` +
-      `join=${jr} claimed/${dueCount}due ghosts+=${ghostsIns} cancelled+=${cancelledIns} alerts=${alerts} ` +
+      `join=${jr} due=${dueCount} ghosts+=${ghostsIns} retracted=${retracted} cancelled+=${cancelledIns}${cancTag} alerts=${alerts} ` +
       `| totals obs=${totals.obs} ghost=${totals.ghosts} cancelled=${totals.cancelled}`,
     );
   }
@@ -565,6 +720,8 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
   let started = false;
   async function initStatic(): Promise<void> {
     await loadStaticContext();
+    lastStaticLoadAt = Date.now();
+    lastStaticLoadYmd = torontoYmd(lastStaticLoadAt);
     // Build the (heavy) join index in the background so start() returns fast.
     buildIndex().catch((e) => console.error('[poller] join index build failed:', e));
   }

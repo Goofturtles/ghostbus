@@ -17,7 +17,9 @@ import { getDb, type Db, type Queryable } from './db.ts';
 import { percentiles } from './eta.ts';
 
 const AGENCY = 'ttc';
-const WINDOW_DAYS = 14;
+// The trailing window aggregates are computed over. Exported so the arrivals endpoint
+// reports the SAME windowDays in every evidence object (metadata must not drift).
+export const WINDOW_DAYS = 14;
 // Group-key delimiter: U+001F (unit separator) never appears in a GTFS id, so composite
 // keys can't collide and we never split an id back apart.
 const SEP = String.fromCharCode(31);

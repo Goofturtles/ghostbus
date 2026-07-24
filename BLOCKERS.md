@@ -73,3 +73,28 @@ trips get one coincidental vote, 0% get the required two). The mass-ghost breake
 `departure_s` by definition and the join becomes near-exact — the mechanism is proven by unit
 tests (`server/src/join.test.ts`). Delay observations are unaffected and remain the primary honest
 signal (27k+ obs collected). See DECISIONS.md §12–§14.
+
+## BLOCKER (empirical) — TTC cannot support officially-"cancelled" labeling for anonymous trips
+
+Measured on the live trips feed: of ~2,115 TripUpdate entities, **0 carry the standard
+`scheduleRelationship = CANCELED (3)`**; 2,084 are SCHEDULED and 31 carry a **non-standard
+`scheduleRelationship = 8`** (not defined in the GTFS-realtime `TripDescriptor.ScheduleRelationship`
+enum — undocumented semantics, so we do not act on it). Separately, CANCELED entities on this feed
+ship **no `stop_time_update`** and no `start_time`/`start_date`, and their RT `trip_id` does not match
+static — so a CANCELED entity is **anonymous**: it cannot win the ≥2-stop identity join and cannot be
+placed on a schedule.
+
+**What we do:** for a CANCELED entity we attempt a direct static `trip_id` match first, then a join
+claim; only an identified trip is labeled `kind='cancelled'`. Anything left is **counted, never
+guessed** (`canceledUnidentified`). The honest consequence: an officially-cancelled but anonymous trip
+will simply surface as a **ghost ("never arrived")** via the absence path rather than as a distinct
+"cancelled" label. This is a feed limitation, not a bug. If TTC later publishes CANCELED entities with
+a matching identity, the `kind='cancelled'` path activates with no code change.
+
+## Note (empirical) — the TTC GTFS-realtime feeds do not support conditional requests
+
+The trips feed returns **no `ETag` and no `Last-Modified`**, and a conditional re-request (with
+`If-None-Match`/`If-Modified-Since`) returns **200, never 304**. So the collector's conditional-request
+headers are harmless no-ops and a "fresh" cycle is always a real 200 snapshot. The ghost-scan freshness
+gate (`feedsFresh`) is therefore never satisfied by a stale-but-unchanged reuse — there is nothing to
+reuse. No state-caching-on-304 path was built because it would be dead code on this feed.

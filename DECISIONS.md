@@ -230,3 +230,61 @@ chars, lat/lon ranges, windowMin cap). Errors are uniform JSON — no stack trac
 is served only if it exists (it doesn't yet — Phase 3), with a JSON 404 for `/api/*`. The API binds
 `127.0.0.1:8799` by default. `/api/vehicles` sets `isGhost:false` on every vehicle (a present
 vehicle cannot be a ghost; the field exists for the map layer's stable contract).
+
+## 18. Ghost confirmation + retraction (post-review hardening)
+
+A ghost is a promise the app makes; a never-reconciled false positive would break that promise, so
+ghosts are now both *confirmed* and *retractable* (`poller.ts`):
+- **Confirmation:** a due trip must be absent for **≥2 consecutive cycles** (`ghostMissStreak`) before
+  a ghost row is written — a single missed poll (or a trip claimed one cycle late) never emits.
+- **Retraction:** every ghost this process writes is tracked (`ghostInserted`); if that trip is later
+  claimed while still inside the due window, the ghost row is **DELETEd** and the retraction counted
+  and logged. Both maps are pruned when a trip leaves the due window, so neither grows unbounded.
+
+## 19. Static context reload on rollover / every 6h (post-review hardening)
+
+`calendar`, `tripStarts`/`staticTripIds`, and the join index were loaded once forever, so a re-seed or
+GTFS board swap needed a restart. Now `maybeReloadStatic()` reloads them on **service-day rollover** or
+every **6h**, in the background (index rebuild is heavy), one at a time. `loadStaticContext()` builds
+fresh structures and swaps them in atomically (`tripStarts` is now a reassignable binding), clears the
+active-service cache, and **logs the board coverage** (`min..max` calendar date) each load so a board
+change is visible. `/api/health` exposes `boardCoverage`. The ghost scan is additionally skipped while a
+reload is in flight (`staticReloading`) so it never runs with a new trip map against the old join index.
+
+**Known limitation (accepted):** the *API read-path* caches (`api.ts` `calendar`/`calendarDates`/
+`routeMeta`) are still loaded once at boot, so after a board re-seed `/api/stops/:id/arrivals` can serve
+stale schedule/route metadata until the API process restarts. The poller hot-reloads; the read-path does
+not yet. Out of this phase's scope (the mandate was the collector's staleness) and low-impact for Tier 0
+where a re-seed is operator-driven, but flagged here for a later phase.
+
+## 22. CANCELED trips are excluded from the ghost path (post-review fix)
+
+A trip the feed explicitly CANCELED (and that we identified) is also absent, so without care it would
+enter the ghost `confirmed` set; because the ghost insert runs before the cancelled insert and both use
+`ON CONFLICT (agency, trip_id, scheduled_start) DO NOTHING`, the ghost row would win and the cancellation
+would be dropped (inflating `ghostsThisWeek`, undercounting `cancelledThisWeek`). Fixed: a due trip in
+`canceledStatic` is skipped in the confirmation loop and, if a ghost row was already written for it, that
+row is retracted so the `kind='cancelled'` insert wins. Dormant on TTC today (0 identifiable CANCELED
+entities) but correct for any feed where identification works.
+
+## 20. Mass-ghost breaker is now per-route AND global (post-review hardening)
+
+The global >30%-of-due breaker stays, plus a **per-route** breaker: if a route with **≥4 due trips**
+would emit ghosts for >30% of them, that route is suppressed and logged. A board update touching only a
+few routes would slip past a global-only breaker; the per-route breaker catches it.
+
+## 21. Small post-review fixes
+
+- **Same-event time+delay** (`poller.ts`): the join reconstruction reads `time` and `delay` from the
+  *same* `StopTimeEvent` (departure preferred, else arrival) — never a departure time with an arrival
+  delay, which would corrupt the reconstructed schedule second.
+- **arrivals `dayList` sized to the window** (`api.ts`): was a fixed 3 days; now spans one day before
+  through one day after `[at, at+window]`, so a large `windowMin` (up to the 4320-min cap) never
+  silently truncates.
+- **`at=` sanity floor** (`api.ts`): timestamps before 2020-01-01 or more than 30 days in the future
+  are rejected with a 400.
+- **`WINDOW_DAYS` single source** — exported from `aggregate.ts` and imported by `api.ts`, so the
+  `windowDays` in every evidence object can never drift from the window aggregates are actually computed
+  over.
+- **CANCELED identification + 304 behavior** — see BLOCKERS.md (measured: 0 standard-CANCELED entities;
+  feed never sends 304).

@@ -18,6 +18,7 @@ import type { Db } from './db.ts';
 import type { PollerHandle } from './poller.ts';
 import { parseBbox, pointInBbox } from './bbox.ts';
 import { selectEvidence, type Agg } from './eta.ts';
+import { WINDOW_DAYS } from './aggregate.ts';
 import { activeServiceIds, type CalendarRow, type CalendarDateRow } from './gtfs.ts';
 import { torontoDay, torontoMidnightEpoch, hourOfWeek } from './tz.ts';
 import type {
@@ -38,6 +39,8 @@ const ARRIVALS_DEFAULT_WINDOW_MIN = 90;
 const ARRIVALS_MAX_WINDOW_MIN = 4320; // 3 days — lets the window reach the next service board
 const ARRIVALS_MAX_DEPARTURES = 60;
 const LIVE_ETA_MAX_SKEW_MS = 10 * 60_000; // only attach live ETAs to a near-"now" query
+const AT_FLOOR_MS = Date.parse('2020-01-01T00:00:00Z'); // reject nonsense far-past `at`
+const AT_MAX_FUTURE_MS = 30 * 86_400_000;               // reject `at` more than 30 days out
 
 interface RouteMeta { shortName: string | null; longName: string | null; routeType: number | null; color: string | null }
 
@@ -116,7 +119,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     const ok = Object.values(feeds).some((f) => f.status === 'ok');
     const body: HealthResponse = {
       ok, dbDriver: db.driver, lastPollAtMs: h.lastPollAtMs, collectorMode: 'in-process',
-      feeds, serverNowMs: Date.now(),
+      feeds, boardCoverage: poller.getJoinStats().boardCoverage, serverNowMs: Date.now(),
     };
     return reply.send(body);
   });
@@ -199,6 +202,8 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       const n = Number(q.at);
       atMs = Number.isFinite(n) ? n : Date.parse(q.at);
       if (!Number.isFinite(atMs)) return bad(reply, 'at must be epoch ms or an ISO datetime');
+      // Sanity floor/ceiling: reject nonsense far-past or far-future timestamps.
+      if (atMs < AT_FLOOR_MS || atMs > now + AT_MAX_FUTURE_MS) return bad(reply, 'at must be between 2020-01-01 and 30 days from now');
     }
     let windowMin = q.windowMin == null ? ARRIVALS_DEFAULT_WINDOW_MIN : Number(q.windowMin);
     if (!Number.isFinite(windowMin) || windowMin <= 0) return bad(reply, 'windowMin must be a positive number');
@@ -209,10 +214,15 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       'SELECT stop_id, name, lat, lon, wheelchair_boarding FROM stops WHERE agency=$1 AND stop_id=$2', [AGENCY, stopId])).rows[0];
     if (!stopRow) return reply.code(404).send({ error: 'stop not found' });
 
-    // Scan service dates whose service window can overlap [at, at+window]. A ±1-day span
-    // around the reference day covers >24h GTFS times and windows that cross midnight.
-    const centre = torontoDay(atMs);
-    const dayList = [torontoDay(atMs - 86_400_000), centre, torontoDay(atMs + 86_400_000)];
+    // Scan every service date whose window can overlap [at, at+window]. Sized to the
+    // window (not a fixed 3 days) so a large windowMin never silently truncates: one day
+    // before (for >24h GTFS times) through one day after the window's end.
+    const dayList: Array<{ ymd: number; dow: number }> = [];
+    const seenYmd = new Set<number>();
+    for (let t = atMs - 86_400_000; t <= atMs + windowMs + 86_400_000; t += 86_400_000) {
+      const d = torontoDay(t);
+      if (!seenYmd.has(d.ymd)) { seenYmd.add(d.ymd); dayList.push(d); }
+    }
     interface Raw { tripId: string; stopSequence: number; dep: number; routeId: string | null; headsign: string | null; directionId: number | null; scheduledMs: number }
     const raws: Raw[] = [];
     for (const day of dayList) {
@@ -276,7 +286,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
           bandHighMs: hasEst ? r.scheduledMs + (ev.p75 as number) * 1000 : null,
           medianDelaySec: hasEst ? (ev.p50 as number) : null,
         },
-        evidence: { n: ev.n, windowDays: 14, bucket: ev.bucket },
+        evidence: { n: ev.n, windowDays: WINDOW_DAYS, bucket: ev.bucket },
       };
     });
 

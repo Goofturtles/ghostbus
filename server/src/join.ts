@@ -139,7 +139,11 @@ export function claimTrips(rtTrips: RtTripInput[], index: RouteStopIndex, opts: 
   heads.sort((a, b) => b.votes - a.votes || (a.rtTripId < b.rtTripId ? -1 : 1));
 
   const assignedRt = new Set<string>();
-  // Iterate until no more progress; losers fall back to next-best unclaimed candidate.
+  // Single pass by construction: every head sets progress=true and is added to assignedRt
+  // on this iteration — either it claims its best unclaimed candidate, or (no candidate left)
+  // it is marked unmatched. So after the first for-loop every rtTripId is in assignedRt and
+  // the second while-iteration is a no-op. The while/progress guard is a belt-and-suspenders
+  // termination guarantee, not a multi-round relaxation; it cannot loop unbounded.
   let progress = true;
   while (progress) {
     progress = false;

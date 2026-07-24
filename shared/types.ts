@@ -31,6 +31,8 @@ export interface HealthResponse {
   lastPollAtMs: number | null;
   collectorMode: 'in-process' | 'external';
   feeds: Record<FeedId, FeedStatus>;
+  /** the loaded static GTFS board's calendar coverage, "YYYYMMDD..YYYYMMDD". */
+  boardCoverage: string;
   serverNowMs: number;
 }
 
