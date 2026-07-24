@@ -1,0 +1,51 @@
+{
+  "name": "ghostbus",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "GhostBus — an accountability engine with a transit app attached. Live voxel transit that tells riders the truth.",
+  "scripts": {
+    "dev": "concurrently -k -n server,web -c magenta,cyan \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:web": "vite",
+    "dev:server": "tsx watch server/index.ts",
+    "build": "tsc -p tsconfig.node.json && vite build",
+    "preview": "vite preview",
+    "start": "node --import tsx server/index.ts",
+    "seed:toronto": "tsx server/src/seed_toronto.ts",
+    "collect": "tsx server/src/collect.ts",
+    "test": "node --import tsx --test server/src/tz.test.ts server/src/gtfs.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "fastify": "^4.28.1",
+    "@fastify/static": "^7.0.4",
+    "@fastify/rate-limit": "^9.1.0",
+    "@electric-sql/pglite": "^0.5.4",
+    "adm-zip": "^0.6.0",
+    "csv-parse": "^7.0.1",
+    "gtfs-realtime-bindings": "^1.1.1",
+    "i18next": "^23.15.1",
+    "pg": "^8.22.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-i18next": "^15.0.2",
+    "three": "^0.169.0",
+    "zustand": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.8",
+    "@types/node": "^20.16.10",
+    "@types/pg": "^8.20.0",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.0",
+    "@types/three": "^0.169.0",
+    "@vitejs/plugin-react": "^4.3.2",
+    "concurrently": "^9.0.1",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.2",
+    "vite": "^5.4.8"
+  }
+}

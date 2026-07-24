@@ -1,0 +1,119 @@
+/* GhostBus design tokens — the single source of visual truth.
+   Two complete themes (dark = "Night transit", the hero; light = "Daylight").
+   Depth comes from tone + shadow, never hard borders. */
+
+:root {
+  /* Motion — declared once, used everywhere. Never ease/linear on visible motion. */
+  --ease-standard: cubic-bezier(0.4, 0, 0.6, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.28, 0.11, 0.32, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --dur-micro: 240ms;
+  --dur-reveal: 720ms;
+
+  /* Brand + status — meaning-locked, one job per color. */
+  --brand: #8944ab;         /* wordmark + the app accent (selection, Catch, walk path) */
+  --brand-strong: #9a54bd;
+  --brand-soft: rgba(137, 68, 171, 0.14);
+  --live: #34c759;          /* the small live dot + the word "Live" only */
+  --warn: #ffb020;          /* stale / warning */
+  --danger: #ff453a;        /* cancelled / error only */
+  --you: #0a84ff;           /* platform-convention blue, the You beacon */
+  --ghost: #7fe7dc;         /* ghost cyan */
+
+  /* Spacing scale (4pt) */
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 20px; --s6: 24px;
+  --s8: 32px; --s10: 40px; --s12: 48px; --s16: 64px;
+
+  /* Radii */
+  --r-sm: 10px; --r-md: 16px; --r-lg: 22px; --r-pill: 980px;
+
+  --tab-h: 60px;
+  --topbar-h: 58px;
+
+  /* Fonts — system stack only, zero webfont downloads. */
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --tabular: "tnum" 1, "lnum" 1;
+}
+
+/* ---------- DARK (default, the hero) ---------- */
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0b0e1a;
+  --bg-deep: #070912;
+  --surface: rgba(24, 28, 44, 0.72);
+  --surface-solid: #171b2b;
+  --surface-2: rgba(30, 35, 54, 0.6);
+  --glass: rgba(20, 24, 40, 0.66);
+  --glass-strong: rgba(20, 24, 40, 0.82);
+  --hairline: rgba(255, 255, 255, 0.06);
+  --hairline-2: rgba(255, 255, 255, 0.09);
+
+  --text: #f5f5f7;
+  --text-2: #a1a1a6;
+  --text-3: #6f7280;
+  --on-brand: #ffffff;
+
+  /* Map diorama palette — violet-charcoal family. */
+  --map-ground: #12132a;
+  --map-block: #211f3d;
+  --map-block-2: #2a2748;
+  --map-street: #33314f;
+  --map-street-hi: #3b3960;
+  --map-sky-top: #0a0c1c;
+  --map-sky-bot: #241a3a;
+  --route-red: #ff4d4d;
+
+  --shadow-card: 0 18px 40px -22px rgba(0, 0, 0, 0.75);
+  --shadow-float: 0 30px 70px -30px rgba(0, 0, 0, 0.8);
+  --inner-top: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+/* ---------- LIGHT (Daylight, first-class) ---------- */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #eef0f5;
+  --bg-deep: #e4e7ef;
+  --surface: rgba(255, 255, 255, 0.86);
+  --surface-solid: #ffffff;
+  --surface-2: rgba(255, 255, 255, 0.7);
+  --glass: rgba(255, 255, 255, 0.72);
+  --glass-strong: rgba(255, 255, 255, 0.88);
+  --hairline: rgba(15, 18, 30, 0.08);
+  --hairline-2: rgba(15, 18, 30, 0.12);
+
+  --text: #14161d;
+  --text-2: #565a66;
+  --text-3: #8a8e99;
+  --on-brand: #ffffff;
+
+  /* Daylight map — real navigational contrast: darker ground, shaded roofs. */
+  --map-ground: #c9cede;
+  --map-block: #e7e3f0;
+  --map-block-2: #d9d4e8;
+  --map-street: #f3f2f8;
+  --map-street-hi: #ffffff;
+  --map-sky-top: #cfe0f5;
+  --map-sky-bot: #eef1f8;
+  --route-red: #e23434;
+
+  --shadow-card: 0 16px 34px -24px rgba(20, 22, 40, 0.4);
+  --shadow-float: 0 26px 60px -30px rgba(20, 22, 40, 0.45);
+  --inner-top: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+/* High-contrast opt-in (Access Profile). */
+:root[data-contrast="high"] {
+  --text-2: var(--text);
+  --hairline: rgba(255, 255, 255, 0.24);
+}
+:root[data-theme="light"][data-contrast="high"] {
+  --text-2: #14161d;
+  --hairline: rgba(15, 18, 30, 0.28);
+}
+
+/* Larger-text opt-in. */
+:root[data-textsize="large"] { font-size: 18px; }
+:root[data-textsize="xlarge"] { font-size: 20px; }

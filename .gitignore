@@ -1,0 +1,8 @@
+node_modules
+dist
+.env
+.data
+*.local
+.DS_Store
+server/data/gtfs-cache
+*.log
