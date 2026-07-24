@@ -14,7 +14,21 @@ installed (from `node_modules/<pkg>/package.json`) after `npm install`.
 | `csv-parse`               | `^7.0.1`              | 7.0.1     | 7.0.1                   | stream-parse GTFS CSVs (ships its own types) |
 | `gtfs-realtime-bindings`  | `^1.1.1` (pre-existing)| 1.1.1    | 2.1.0 (latest) also verified | decode GTFS-realtime protobuf |
 
-## Dev dependencies added
+## Runtime dependencies added for Phase 2
+
+| Package            | Range in package.json | Installed | Verified via `npm view` | Purpose |
+|--------------------|-----------------------|-----------|-------------------------|---------|
+| `@fastify/cors`    | `^9.0.1`              | 9.0.1     | 9.0.1 (v9 = Fastify 4)  | CORS locked to same-origin + localhost dev |
+| `@fastify/helmet`  | `^11.1.1`             | 11.1.1    | 11.1.1 (v11 = Fastify 4)| security response headers |
+
+`@fastify/rate-limit@^9.1.0` and `@fastify/static@^7.0.4` were already present (both Fastify-4
+compatible) and are reused by the API. Fastify is pinned at `^4.28.1`, so the Fastify-4 majors
+(cors 9, helmet 11) were chosen over the Fastify-5 majors (cors 10+, helmet 12+).
+
+**Removed in Phase 2:** `three` + `@types/three` (imported nowhere — dead; the old voxel scene
+was deleted). See DECISIONS.md §10.
+
+## Dev dependencies added (Milestone 0)
 
 | Package            | Range      | Installed | Verified | Purpose |
 |--------------------|------------|-----------|----------|---------|

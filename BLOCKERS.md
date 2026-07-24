@@ -47,3 +47,29 @@ schedule-vs-live signal and remains the collector's primary honest output for no
 This is a known characteristic of TTC's NextBus/Umo-derived GTFS-realtime feed; its
 realtime trip identifiers are not the static GTFS `trip_id`s. Nothing here is a bug in
 the collector — the collector's job was to detect and report this, which it did.
+
+### RESOLVED in Phase 2 — route + reconstructed-schedule-time join (with a caveat)
+
+Phase 2 builds the fallback join (`server/src/join.ts`). Measured on live TTC data:
+
+- RT `TripDescriptor` **omits `start_time` AND `start_date`** (both empty strings on all
+  1200 vehicles / 1876 trip updates) — so the spec's literal `(route_id, start_date,
+  start_time)` key is impossible as written.
+- RT `route_id` **matches** the static `route_id` (174/175 distinct present).
+- RT `stop_id` (per StopTimeUpdate) is **~60–70%** present in static `stops`.
+- Each StopTimeUpdate carries an explicit `delay` + predicted `time`.
+
+So the join reconstructs `scheduled = predicted_time − delay` per stop and claims the static
+trip whose `(route_id, stop_id, departure_s)` agrees on **≥2 stops** within ±75s. This is exact
+by the GTFS definition of `delay` when the RT feed and loaded static are the same board.
+
+**Measured join rate on live data (this run): 0.0%** — and it is honest, not broken. The machine
+clock is **2026-07-24** but this feed's calendar board is **2026-07-26 … 2026-09-05**, so (a) there
+is **0 calendar-active service today** (0 due trips → an honest **ghosts = 0**, never a fabricated
+one), and (b) the currently-running RT references the pre-Jul-26 board that is not in our static
+data, so reconstructed times don't align with the loaded timetable (an independent probe: 3.8% of
+trips get one coincidental vote, 0% get the required two). The mass-ghost breaker never tripped
+(0/0). When the clock falls inside the feed's board period, `predicted − delay` equals the loaded
+`departure_s` by definition and the join becomes near-exact — the mechanism is proven by unit
+tests (`server/src/join.test.ts`). Delay observations are unaffected and remain the primary honest
+signal (27k+ obs collected). See DECISIONS.md §12–§14.
