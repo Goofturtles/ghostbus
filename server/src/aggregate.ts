@@ -65,49 +65,65 @@ export async function runAggregation(db: Db): Promise<AggregateResult> {
   const supported = await percentileContSupported(db);
 
   const cutoff = new Date(Date.now() - WINDOW_DAYS * 86_400_000).toISOString();
-  const obs = await db.query<{ route_id: string; stop_id: string; hour_of_week: number; delay_s: number }>(
-    `SELECT route_id, stop_id, hour_of_week, delay_s FROM trip_delay_obs
-     WHERE agency=$1 AND ts >= $2 AND delay_s IS NOT NULL AND route_id IS NOT NULL AND stop_id IS NOT NULL AND hour_of_week IS NOT NULL`,
+  // THE FILTER IS LOAD-BEARING. trip_delay_obs also holds rows written before the delay
+  // engine existed, when the collector recorded a protobuf default (an absent `delay`
+  // decoding as 0) as if it were a measurement. Those rows are all exactly zero. Letting
+  // them through would drag every percentile to 0 and make the app look confidently
+  // punctual — the single worst failure this project could ship. They are marked
+  // method='legacy_feed_delay_zero' by migration 004 and excluded here; only genuine
+  // schedule-difference rows, at high confidence, through a confident stop crosswalk, are
+  // evidence. aggregate.test.ts exists specifically to stop this line being deleted.
+  const obs = await db.query<{ route_id: string; stop_id: string; hour_of_week: number; delay_s: number; static_trip_id: string | null }>(
+    `SELECT route_id, stop_id, hour_of_week, delay_s, static_trip_id FROM trip_delay_obs
+     WHERE agency=$1 AND ts >= $2 AND delay_s IS NOT NULL
+       AND route_id IS NOT NULL AND stop_id IS NOT NULL AND hour_of_week IS NOT NULL
+       AND method = 'sched_diff' AND confidence = 'high' AND xwalk_conf >= 0.60`,
     [AGENCY, cutoff]);
 
   // Group by composite key but carry the parsed components in the value, so we never
   // split the key back apart (a route_id/stop_id with an odd character can't misparse).
-  interface StopGroup { routeId: string; stopId: string; how: number; delays: number[] }
-  interface RouteGroup { routeId: string; how: number; delays: number[] }
+  interface StopGroup { routeId: string; stopId: string; how: number; delays: number[]; trips: Set<string> }
+  interface RouteGroup { routeId: string; how: number; delays: number[]; trips: Set<string> }
   const stopHour = new Map<string, StopGroup>();
   const routeHour = new Map<string, RouteGroup>();
   for (const r of obs.rows) {
     const d = Number(r.delay_s);
     const how = Number(r.hour_of_week);
+    const trip = r.static_trip_id;
     const shKey = `${r.route_id}${SEP}${r.stop_id}${SEP}${how}`;
     let sh = stopHour.get(shKey);
-    if (!sh) { sh = { routeId: r.route_id, stopId: r.stop_id, how, delays: [] }; stopHour.set(shKey, sh); }
+    if (!sh) { sh = { routeId: r.route_id, stopId: r.stop_id, how, delays: [], trips: new Set() }; stopHour.set(shKey, sh); }
     sh.delays.push(d);
+    if (trip) sh.trips.add(trip);
     const rhKey = `${r.route_id}${SEP}${how}`;
     let rh = routeHour.get(rhKey);
-    if (!rh) { rh = { routeId: r.route_id, how, delays: [] }; routeHour.set(rhKey, rh); }
+    if (!rh) { rh = { routeId: r.route_id, how, delays: [], trips: new Set() }; routeHour.set(rhKey, rh); }
     rh.delays.push(d);
+    if (trip) rh.trips.add(trip);
   }
 
   const updatedAt = new Date().toISOString();
+  // n_trips is carried alongside n so the evidence panel can say "N observations across M
+  // distinct trips". N observations that all came from one very late bus is a much weaker
+  // claim than N observations from M buses, and the two must not look identical.
   const stopHourRows: unknown[][] = [];
   for (const g of stopHour.values()) {
     const pc = percentiles(g.delays);
     if (!pc) continue;
-    stopHourRows.push([AGENCY, g.routeId, g.stopId, g.how, g.delays.length, Math.round(pc.p25), Math.round(pc.p50), Math.round(pc.p75), updatedAt]);
+    stopHourRows.push([AGENCY, g.routeId, g.stopId, g.how, g.delays.length, Math.round(pc.p25), Math.round(pc.p50), Math.round(pc.p75), updatedAt, g.trips.size]);
   }
   const routeHourRows: unknown[][] = [];
   for (const g of routeHour.values()) {
     const pc = percentiles(g.delays);
     if (!pc) continue;
-    routeHourRows.push([AGENCY, g.routeId, g.how, g.delays.length, Math.round(pc.p25), Math.round(pc.p50), Math.round(pc.p75), updatedAt]);
+    routeHourRows.push([AGENCY, g.routeId, g.how, g.delays.length, Math.round(pc.p25), Math.round(pc.p50), Math.round(pc.p75), updatedAt, g.trips.size]);
   }
 
   await db.transaction(async (tx) => {
     await tx.query('DELETE FROM agg_delay WHERE agency=$1', [AGENCY]);
-    await insertAgg(tx, 'agg_delay', ['agency', 'route_id', 'stop_id', 'hour_of_week', 'n', 'p25', 'p50', 'p75', 'updated'], stopHourRows);
+    await insertAgg(tx, 'agg_delay', ['agency', 'route_id', 'stop_id', 'hour_of_week', 'n', 'p25', 'p50', 'p75', 'updated', 'n_trips'], stopHourRows);
     await tx.query('DELETE FROM agg_delay_route WHERE agency=$1', [AGENCY]);
-    await insertAgg(tx, 'agg_delay_route', ['agency', 'route_id', 'hour_of_week', 'n', 'p25', 'p50', 'p75', 'updated'], routeHourRows);
+    await insertAgg(tx, 'agg_delay_route', ['agency', 'route_id', 'hour_of_week', 'n', 'p25', 'p50', 'p75', 'updated', 'n_trips'], routeHourRows);
   });
 
   return {

@@ -114,10 +114,10 @@ test('an implausible delay is DROPPED AND COUNTED, never clamped', () => {
   const r = settleTrip(input({
     prev: new Map([[1, stop(1, 'a1', DAY0 + 9 * 3600 + 6000)]]),
   }));
-  assert.deepEqual(r.rows, [], 'the emitted array is empty');
-  assert.equal(r.counters.droppedImplausible, 1);
   // Specifically NOT clamped to the limit: a censored distribution is a dishonest one.
-  assert.equal(r.rows.find((x) => x.delayS === MAX_PLAUSIBLE_DELAY_S), undefined);
+  assert.equal(r.rows.some((x) => x.delayS === MAX_PLAUSIBLE_DELAY_S), false, 'never clamped');
+  assert.equal(r.rows.length, 0, 'the emitted array is empty');
+  assert.equal(r.counters.droppedImplausible, 1);
 
   // Just inside the limit still counts, in both directions.
   const late = settleTrip(input({ prev: new Map([[1, stop(1, 'a1', DAY0 + 9 * 3600 - 10 + 5400)]]) }));

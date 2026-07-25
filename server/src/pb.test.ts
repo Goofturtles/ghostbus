@@ -6,12 +6,18 @@ import { present, presentInt, presentStr } from './pb.ts';
 const { transit_realtime } = GtfsRealtimeBindings;
 
 // Encode -> decode, so we exercise the real wire format rather than a create()d object
-// that still carries whatever properties the constructor happened to assign.
-function roundTrip<T extends { encode(m: object): { finish(): Uint8Array }; decode(b: Uint8Array): object }>(
-  type: T, obj: object,
-): { decoded: object; bytes: number } {
-  const buf = type.encode(type.create ? (type as unknown as { create(o: object): object }).create(obj) : obj).finish();
-  return { decoded: type.decode(buf), bytes: buf.length };
+// that still carries whatever properties the constructor happened to assign. The message
+// classes are structurally identical but not nominally related, so the parameter is typed
+// to the shape we use rather than to any one of them.
+interface PbType {
+  create(o: object): object;
+  encode(m: object): { finish(): Uint8Array };
+  decode(b: Uint8Array): object;
+}
+function roundTrip(type: unknown, obj: object): { decoded: object; bytes: number } {
+  const t = type as PbType;
+  const buf = t.encode(t.create(obj)).finish();
+  return { decoded: t.decode(buf), bytes: buf.length };
 }
 
 test('THE ROOT CAUSE: an absent delay decodes as 0 but is not present on the wire', () => {

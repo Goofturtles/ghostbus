@@ -4,22 +4,33 @@
 // What it does every POLL_MS:
 //   - fetches the three TTC feeds (conditional requests, timeout, backoff),
 //   - keeps current vehicle positions in an in-memory map (never persisted),
-//   - writes honest delay observations to trip_delay_obs (feed-provided delays only),
-//   - runs the Phase-2 identity join (route + reconstructed schedule time) to decide
-//     which static trips are present, then detects ghosts / cancelled among the
-//     calendar-active, due-but-absent trips, with a mass-ghost sanity breaker,
+//   - hands the decoded feeds to the delay engine (server/src/engine.ts), which learns
+//     the RT->static stop crosswalk, binds realtime trips to static trips, and writes
+//     genuine delay observations as (predicted_time - scheduled_time),
+//   - decides which static trips are present from the engine's bindings, then detects
+//     ghosts / cancelled among the calendar-active, due-but-absent trips, with a
+//     mass-ghost sanity breaker,
 //   - upserts the current service_alerts snapshot.
 //
+// WHAT USED TO BE HERE, AND WHY IT IS GONE. The old identity join reconstructed a
+// scheduled time as (predicted - delay) and matched that against static stop_times. The
+// TTC feed publishes no delay field at all (see pb.ts), so protobuf.js's proto2 default
+// made that expression `predicted - 0 === predicted` — the join compared predictions
+// against predictions, which is why its measured rate was 0%, and every one of the
+// 300k+ delay observations it recorded was a decoder artifact. Both the join and that
+// write are deleted rather than patched: no code path may reconstruct a scheduled time
+// from the feed. Scheduled time comes only from our own seeded stop_times.
+//
 // `createPoller(db)` returns a handle with start/stop and getters the API reads from.
-// All the Phase-1 honesty guards are intact: feedsFresh, dedupe, retention, eviction,
-// bogus-delay drop, and now a measured join rate + mass-ghost breaker instead of the
-// trip_id match-rate gate (which was structurally impossible — see BLOCKERS.md).
+// All the Phase-1 honesty guards are intact: feedsFresh, retention, eviction, the
+// mass-ghost breaker, and now the delay engine's own gates on top.
 
 import GtfsRealtimeBindings from 'gtfs-realtime-bindings';
 import type { Db } from './db.ts';
 import { activeServiceIds, type CalendarRow, type CalendarDateRow } from './gtfs.ts';
-import { torontoDay, torontoMidnightEpoch, hourOfWeek, torontoYmd } from './tz.ts';
-import { buildRouteStopIndex, claimTrips, indexKey, type RouteStopIndex, type RtTripInput, type RtStopObs } from './join.ts';
+import { torontoDay, torontoMidnightEpoch, torontoYmd, serviceYmd } from './tz.ts';
+import { presentInt, presentStr } from './pb.ts';
+import { createDelayEngine, type DelayEngineStats, type EngineVehicle, type EngineTripUpdate, type EngineStopUpdate } from './engine.ts';
 import type { FeedId, FeedStatusKind } from '../../shared/types.ts';
 
 const { transit_realtime } = GtfsRealtimeBindings;
@@ -39,9 +50,6 @@ const GHOST_MAX_AGE_MS = 30 * 60_000;
 const RETENTION_DAYS = 14;
 const RING_BUFFER = 6;
 const EVICT_AFTER_CYCLES = 10;
-const MAX_SANE_DELAY_S = 24 * 3600;
-const JOIN_TOL_SEC = 75;               // ± window for a reconstructed schedule second
-const JOIN_MIN_VOTES = 2;              // need >=2 consistent stops to claim a static trip
 const MASS_GHOST_FRACTION = 0.30;      // suppress a cycle emitting ghosts for >30% of due trips
 const MASS_GHOST_ROUTE_MIN_DUE = 4;    // per-route breaker only applies once a route has >=4 due trips
 const GHOST_CONFIRM_MISSES = 2;        // a trip must be absent this many consecutive cycles before it's a ghost
@@ -88,9 +96,11 @@ export interface FeedRuntime {
   sinceMs: number | null;
 }
 
+export type { DelayEngineStats } from './engine.ts';
+
 export interface JoinStats {
   indexReady: boolean;
-  lastJoinRate: number | null;      // claims / RT trips considered, last cycle
+  lastJoinRate: number | null;      // bound RT trips / RT trips considered, last cycle
   cumulativeClaimed: number;
   cumulativeRt: number;
   lastGhosts: number;
@@ -105,6 +115,10 @@ export interface JoinStats {
   lastCanceledIdentified: number;   // ...that we could tie to a static trip
   lastCanceledUnidentified: number; // ...that we could not (anonymous — counted, never faked)
   boardCoverage: string;            // min..max calendar date of the loaded static board
+  // Everything the delay engine measured this cycle, including the reason it is (or is
+  // not) publishing. NOTE FOR THE api.ts OWNER: /api/health currently reads only
+  // boardCoverage off this object; `delayEngine` is new and should be surfaced.
+  delayEngine: DelayEngineStats;
 }
 
 export interface PollerHandle {
@@ -145,14 +159,16 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
   let calendarDates: CalendarDateRow[] = [];
   const activeServiceCache = new Map<number, Set<string>>();
   const midnightCache = new Map<number, number>();
-  let routeStopIndex: RouteStopIndex = new Map();
-  let indexReady = false;
   let boardCoverage = '?..?';
   let lastStaticLoadAt = 0;
   let lastStaticLoadYmd = 0;
   let staticReloading = false;
 
-  const delayDedupe = new Map<string, number>();
+  // The delay engine owns the static pattern index, the learned stop crosswalk, trip
+  // binding, and every delay row written. The poller feeds it decoded feeds and asks it
+  // which static trips are present.
+  const engine = createDelayEngine(db, AGENCY);
+
   // Ghost confirmation/retraction state (keyed `${tripId}|${startEpoch}`):
   const ghostMissStreak = new Map<string, number>();   // consecutive cycles a due trip has been absent
   const ghostInserted = new Map<string, { tripId: string; startEpoch: number }>(); // ghost rows we wrote this run
@@ -171,6 +187,7 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
     lastUnmatchedRt: 0, lastUnmatchedVehicles: 0,
     retractionsTotal: 0, lastRetracted: 0, lastCanceledSeen: 0, lastCanceledIdentified: 0,
     lastCanceledUnidentified: 0, boardCoverage: '?..?',
+    delayEngine: engine.getStats(),
   };
   let lastRetentionYmd = 0;
   let stopping = false;
@@ -281,27 +298,12 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
     })();
   }
 
-  // Build the (route, stop) -> [{trip, depSec}] index over ALL loaded static trips.
-  // Date-independent, so built once; the join votes against everything we have and
-  // ghost detection then intersects claims with the calendar-active due set.
+  // Build the static PATTERN index the delay engine matches against. Measured at 109 s
+  // and 71 MB of heap over Neon (2.15M stop_times, keyset-paged), so it is always built
+  // in the background and never on a request path.
   async function buildIndex(): Promise<void> {
-    const t0 = Date.now();
-    const tripRoute = new Map<string, string>();
-    const tr = await db.query<{ trip_id: string; route_id: string | null }>('SELECT trip_id, route_id FROM trips WHERE agency=$1', [AGENCY]);
-    for (const r of tr.rows) if (r.route_id) tripRoute.set(r.trip_id, r.route_id);
-    const rows: Array<{ routeId: string; stopId: string; depSec: number; tripId: string }> = [];
-    const st = await db.query<{ trip_id: string; stop_id: string; dep: number | null }>(
-      'SELECT trip_id, stop_id, COALESCE(departure_s, arrival_s) AS dep FROM stop_times WHERE agency=$1', [AGENCY]);
-    for (const r of st.rows) {
-      if (r.dep == null) continue;
-      const routeId = tripRoute.get(r.trip_id);
-      if (!routeId) continue;
-      rows.push({ routeId, stopId: r.stop_id, depSec: Number(r.dep), tripId: r.trip_id });
-    }
-    routeStopIndex = buildRouteStopIndex(rows);
-    indexReady = true;
-    joinStats.indexReady = true;
-    console.log(`[poller] join index ready: ${routeStopIndex.size} (route,stop) keys from ${rows.length} stop_times (${((Date.now() - t0) / 1000).toFixed(1)}s)`);
+    await engine.reloadStatic(boardCoverage);
+    joinStats.indexReady = engine.isReady();
   }
 
   function servicesForYmd(ymd: number, dow: number): Set<string> {
@@ -366,13 +368,19 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
     rtTripId: string;
     routeId: string | null;
     canceled: boolean;
-    reconstructed: RtStopObs[];               // stops usable for the identity join
-    predictions: Array<{ stopId: string; timeMs: number }>; // upcoming predicted times
+    /** upcoming predicted event times, keyed by RT stop id, for arrivals' liveEtaMs. */
+    predictions: Array<{ rtStopId: string; timeMs: number }>;
+    /** the same trip update, shaped for the delay engine. */
+    engine: EngineTripUpdate;
   }
 
-  function processTripUpdates(
-    msg: FeedMessage, now: number, vehicleSeqByTrip: Map<string, number>, obsRows: unknown[][], midToday: number,
-  ): { count: number; parsed: TripUpdateParsed[] } {
+  /**
+   * Decode trip updates. NOTHING is written to trip_delay_obs here any more, and no
+   * scheduled time is reconstructed from the feed — the feed carries no delay to
+   * reconstruct one from. Every optional scalar goes through pb.ts so an absent field
+   * stays absent instead of decoding as a proto2 default.
+   */
+  function processTripUpdates(msg: FeedMessage): { count: number; parsed: TripUpdateParsed[] } {
     const CANCELED = transit_realtime.TripDescriptor.ScheduleRelationship.CANCELED;
     const parsed: TripUpdateParsed[] = [];
     let n = 0;
@@ -380,67 +388,65 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
       const tu = e.tripUpdate;
       if (!tu) continue;
       n++;
-      const rtTripId = tu.trip?.tripId ?? null;
-      const routeId = tu.trip?.routeId ?? null;
-      const startDate = tu.trip?.startDate ? Number(tu.trip.startDate) : null;
-      const canceled = tu.trip?.scheduleRelationship === CANCELED;
-      const reconstructed: RtStopObs[] = [];
-      const predictions: Array<{ stopId: string; timeMs: number }> = [];
-      const seqNow = rtTripId ? vehicleSeqByTrip.get(rtTripId) ?? null : null;
+      const rtTripId = presentStr(tu.trip, 'tripId');
+      const routeId = presentStr(tu.trip, 'routeId');
+      const sr = presentInt(tu.trip, 'scheduleRelationship');
+      const canceled = sr === CANCELED;
+      const predictions: Array<{ rtStopId: string; timeMs: number }> = [];
+      const engineStops: EngineStopUpdate[] = [];
 
       for (const stu of tu.stopTimeUpdate ?? []) {
-        const stopId = stu.stopId ?? null;
-        if (!stopId) continue;
-        const stopSeq = stu.stopSequence && stu.stopSequence > 0 ? stu.stopSequence : null;
-        // Read time AND delay from the SAME StopTimeEvent (prefer departure when it has a
-        // time, else arrival) — never mix a departure time with an arrival delay, or the
-        // reconstructed schedule second would be garbage.
-        const ev = stu.departure?.time != null ? stu.departure
-          : stu.arrival?.time != null ? stu.arrival
-          : (stu.departure ?? stu.arrival ?? null);
-        const evTime = ev ? toNum(ev.time) : null;
-        // `delay` must be an OWN property. GTFS-realtime is proto2 and protobuf.js
-        // materialises field defaults on the prototype, so `ev.delay` reads 0 even when
-        // the producer never sent the field — `!= null` cannot tell "on time" from
-        // "not reported". TTC sends `time` on every StopTimeEvent and `delay` on none,
-        // so the old check recorded 314,033 observations of a decoder default and the
-        // evidence gates then treated them as measurements. Absence must stay absent.
-        const delay = ev && Object.prototype.hasOwnProperty.call(ev, 'delay') && ev.delay != null
-          ? toNum(ev.delay)
-          : null;
+        const rtStopId = presentStr(stu, 'stopId');
+        const stopSequence = presentInt(stu, 'stopSequence');
+        // scheduleRelationship 2 is NO_DATA, not SKIPPED (verified: SKIPPED count is 0 and
+        // NO_DATA is ~500 per snapshot). NO_DATA carries no time; imputing an on-time
+        // arrival for it would be exactly the fabrication this engine exists to remove.
+        const stuSr = presentInt(stu, 'scheduleRelationship');
+        const noData = stuSr === 2;
 
-        // Live prediction for arrivals (future stops): keep the predicted event time.
-        if (evTime != null) predictions.push({ stopId, timeMs: evTime * 1000 });
+        // Take time from ONE StopTimeEvent, never mixing the two. Measured: 22,391
+        // arrival-only, 602 departure-only, 0 carrying both — so the event kind is
+        // unambiguous per stop and determines whether we compare against the scheduled
+        // arrival or the scheduled departure.
+        const depTime = presentInt(stu.departure, 'time');
+        const arrTime = presentInt(stu.arrival, 'time');
+        const kind: 'arrival' | 'departure' = depTime != null ? 'departure' : 'arrival';
+        const epochS = depTime ?? arrTime;
 
-        // Identity-join reconstruction: scheduled = predicted - delay (delay is defined
-        // relative to the static schedule). Only usable when both are present and the
-        // stop is in a route/stop namespace we have.
-        if (evTime != null && delay != null && Math.abs(delay) <= MAX_SANE_DELAY_S && routeId && routeStopIndex.has(indexKey(routeId, stopId))) {
-          const schedSec = Math.round(((evTime - delay) * 1000 - midToday) / 1000);
-          reconstructed.push({ stopId, schedSec });
-        }
-
-        // Honest delay observation (unchanged Phase-1 logic): only at passed stops with
-        // an explicit delay; keyed for DB-enforced idempotency.
-        const passedBySeq = seqNow != null && stopSeq != null && stopSeq < seqNow;
-        const passedByTime = evTime != null && evTime * 1000 <= now;
-        if (!passedBySeq && !passedByTime) continue;
-        if (delay == null || Math.abs(delay) > MAX_SANE_DELAY_S) continue;
-        const serviceDate = startDate ?? torontoYmd(now);
-        const dkey = `${rtTripId}|${stopId}`;
-        if (delayDedupe.get(dkey) === serviceDate) continue;
-        delayDedupe.set(dkey, serviceDate);
-        // Bucket by the SCHEDULED hour_of_week (scheduled = event - delay). Arrivals
-        // reads the evidence bucket by the departure's scheduled time, so the write key
-        // must be the scheduled hour too, not the actual event hour — otherwise a stop
-        // near an hour boundary (or with a large delay) lands in an adjacent bucket.
-        const scheduledEpoch = (evTime != null ? evTime * 1000 : now) - delay * 1000;
-        obsRows.push([AGENCY, routeId, stopId, rtTripId, hourOfWeek(scheduledEpoch), delay, serviceDate]);
+        if (rtStopId && epochS != null) predictions.push({ rtStopId, timeMs: epochS * 1000 });
+        if (rtStopId) engineStops.push({ stopSequence, rtStopId, epochS, kind, noData });
       }
 
-      if (rtTripId) parsed.push({ rtTripId, routeId, canceled, reconstructed, predictions });
+      if (rtTripId) {
+        parsed.push({
+          rtTripId, routeId, canceled, predictions,
+          engine: { rtTripId, routeId, scheduleRelationship: sr, stops: engineStops },
+        });
+      }
     }
     return { count: n, parsed };
+  }
+
+  /** Decoded vehicles, shaped for the delay engine's geometric anchors. */
+  function engineVehicles(msg: FeedMessage): EngineVehicle[] {
+    const out: EngineVehicle[] = [];
+    for (const e of msg.entity) {
+      const v = e.vehicle;
+      if (!v?.position) continue;
+      out.push({
+        vehicleId: presentStr(v.vehicle, 'id') ?? e.id,
+        routeId: presentStr(v.trip, 'routeId'),
+        rtTripId: presentStr(v.trip, 'tripId'),
+        rtStopId: presentStr(v, 'stopId'),
+        // MUST be presentInt: the proto2 default for currentStatus is IN_TRANSIT_TO (2),
+        // so `v.currentStatus` reads 2 for the 565 of 1,413 vehicles that never sent it.
+        currentStatus: presentInt(v, 'currentStatus'),
+        lat: v.position.latitude,
+        lon: v.position.longitude,
+        tsS: presentInt(v, 'timestamp'),
+      });
+    }
+    return out;
   }
 
   // A calendar-active static trip whose scheduled start is inside the ghost scan window.
@@ -527,9 +533,6 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
     const r = await db.query('DELETE FROM trip_delay_obs WHERE ts < $1', [cutoff]);
     lastRetentionYmd = ymd; // only mark done after a successful prune, so a failure retries
     if (r.rowCount > 0) console.log(`[poller][retention] deleted ${r.rowCount} obs older than ${RETENTION_DAYS}d`);
-    let pruned = 0;
-    for (const [k, sd] of delayDedupe) if (sd < ymd) { delayDedupe.delete(k); pruned++; }
-    if (pruned > 0) console.log(`[poller][retention] pruned ${pruned} stale dedupe keys`);
   }
 
   function evictStaleVehicles(cycle: number): void {
@@ -540,35 +543,22 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
     const now = Date.now();
     await retention(now);
     maybeReloadStatic(now);
-    const midToday = midnightForYmd(torontoDay(now).ymd);
 
     const [vr, tr, ar] = await Promise.all([fetchFeed('vehicles'), fetchFeed('trips'), fetchFeed('alerts')]);
     refreshStaleness(now);
 
     const vehicleTripIds = new Set<string>();
-    const obsRows: unknown[][] = [];
     let vehicles = 0;
     if (vr.status === 'ok') vehicles = processVehicles(vr.msg, vehicleTripIds, cycle);
     else console.log(`[poller][cycle ${cycle}] vehicles ${vr.status}${'reason' in vr && vr.reason ? `: ${vr.reason}` : ''}`);
     evictStaleVehicles(cycle);
 
-    // Vehicle current-stop-sequence keyed by RT trip id, for the passed-stop obs test.
-    const vehicleSeqByTrip = new Map<string, number>();
-    for (const v of positions.values()) if (v.tripId && v.seq != null) vehicleSeqByTrip.set(v.tripId, v.seq);
-
     let tripUpdates = 0;
     let parsed: TripUpdateParsed[] = [];
-    if (tr.status === 'ok') { const r = processTripUpdates(tr.msg, now, vehicleSeqByTrip, obsRows, midToday); tripUpdates = r.count; parsed = r.parsed; }
+    if (tr.status === 'ok') { const r = processTripUpdates(tr.msg); tripUpdates = r.count; parsed = r.parsed; }
     else console.log(`[poller][cycle ${cycle}] trips ${tr.status}${'reason' in tr && tr.reason ? `: ${tr.reason}` : ''}`);
 
-    let obsInserted = 0;
-    if (obsRows.length > 0) {
-      obsInserted = await insertRows('trip_delay_obs', ['agency', 'route_id', 'stop_id', 'trip_id', 'hour_of_week', 'delay_s', 'service_date'], obsRows,
-        'ON CONFLICT (agency, trip_id, stop_id, service_date) DO NOTHING');
-      totals.obs += obsInserted;
-    }
-
-    // ----- Phase-2 identity join -----
+    // ----- the delay engine -----
     // NOTE: TTC sends no ETag/Last-Modified and never returns 304 (measured — see
     // BLOCKERS.md), so a fresh cycle is always a real 200. feedsFresh therefore gates the
     // ghost scan on actually having this cycle's vehicle+trip snapshots, never on reusing
@@ -577,50 +567,80 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
     let ghostsIns = 0, cancelledIns = 0, retracted = 0, joinRate: number | null = null;
     let dueCount = 0, unmatchedRt = 0, unmatchedVehicles = 0;
     let canceledSeen = 0, canceledIdentified = 0, canceledUnidentified = 0;
-    if (indexReady) {
-      const rtTrips: RtTripInput[] = parsed
-        .filter((p) => p.routeId && p.reconstructed.length > 0)
-        .map((p) => ({ rtTripId: p.rtTripId, routeId: p.routeId as string, stops: p.reconstructed }));
-      const claim = claimTrips(rtTrips, routeStopIndex, { tolSec: JOIN_TOL_SEC, minVotes: JOIN_MIN_VOTES });
-      const consideredRt = parsed.filter((p) => p.routeId).length;
-      joinRate = consideredRt > 0 ? claim.claims.size / consideredRt : 0;
-      unmatchedRt = consideredRt - claim.claims.size;
-      joinStats.cumulativeClaimed += claim.claims.size;
-      joinStats.cumulativeRt += consideredRt;
-      const rtById = new Map(parsed.map((p) => [p.rtTripId, p]));
+    let obsInserted = 0;
 
-      // Rebuild the live-prediction store from this cycle's claimed (non-canceled) trips.
+    if (engine.isReady()) {
+      const serviceDate = serviceYmd(now);
+      const day = torontoDay(now);
+      const prevDay = torontoDay(now - 86_400_000);
+      const activeServices = servicesForYmd(day.ymd, day.dow);
+      // A trip that started before midnight is still running on yesterday's service day.
+      for (const s of servicesForYmd(prevDay.ymd, prevDay.dow)) activeServices.add(s);
+
+      if (feedsFresh && !staticReloading) {
+        try {
+          const res = await engine.runCycle({
+            nowMs: now,
+            serviceDate,
+            vehicles: vr.status === 'ok' ? engineVehicles(vr.msg) : [],
+            tripUpdates: parsed.map((p) => p.engine),
+            activeServices,
+          });
+          obsInserted = res.rows;
+          totals.obs += obsInserted;
+        } catch (e) {
+          console.error(`[poller][cycle ${cycle}] delay engine error:`, e);
+        }
+      }
+      joinStats.delayEngine = engine.getStats();
+
+      // "Present" now means the delay engine holds a live binding for the static trip.
+      const present = engine.getPresentStaticTrips();
+      const consideredRt = parsed.filter((p) => p.routeId).length;
+      joinRate = consideredRt > 0 ? present.size / consideredRt : 0;
+      unmatchedRt = consideredRt - present.size;
+      joinStats.cumulativeClaimed += present.size;
+      joinStats.cumulativeRt += consideredRt;
+
+      // Live predictions for the arrivals endpoint, keyed by STATIC trip + STATIC stop, so
+      // they are only published for trips we actually bound and stops we actually
+      // crosswalked. An unbound trip contributes nothing rather than a guess.
+      const bindingByRt = engine.getBindingsByRtTrip();
       const preds = new Map<string, Map<string, number>>();
-      for (const [rtTripId, staticTripId] of claim.claims) {
-        const p = rtById.get(rtTripId);
-        if (!p || p.canceled) continue;
+      for (const p of parsed) {
+        if (p.canceled) continue;
+        const b = bindingByRt.get(p.rtTripId);
+        if (!b) continue;
         const m = new Map<string, number>();
-        for (const pr of p.predictions) m.set(pr.stopId, pr.timeMs);
-        preds.set(staticTripId, m);
+        for (const pr of p.predictions) {
+          const staticStopId = engine.staticStopFor(pr.rtStopId);
+          if (staticStopId) m.set(staticStopId, pr.timeMs);
+        }
+        if (m.size > 0) preds.set(b, m);
       }
       livePredictions = preds;
 
-      // CANCELED entities (MAJOR 3): they ship no stop_time_update, so they cannot win the
-      // >=2-stop join. Identify them by a direct static trip_id match first, then by any join
-      // claim; anything left is genuinely anonymous — counted, never guessed. On the live TTC
-      // feed CANCELED entities are ~0 (measured), so this path is honestly dormant today.
+      // CANCELED entities: they ship no stop_time_update, so they can never be bound by the
+      // origin lock. Identify them by a direct static trip_id match first, then by an
+      // existing binding; anything left is genuinely anonymous — counted, never guessed. On
+      // the live TTC feed CANCELED entities are ~0 (measured), so this path is honestly
+      // dormant today.
       const canceledStatic = new Set<string>();
       for (const p of parsed) {
         if (!p.canceled) continue;
         canceledSeen++;
+        const bound = bindingByRt.get(p.rtTripId);
         if (staticTripIds.has(p.rtTripId)) { canceledStatic.add(p.rtTripId); canceledIdentified++; }
-        else if (claim.claims.has(p.rtTripId)) { canceledStatic.add(claim.claims.get(p.rtTripId)!); canceledIdentified++; }
+        else if (bound) { canceledStatic.add(bound); canceledIdentified++; }
         else canceledUnidentified++;
       }
 
-      // Vehicles with an RT trip id that never appeared in a claimed trip update can't
-      // be stop-matched — count them honestly (they may leave a trip looking absent).
-      const claimedRt = new Set(claim.claims.keys());
-      for (const tid of vehicleTripIds) if (!claimedRt.has(tid)) unmatchedVehicles++;
+      // Vehicles with an RT trip id that never appeared in a bound trip update can't be
+      // measured — count them honestly (they may leave a trip looking absent).
+      for (const tid of vehicleTripIds) if (!bindingByRt.has(tid)) unmatchedVehicles++;
 
-      const present = claim.claimedStatic;
       // Skip the ghost scan mid-reload too: tripStarts may already be the new board while
-      // the join index is still the old one, which would make new-board trips look absent.
+      // the pattern index is still the old one, which would make new-board trips look absent.
       if (feedsFresh && !staticReloading) {
         const dueList = computeDue(now, present);
         dueCount = dueList.length;
@@ -772,6 +792,6 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
     },
     getLivePredictionMs(staticTripId, stopId) { return livePredictions.get(staticTripId)?.get(stopId) ?? null; },
     getJoinStats() { return { ...joinStats }; },
-    isIndexReady() { return indexReady; },
+    isIndexReady() { return engine.isReady(); },
   };
 }
