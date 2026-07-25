@@ -1,7 +1,8 @@
 # DECISIONS.md
 
 Honest record of every non-obvious choice and every deviation from the brief.
-Milestone 0 decisions are in §1–§9; Phase 2 (API + honest ETAs + ghost identity join)
+Milestone 0 decisions are in §1–§9; Phase 2 (API + honest ETAs + ghost identity join — the join
+is since deleted; see §29 and §33)
 begins at §10.
 
 ## 1. Pre-existing scaffold was preserved, not overwritten (deviation from Deliverable 1)
@@ -121,7 +122,9 @@ RT ghost detection only makes sense if realtime `trip_id`s line up with static
 if it is below 50%, ghost/cancelled emission is **suppressed** (otherwise every scheduled
 trip would look like a ghost) and the mismatch is reported. See BLOCKERS.md for the
 empirical result on live TTC data. **Phase 2 replaces this gate** with the identity join
-in §12 and a mass-ghost breaker.
+in §12 and a mass-ghost breaker. *(That replacement was itself replaced: the §12 join is
+deleted. Ghost detection's "present" set now comes from the delay engine's live trip bindings.
+See §29.)*
 
 ---
 
@@ -152,7 +155,10 @@ The GTFS-realtime poll cycle + in-memory stores were extracted from the old mono
 intact). The API (`server/src/server.ts`) starts the same poller in-process, so `/api/vehicles`
 and `/api/health` read live state from memory — one process, per spec. All Phase-1 honesty
 guards are intact: feedsFresh gate, per-stop dedupe (+ DB unique), 14-day retention, vehicle
-eviction, bogus-delay drop.
+eviction, bogus-delay drop. *(Two of those are since obsolete rather than broken: §29 moved all
+delay writing into `engine.ts`, so `poller.ts` writes nothing to `trip_delay_obs` and there is
+no feed `delay` left to drop. The DB uniqueness constraint and the 14-day retention still
+apply, and migration 004 added a sequence-aware key alongside them for loop routes.)*
 
 ## 12. Identity join — DEVIATION from the literal `(route_id, start_date, start_time)` key
 
@@ -301,7 +307,9 @@ every **6h**, in the background (index rebuild is heavy), one at a time. `loadSt
 fresh structures and swaps them in atomically (`tripStarts` is now a reassignable binding), clears the
 active-service cache, and **logs the board coverage** (`min..max` calendar date) each load so a board
 change is visible. `/api/health` exposes `boardCoverage`. The ghost scan is additionally skipped while a
-reload is in flight (`staticReloading`) so it never runs with a new trip map against the old join index.
+reload is in flight (`staticReloading`) so it never runs with a new trip map against a stale
+index. *(§29: "the old join index" is now the delay engine's static pattern index, rebuilt by
+`patterns.ts`. The reload-ordering hazard this guards against is unchanged.)*
 
 **Known limitation (accepted):** the *API read-path* caches (`api.ts` `calendar`/`calendarDates`/
 `routeMeta`) are still loaded once at boot, so after a board re-seed `/api/stops/:id/arrivals` can serve
@@ -667,6 +675,10 @@ Live cycles from an empty crosswalk, real TTC feed, real Neon:
   and 66 reachable only by iterating to a fixpoint.
 
 ### Honest state today
+
+*(Written 2026-07-24. Re-verified 2026-07-25: unchanged in substance — the service date in the
+suppression string is now `20260725`, and the board still does not activate until 07-26. A
+sixth gate, `boardIntegrity`, has since been added; see §34.)*
 
 The loaded board covers **20260726..20260905** and the machine date is 2026-07-24, so **no static
 service is calendar-active**. The `boardActive` gate fires, the engine emits **zero** delay rows, and

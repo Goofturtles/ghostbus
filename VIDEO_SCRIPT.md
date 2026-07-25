@@ -64,7 +64,8 @@ look-up. Timecode or a wall clock visible in frame if you can get one naturally.
 
 **On-screen action**
 Black card, then the wordmark. `GhostBus` in the app's own type (screenshot the top-left
-lockup from `screenshots/phase4/desktop-dark-nearby.png` or re-render it at 4K).
+lockup from `screenshots/reference-match/PROD-desktop-dark-verified.png` or re-render it at 4K
+— not the phase4 stills, which predate the §30 shell rebuild).
 The one-liner types on in two lines.
 
 **Narration**
@@ -85,9 +86,10 @@ phase4 captures predate the shell rebuild (`DECISIONS.md` §30) and the voxel ma
 (§31–§32), so they no longer show what the app renders.
 
 1. (0:20) The Nearby view. Map card, every TTC vehicle in the viewport drawn as a voxel
-   sprite (roughly 15 in this frame; the collector tracked 1,190–1,232 fleet-wide per cycle on
-   2026-07-25 mid-afternoon, and more at peak — **read the count off the log on shoot day, and
-   do not say a fleet-wide number over a shot showing 15**), the **You** beacon, the
+   sprite (roughly 15 in this frame; the collector tracked **1,193–1,267 fleet-wide per cycle**
+   across the 87 cycles of the 2026-07-25 run, and more at weekday peak — **read the count off
+   the log on shoot day, and do not say a fleet-wide number over a shot showing 15**), the
+   **You** beacon, the
    boarding-stop pin, the beaded walk path. **The default-location walk reads "You · 4 min
    walk", not 1 min** — §32 moved `DEFAULT_LOCATION` (`web/src/hooks/useLive.ts`) to a point
    236 m from its nearest stop. Read whatever the screen says; do not narrate a distance.
@@ -346,7 +348,7 @@ Tick every line before the first take. Anything unticked is a reshoot, not a fix
       `join.ts` is deleted in favour of the delay engine. Re-confirm with a query on shoot day
       anyway. **(b) "It now measures how late Toronto's buses are"** — **not true yet, do not
       say it.** The engine's `boardActive` gate fails every cycle (the loaded board covers
-      `20260726..20260905`), its crosswalk coverage is 33.6% against a required 50%, and it has
+      `20260726..20260905`), its crosswalk coverage is 30.7% at cycle 84 against a required 50%, and it has
       never produced a delay row for a real trip. If you are shooting on or after 2026-07-26,
       re-check both gates before upgrading the claim — and if rows exist, read the actual
       `count(*)` and a real percentile off screen rather than describing them.

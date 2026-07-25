@@ -9,7 +9,7 @@ tells riders when the two stopped agreeing — without waiting for the agency to
 Repo layout, setup and run instructions: **see `README.md`.**
 
 > **Author's note before submitting.** Every number below carries the moment it was measured.
-> This document was re-verified end-to-end on **2026-07-25 (collector cycles 55–84)**, against the production
+> This document was re-verified end-to-end on **2026-07-25 (collector cycles 1–87 of that day's run)**, against the production
 > Neon database, the running collector's log, and the source. Where a figure moves on its own —
 > the fleet count, the crosswalk's coverage, the bundle sizes — it is given with its window
 > rather than as a round number. Anything still genuinely open is marked **[IN PROGRESS]** and
@@ -136,14 +136,14 @@ corrections described under Technical Execution landed *while this table was bei
 | Ours | Value | Window / caveat |
 |---|---|---|
 | Static schedule loaded (Neon Postgres) | 2,151,105 stop_times · 68,401 trips · 9,361 stops · 233 routes · 1,374 shapes | TTC GTFS board **2026-07-26 – 2026-09-05** |
-| Live vehicles tracked | **1,190–1,232 per cycle** across cycles 10–55 of the current run, plus one cycle that returned 0 (a feed miss, logged not hidden) | **`.data/` and `*.log` are gitignored and are not in a fresh clone.** A range, not a round number — the fleet in service varies by hour, and a mid-afternoon Saturday is not a weekday peak |
-| Realtime trip updates per cycle | 1,569–1,598 over the same cycles | |
+| Live vehicles tracked | **1,193–1,267 per cycle** across the run's 87 cycles, plus **two** cycles that returned 0 (feed misses, logged not hidden) | **`.data/` and `*.log` are gitignored and are not in a fresh clone.** A range, not a round number — the fleet in service varies by hour, and a mid-afternoon Saturday is not a weekday peak |
+| Realtime trip updates per cycle | **1,539–1,646** over the same cycles | |
 | Delay observations stored | **0** | Not "none yet collected" — **actively refused.** The engine's first gate (`boardActive`) fails, because there is no calendar-active service today. It reports why, in words, every cycle. See Technical Execution |
 | Aggregate buckets built | **0** stop-hour · **0** route-hour | Nothing to aggregate, by construction |
 | Ghosts recorded | **0** | An honest zero. The loaded board does not activate until 2026-07-26, so no trip has yet been due, so nothing can yet have failed to arrive |
 | Service alerts stored | **82** (15 accessibility-flagged) | Accumulated across the collection window; 36 were live in the feed on the last cycle |
 | Learned stop crosswalk | **7,606** realtime stop ids seen · **3,165 confirmed** · 277 conflicted (cycle 84, in-process; the persisted table held 8,162 rows earlier the same day) | Warms independently of the calendar — this is the part of the engine that works today. See Technical Execution |
-| Crosswalk occurrence coverage | **30.7%** at cycle 84, and **falling** — it peaked at 37.2% and declined from there | Its own gate demands **50%**. Diagnosed on 2026-07-25 as two learning bugs rather than a shortage of evidence, and fixed in commit `dc36469`; **the running collector predates that commit, so this number does not yet reflect the fix.** See Technical Execution |
+| Crosswalk occurrence coverage | **30.7%** at cycle 84, and **falling** — it peaked at 37.5% (cycle 38) and declined from there | Its own gate demands **50%**. Diagnosed on 2026-07-25 as two learning bugs rather than a shortage of evidence, and fixed in commit `dc36469`; **the running collector predates that commit, so this number does not yet reflect the fix.** See Technical Execution |
 
 The zeros in that table are the most important numbers in this document. It would have been
 trivial to seed a plausible-looking ghost count, and — as the next section documents — this
@@ -217,7 +217,7 @@ rather than hardcoded:
 
 - **Realtime `trip_id` does not match static `trip_id`.** The engine re-measures the direct
   match rate every cycle (`stats.directTripIdMatchRate`, `runCycle` in `server/src/engine.ts`):
-  **0.3%** on every cycle of the current run. It is re-measured, not assumed, because every
+  **0.0–0.3%** across the run's cycles, reading 0.0% at cycle 84. It is re-measured, not assumed, because every
   positive realtime trip id ends in `"020"`, which reads like a board tag — if a board rollover
   ever made the ids match outright we should notice for free instead of inferring forever.
 - **`TripDescriptor` carries nothing else.** Own-property census over 1,392 TripUpdates:
@@ -258,7 +258,7 @@ them — wired by one DB-facing engine. Full derivation and every constant's rat
 
 | Stage | File | What it does | The load-bearing measurement |
 |---|---|---|---|
-| **1. Static pattern index** | `server/src/patterns.ts` | Collapses 68,401 seeded trips into **1,252 distinct patterns** (a route's distinct ordered stop list), so matching is "pick the pattern, then pick the slot" rather than a scan | Reading `stop_times` in one shot cost 45.5 s and 184 MB of heap. Keyset-paged on `trip_id` with interned stop ids and `Int32Array` times: 109 s, 71 MB. It runs in the background and never on a request path |
+| **1. Static pattern index** | `server/src/patterns.ts` | Collapses 68,401 seeded trips into **1,252 distinct patterns** (a route's distinct ordered stop list), so matching is "pick the pattern, then pick the slot" rather than a scan | Reading `stop_times` in one shot cost 45.5 s and 184 MB of heap. Keyset-paged on `trip_id` with interned stop ids and `Int32Array` times: 109–183 s, 71 MB. It runs in the background and never on a request path |
 | **2. Learned stop crosswalk** | `server/src/xwalk.ts` | Learns realtime→static stop identity from the one thing both namespaces share — **physical position** — then propagates it transitively to a fixpoint | A `STOPPED_AT` vehicle sits a median **17.9 m** from the correct static stop on its route (90 of 93 within 50 m). Only ~100 of ~1,400 vehicles per cycle are usable anchors, so geometry alone is far too slow; propagation is the multiplier. On a cold 8-cycle run, 569 of 1,106 realtime patterns resolved — 503 at iteration 0 and **66 reachable only by iterating** |
 | **3. Origin lock** | `server/src/bind.ts` | Binds a realtime trip to a static trip **once, at birth, and never re-solves it** | Scoring mid-route trips does not work: candidate slots on a pattern are exact time-shifted clones, and the best candidate's residual spread (MAD p50 **31 s**) is not distinguishable from the worst (**42 s**). TTC publishes a trip ~**29.5 minutes** before its first stop, which is the one uncontaminated measurement available |
 | **4. Settle and emit** | `server/src/delay.ts` | `delay_s = event_epoch_s − sched_epoch_s`, emitted only for stops that have **settled** — dropped from the feed's list, or the trip left, or the predicted time is ≥30 s past | A stop still in the future is never emitted; that would be publishing a prediction as a measurement. `NO_DATA` is dropped, not imputed as on-time. Values beyond ±5,400 s are **dropped and counted, never clamped** — clamping would censor the distribution toward zero |
@@ -410,8 +410,8 @@ when it was written, on 2026-07-24 at 22:02 ET. It is no longer true. What is tr
 
 - **The half of the engine that can work today is working.** Crosswalk learning is
   calendar-independent, and it is warming: **8,162** realtime stop ids seen, **3,048
-  confirmed**, 277 conflicted, cross-route agreement **94.1%** (93.8–94.1% across cycles, and a
-  **geometric-anchor** figure — see the correction below). Its occurrence coverage is
+  confirmed**, 277 conflicted, cross-route agreement **94.1%** (it ranges 90.0–95.7% across the
+  run's cycles, and it is a **geometric-anchor** figure — see the correction below). Its occurrence coverage is
   **30.7%** — **below its own 50% gate**, so it would suppress publication even if the board
   were active. Two gates would have to pass, and today neither does. And that coverage number
   has its own correction attached, immediately below.
@@ -467,7 +467,7 @@ missing feature, and is why it is written here rather than left in a blockers fi
 
 The crosswalk's occurrence coverage sat around 37% against a 50% publish gate, and the
 comfortable reading was "it just needs more time to warm." Somebody checked instead of waiting,
-and the number was not plateauing — **it was falling.** 37.2% at its peak, 36.4% at cycle 40,
+and the number was not plateauing — **it was falling.** 37.5% at its peak (cycle 38), 36.4% at cycle 40,
 30.9% at cycle 75. Decomposing one live snapshot of 23,636 stop-time occurrences against the
 persisted crosswalk found the plateau was not a shortage of evidence at all. Two rules were
 throwing evidence away:
@@ -482,14 +482,16 @@ throwing evidence away:
 2. **Promotion forgot what it had already seen.** `distinctPatterns` was recounted from the
    patterns resolved in *that cycle*, so a stop confirmed by two agreeing patterns demoted
    itself to `candidate` when one of them went off shift — 03:00 unlearning what 08:00
-   established. The oscillation is visible directly in the log: confirmed counts of 3,043 →
-   3,031 → 3,019 → 3,025 → 3,042 across five consecutive cycles. Agreement is now accumulated
+   established. The oscillation is visible directly in the log: confirmed counts of 3,043 → 3,043 →
+   3,031 → 3,019 → 3,025 → 3,028 → 3,042 across cycles 40–46, consecutively. Agreement is now accumulated
    and restored from the database on a warm start.
 
 **What was deliberately not done**, and this is the part worth reading: the two-independent-
 patterns requirement blocks 43.2% of occurrences on its own, and loosening it would have taken
 coverage over the gate in one line. A held-out-geometry experiment even suggested one-pattern
-identities are no less accurate than two-pattern ones (88.6% against 80.7%, n=197). **The rule
+identities are no less accurate than two-pattern ones (88.6% against 80.7%, n=197 — one run of
+`.data/fix_holdout.mjs`, which is gitignored and whose output was not retained, so treat that
+pair as a single reading rather than a result). **The rule
 stays**, because the "truth" that experiment withheld was itself a nearest-stop match and its
 disagreements were overwhelmingly adjacent platform ids at one intersection — so it cannot
 settle the question. Loosening a safety rule on evidence that weak, to make a number clear a
@@ -688,7 +690,7 @@ Start with `README.md` for setup. Then, depending on what you want to check:
 | The API contract | `shared/types.ts` — one file, both sides, heavily commented |
 | That the feed really behaves as claimed | **Reproduce it in one command, no clone artifacts needed** (see the box below). `.data/` and `*.log` are gitignored, so `.data/feedprobe.cjs` and `collector.log` exist on the build machine but **not in a fresh clone** — every figure sourced from them in this document is labelled with where it came from. |
 | What we could not do and why | `BLOCKERS.md` — every entry is an empirical measurement, not a guess |
-| Every deviation from the original plan | `DECISIONS.md` — 34 numbered sections, including the ones that make us look bad, and including three marked **superseded** (one of them only partly) rather than rewritten |
+| Every deviation from the original plan | `DECISIONS.md` — 34 numbered sections, including the ones that make us look bad, and including four marked **superseded** (one of them only partly) rather than rewritten |
 
 The two files worth reading if you only read two: **`BLOCKERS.md`** and **`DECISIONS.md`**.
 They are the project's actual record.
@@ -732,8 +734,8 @@ What made it recoverable was structural, not motivational:
 - **Every deviation from the plan was recorded rather than quietly absorbed — and superseded
   decisions are marked, not deleted.** `DECISIONS.md` §12 records why the specified join key was
   impossible on this feed and what we built instead; it now carries a **SUPERSEDED** banner
-  explaining that what we built instead was *also* wrong, and why. §8 and §13 carry the same
-  treatment. The reasoning that led somewhere wrong is left legible, because a document that
+  explaining that what we built instead was *also* wrong, and why. §8, §13 and §21's first
+  bullet carry the same treatment. The reasoning that led somewhere wrong is left legible, because a document that
   only contains decisions that turned out well is not a record, it is a highlight reel.
 - **The honesty architecture was applied to the tooling, not just the product.** The rule "no
   prediction renders without its evidence" is the same rule as "no build report is believed
