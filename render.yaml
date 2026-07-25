@@ -1,0 +1,76 @@
+# GhostBus — Render Blueprint (one web service, no managed database).
+#
+# Schema verified against Render's Blueprint spec on 2026-07-24:
+#   https://render.com/docs/blueprint-spec
+#   - `runtime` is the current field name (`env` is supported but discouraged).
+#   - valid `region` values: oregon (default), ohio, virginia, frankfurt, singapore.
+#   - valid `plan` values include `free` for web services.
+#   - `sync: false` is the documented way to declare a secret whose value you enter
+#     in the Render dashboard during Blueprint creation — it is never in this file.
+#
+# The database is an EXTERNAL Neon Postgres (us-east-2), so there is no `databases:`
+# block here. `region: ohio` is chosen because Ohio is Render's us-east-2 region and
+# keeps the app in the same AWS region as the Neon instance — every request the API
+# makes to Postgres is then intra-region rather than cross-continent.
+
+services:
+  - name: ghostbus
+    type: web
+    runtime: node
+    plan: free
+    region: ohio                      # matches the Neon us-east-2 database
+    branch: main
+    autoDeployTrigger: commit
+
+    # `npm start` runs the TypeScript server directly via tsx, and `npm run build`
+    # needs vite + typescript — all three are devDependencies. Render sets
+    # NODE_ENV=production at RUNTIME ONLY (verified in Render's default-env-var
+    # docs), so a plain `npm ci` during build would already include devDependencies;
+    # `--include=dev` states the requirement explicitly so it cannot regress.
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm start
+
+    # Fastify serves /api/health from the in-process poller — it answers as soon as
+    # the process is listening, so it is a real readiness signal rather than a stub.
+    healthCheckPath: /api/health
+
+    envVars:
+      # ---- secret: set in the Render dashboard, never committed ----
+      # Neon connection string, e.g.
+      #   postgresql://USER:PASSWORD@ep-xxxx.us-east-2.aws.neon.tech/ghostbus?sslmode=require
+      # With this UNSET the app silently falls back to embedded PGlite on the
+      # container's ephemeral disk, which is wiped on every deploy — so on Render
+      # this variable is effectively required.
+      - key: DATABASE_URL
+        sync: false
+
+      # ---- required for Render to route traffic ----
+      # server/src/server.ts defaults HOST to 127.0.0.1, which Render cannot reach.
+      # Render's docs: "Every Render web service must bind to a port on host 0.0.0.0".
+      - key: HOST
+        value: 0.0.0.0
+
+      # PORT is injected by Render automatically (default 10000) and server.ts reads
+      # it; it is deliberately NOT set here so Render's value always wins.
+
+      # Pinned rather than inherited: Render's default Node for services created on
+      # or after 2026-04-21 is 24.x, and package.json's `engines` range (">=20") is
+      # unbounded, which Render warns resolves to whatever is newest. 24 is the
+      # version the project was actually developed and verified against.
+      - key: NODE_VERSION
+        value: "24"
+
+# ---------------------------------------------------------------------------
+# After the first deploy the database is EMPTY. Seeding is a one-time operator
+# step, not part of the build (loading 2.1M stop_times would blow the build
+# timeout). Run it once against the same DATABASE_URL, either from your laptop:
+#
+#     DATABASE_URL='postgresql://...' npm run seed:toronto
+#
+# or from the Render Shell on the deployed service. Re-run it whenever the TTC
+# publishes a new schedule board.
+#
+# Free-tier note: a Free web service spins down after 15 minutes without inbound
+# traffic and takes ~1 minute to wake. That also stops the 45s collector, so the
+# ledger has holes. See README.md for the UptimeRobot /api/health keep-alive.
+# ---------------------------------------------------------------------------
