@@ -139,7 +139,11 @@ interface TreePalette {
 // hue 81, saturation 0.14. Ours were a fresher, greener green over more than
 // twice the frame area (1.17% vs 0.53%). These values are the sampled sides/tops
 // this comment already records, which is where they should have been.
-const DARK_TREES: TreePalette = { wall: '#363f34', cap: '#555a42' };
+// LIFTED 1.09x. §38 item 13 measured the reference's tree pixels at mean RGB
+// (65, 77, 63) against ours at (60, 69, 57) — same hue family, ours consistently
+// darker, which at 5x reads as olive specks where the reference reads as green.
+// Value only; the hue and the count are left where their own measurements put them.
+const DARK_TREES: TreePalette = { wall: '#3a4438', cap: '#5c6248' };
 /** In daylight the trees carry nearly all the chroma in the frame â€” the blocks
  *  are near-white â€” so this is the one place the light map is allowed real colour. */
 const LIGHT_TREES: TreePalette = { wall: '#8ba482', cap: '#b2c79c' };

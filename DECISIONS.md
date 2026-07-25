@@ -2110,3 +2110,355 @@ All 8 combinations — 390x844 and 1280x800, light and dark, `en-CA` and `fr-CA`
     deliberately tuned in §31 against its own measurement, so this pass reports the number rather
     than churning it.
 14. **The route still does not turn** (§31 item 1, §H) — server-side shape geometry, untouched.
+
+## §39 — The one gap left, tested against the provider's own coarse tier: chunkier is reachable, closer is not
+
+§38 closed every reference gap except one and named it item 11: *the city is still finer-grained
+than the reference.* Its conclusion was that the reference "reads as one chunky cube per city
+block because it is an illustration", that Toronto's real footprints are several per block, and
+that merging them stays off the table. That conclusion survives. The reasoning behind it did not,
+because §38 only re-swept the **generalisation floor** (drop buildings under 8 / 16 / 24 m) — and
+a floor cannot make a block bigger. It can only delete small ones.
+
+This section pulls the lever §38 never pulled, and a second one, and reports both verdicts.
+**Nothing shipped changed.** The renderer at HEAD draws exactly what it drew at `924adba`.
+
+### The lever: render the provider's z13 building tier, not its z14 one
+
+Vector tile providers generalise geometry at lower zooms. Drawing what a provider published for a
+zoom is ordinary cartography — the dissolve is theirs, not ours — so it is categorically unlike
+merging footprints ourselves. §38 already noticed in passing that "OpenFreeMap's `building` layer
+stops at z14". It does, but that is the layer's **maxzoom**; its **minzoom is 13**, and z13 is a
+different, coarser publication of the same buildings.
+
+`https://tiles.openfreemap.org/planet` TileJSON, read directly: tileset `maxzoom: 14`;
+`vector_layers` gives `building 13 14`. z12 was checked too — four tiles fetched, **no `building`
+layer in any of them** — so 13 is the floor.
+
+Nine tiles per tier around King & Spadina were fetched and decoded with a hand-written MVT reader
+(scratchpad `mvt.mjs`; the project has no vector-tile dependency, and `pbf` is vendored by
+MapLibre). Every ring was reduced to the same PCA-oriented box the renderer draws, then clipped to
+one **900 x 900 m window** so the two tiers are compared over identical ground:
+
+| tier | rings in window | rings/km2 | median span | median area | p90 span |
+|------|-----------------|-----------|-------------|-------------|----------|
+| z14  | 742             | 916       | 21.8 m      | 475 m2      | 47 m     |
+| z13  | 57              | 72        | **93.4 m**  | **8,720 m2**| 165 m    |
+
+**13x fewer blocks at 4.3x the span.** And it is a genuine dissolve, not a filter that drops small
+buildings: the nine z13 tiles carried exactly **nine features** — one MultiPolygon per tile, with
+7,161 rings between them — and their ring vertex counts (median 19, p90 36) are those of merged
+clusters, against z14's median 5. Toronto's downtown blocks run 100–150 m. z13 is city-block scale.
+
+Two further checks, because "the provider over-claims ground" and "an oriented box round a blob is
+a lie" were both live objections:
+
+- **The dissolve barely over-claims.** Rasterised at 1 m over the same window, published z14
+  footprints cover 40.2% of the ground and published z13 polygons 46.1% — a ratio of **1.15**.
+- **The box transform is no worse at z13 than at z14.** Box-area / polygon-area aggregates
+  **1.467 at z14 and 1.504 at z13** (medians 1.17 and 1.44). Whatever licence the oriented box
+  takes, it takes about the same amount at both tiers.
+
+### The price: z13 publishes no attributes at all — not fewer, none
+
+| tier | property key sets observed |
+|------|----------------------------|
+| z14  | `{render_height, render_min_height}`, `+colour`, `+hide_3d` — **all 2,194 features carry `render_height`** (median 33 m, p90 163 m, max 553 m) |
+| z13  | `{}` — **empty, on every feature** |
+
+So a naive z13 city has no skyline whatsoever: every block falls to `DEFAULT_HEIGHT_M`. The fix is
+a **height join** back onto the tier that does carry heights, and it is well defined: every one of
+the 57 z13 rings in the window contains at least one z14 building (median 10, p90 28, max 69).
+Joining by `max` — a block is as tall as the tallest real building standing on it, which is a real
+measured height of a real structure at that address, where a mean would be a number no building
+has — gives median 52 m, p90 165 m.
+
+`voxelMesh.ts` implements all of this behind `coarseBlocks`, **default off**. Three things it
+learned the hard way, all recorded in the module:
+
+1. **A source with no layer never fetches a tile.** MapLibre's `SourceCache.update()` early-returns
+   unless `used` is true, and `used` comes from the style's layers. The first coarse build rendered
+   an empty city for exactly this reason. A `fill` layer at `fill-opacity: 0` marks the source used;
+   the fill painter early-returns on a constant zero opacity, so it costs a tile fetch and no draw.
+   `visibility: 'none'` does **not** work — that un-uses the source again.
+2. **The tile template must be read from the live source, never hardcoded.** OpenFreeMap's TileJSON
+   points at a dated snapshot (`/planet/20260621_080001_pt/{z}/{x}/{y}.pbf`) that rotates, and the
+   undated path answers **200 with a zero-byte body** — a hardcoded URL would render an empty city
+   silently on the day the snapshot rolled. Pinning `maxzoom: 13` on the sibling source is the whole
+   point; with the TileJSON's own 14, MapLibre just refetches z14.
+3. **A lazily-added source needs its own rebuild trigger.** Its tiles land *after* the build that
+   asked for them, and MapCard rebuilds the city on `idle`, which has already fired. Without a
+   `sourcedata` listener the app renders no city at all — measured, not theorised.
+
+### The verdict: it is chunkier, and it measures worse
+
+Measured in the **production build**, real Chrome, at the app's real default framing — which the
+probe reports as **zoom 16.182, pitch 48, FOV 16, a 960 x 740 pane covering 732 m of ground**.
+Reference figures are §32's: a 708 px pane at 0.95 m/px, i.e. 673 m of ground, with ~110 px cubes,
+which rescales to **149 px on a 960 px pane**.
+
+| | blocks in frame | median on-screen span | **area-weighted median span** | area-weighted median area | **luminance-band deviation** |
+|---|---|---|---|---|---|
+| reference | — | — | **149 px** (~105 m) | 22,240 px2 | — |
+| **z14, shipping** | **651** | 17 px | **44 px** (~44 m) | 1,923 px2 | **28.1** |
+| z13, 1.2 m inset | 43 | 80 px | 128 px | 16,434 px2 | 48.1 |
+| z13, proportional inset | 43 | 80 px | **128 px** (~109 m) | 16,434 px2 | **41.3** |
+
+The area-weighted median — the span of the block covering the median *building pixel* — is the
+honest statistic here; a plain median is dominated by laneway sheds nobody looks at.
+
+**On block size the lever works, and not marginally: 44 px against the reference's 149 becomes
+128.** On §38's metric it loses by 13 points, and the six bands say exactly why:
+
+| | 0-16 | 16-32 | 32-48 | 48-64 | 64-80 | >80 |
+|---|---|---|---|---|---|---|
+| reference | 3.2 | **38.0** | 27.3 | 13.1 | 12.3 | 6.1 |
+| z14 shipping | 0.2 | **37.8** | 34.1 | 20.4 | 4.3 | 3.3 |
+| z13 first cut | 0.1 | **20.0** | 28.8 | 35.0 | 12.9 | 3.1 |
+| z13 + proportional inset | 0.2 | **25.7** | 30.4 | 30.7 | 9.9 | 3.2 |
+
+Band 16-32 is ground and street in the night theme, and the reference gives it **38%** of the
+frame — wide, continuous canyons. The shipping build matches that to within 0.2 points. **The
+coarse blocks eat the streets**, taking it to 20.0.
+
+That was our transform, not the provider's — recall the published z13 polygons claim only 1.15x
+the ground. A fixed 1.2 m inset is 11% of a fine block's ~11 m half-extent but only 2.6% of a
+coarse block's ~46 m, so `COARSE_INSET_FRAC = 0.11` makes the inset proportional and holds the
+gap-to-block ratio constant. It recovers 5.7 points of ground and 6.8 of deviation — and stops
+there. Band 48-64 is still 30.7 against 13.1, and that residue is structural, not tunable:
+
+> **The reference's largest connected same-tone region is 0.38% of the frame. Ours is 1.97% at
+> z14 and 4.63% at z13.** The reference's cubes are big *and* carry per-face gradient and ambient
+> occlusion, so no single tone ever owns much of the frame. Our faces are three flat measured
+> tones (§38's 1.000 : 0.641 : 0.491), so a bigger block is simply a bigger flat region. Making
+> blocks chunkier without also making each face non-uniform moves the histogram the wrong way.
+
+By eye (`screenshots/reference-match/final4/SCALE-MATCHED-ref-vs-z14-vs-z13.png`, all three panels
+resampled to 620 m across so block sizes compare directly) the trade is legible: z13 gets the
+block *scale* right and loses the street grid. Its blocks also inherit their yaw from the PCA of a
+dissolved cluster rather than from the street, so they sit off-axis and cross roads, where the
+reference's cubes are strictly grid-aligned with clean canyons between them.
+
+Two further costs, both real: **17 of 434 coarse rings had no z14 building inside them and were
+dropped**, because the two tiers' loaded tiles cover different ground at the frame edge, so the
+coarse city thins at the margins; and the second source is a real fetch, though a cheap one — z13
+tiles average **109 KB against z14's 388 KB**, and only 1–2 of them cover the default view.
+
+### The other lever: move the camera in. It is already where the reference's is.
+
+The reference's blocks are city-block sized, so a closer camera would make ours occupy more screen
+— at the cost of `FRAME_START_ZOOM`, which §37 calibrated off the reference's own marker
+composition (walk span / pane width = 0.267 desktop, 0.257 mobile).
+
+The measurement kills the idea before the trade-off is even reached:
+
+- **The reference's map pane covers 673 m of ground; the app's covers 732 m.** The two cameras are
+  within **8.8%** of each other. §32's calibration already landed on the reference's framing, and
+  the fine grain is not a camera error — it is Toronto having smaller buildings than an
+  illustrator drew.
+- To take our 44 m area-weighted block from 0.046 of the pane to the reference's 0.156, the camera
+  must come in **2.39x**, to **zoom 17.44**, leaving a pane 306 m across. The walk-span fraction
+  goes **0.26 -> 0.62**, i.e. **2.4x the reference's own measured ratio** — the stop bubble and the
+  You beacon stop fitting, and `frameCamera`'s step-2 loop would simply zoom back out again.
+- There is no useful partial trade either. A 1.5x nudge (z16.77) leaves blocks at 0.069 — 44% of
+  target — while the walk is already at 0.39, 46% over the reference.
+
+### What this settles
+
+**§38 item 11's conclusion stands, and now for a measured reason rather than an assumed one.** It
+is not that coarser real geometry is unavailable — OpenMapTiles publishes it at z13, it is exactly
+city-block scale (area-weighted median 109 m against the reference's ~105 m), and drawing it is
+not fabrication. It is that the reference's chunkiness is inseparable from two other things it has
+and real data cannot supply: **street canyons at 38% of the frame with strictly grid-aligned
+blocks**, and **faces that are not flat**. Take the provider's chunky geometry and you lose the
+first; keep our flat measured face tones and you lose the second. The illustration is internally
+consistent in a way a real city at real coordinates is not.
+
+That conclusion is correct as far as it goes, and it is also **not the interesting one**, because
+the premise it shares with �38 � that the gap was about how BIG a building is � turned out to be
+wrong. See the next part.
+
+**The `coarseBlocks` implementation was reverted and is NOT in the tree.** It worked, it is fully
+specified above (sibling source pinned to `maxzoom: 13` with its tile template read off the live
+source, a zero-opacity carrier layer so MapLibre actually fetches it, a `sourcedata` listener to
+rebuild when those tiles land, and a max-height join by point-in-polygon), and a review of it found
+a real bug in the base-height join � but it lost on every measure that mattered, so shipping ~120
+lines of dead code to preserve a negative result was the wrong trade. The numbers above are the
+record.
+
+**And the whole line of enquiry was superseded.** Magnifying the reference to 5x showed that
+granularity was never the gap at all � see below.
+
+### Verification (production build, `npx vite build`, real Chrome, PGlite-backed API)
+
+The shipping path is unchanged, and it was re-measured rather than assumed, because this pass did
+refactor the ring walk that both paths share:
+
+- **2,059 blocks from 494 features, 0 dropped** — identical to §38.
+- **Luminance-band deviation 28.1**, against 28.2 measured on the pre-change build in the same
+  session. (Worth recording: **§38 item 11's "22.7" is not reproducible.** Item 12's own band
+  figures in that section sum to 27.7, and two independent captures here give 28.1 and 28.2. The
+  8 m floor is still the right choice — it just never measured 22.7.)
+- **§F overlap probe `trueOverlaps: 0`, `hScroll: false`** at 1280x800 and 390x844, light and dark.
+  **0 page errors** in all four.
+- Frame timings over 4.5 s of `requestAnimationFrame`, foregrounded: **p50 4.2 ms, p95 5.3 ms,
+  worst 14.6 ms** (§38: p50 4.2, p95 4.8–5.9). Note the tab must be brought to the front — a
+  backgrounded Chrome throttles rAF to ~1 Hz and reports a meaningless p50 of 999 ms.
+- `npm test`: **208 passing, 0 failing.**
+- Bundle: the MapCard chunk goes 1,505.77 -> 1,507.83 kB raw and **395.69 -> 396.48 kB gzipped,
+  +0.79 kB** for the opt-in coarse path.
+
+---
+
+### THE ACTUAL GAP, found at 5x: every reference building is a CLUSTER of cubes
+
+Everything above — and §38, and §32 before it — compared *frame statistics*. The frame statistics
+kept agreeing while the picture kept looking wrong, and that is the failure mode this part records.
+
+Magnifying the reference to 5x settles it in one look. **No building in the reference is one
+extruded prism.** Every mass resolves into four to six discrete cubes at differing heights, packed
+together, with real seams between them, visible ambient occlusion in the crevices where a tall cube
+meets a short one, edges that are softened rather than razor-sharp, and faces that carry a gradient
+instead of one flat tone. The trees are built the same way: several green cubes over a brown trunk
+cube. **That** is what makes it read as voxel art. §38 drew one smooth prism per footprint and
+painted a lattice on its faces to suggest cubes, which is architecture with a grid on it.
+
+It is also what the original project spec asked for — "one box (or a few stacked boxes) with
+footprint and height quantised to a chunky voxel grid" — and it was lost somewhere between there
+and §38.
+
+### What is drawn now
+
+`voxelMesh.ts` still starts from exactly one real OSM footprint per drawn mass, PCA-oriented and
+inset. What changed is that the footprint is then **divided into a whole number of cells** as close
+to `CELL_M` as it can manage, and **one cube is emitted per cell**:
+
+- The grid is laid out in the **footprint's own frame**, not in world space. A world grid would give
+  every off-grid building a staircase silhouette and cells hanging over its edges; laying it out in
+  the building's frame means the cubes tile the real outline exactly — no partial cell at the far
+  edge, nothing outside the true footprint.
+- Each cell's height is a whole number of courses of the shared lattice, either the footprint's own
+  quantised height or **exactly one course below it**, chosen by a hash of the stable feature id so
+  it never changes when a tile refetches. **At least one cell is always at full height**, so the
+  mass still reads as the building's real height, and a single-course footprint gets no variation
+  at all because it has none to express. This never adds height to anything.
+- Colour is **per footprint**, not per cube, so a cluster reads as one building. The contact shadow
+  is likewise one per footprint — a shadow quad per cube would stack alpha in the middle of every
+  cluster and burn a dark core into it.
+
+Three shader additions carry the rest of the character:
+
+1. **Crevice occlusion.** Each cube carries its four neighbours' heights as an instance attribute
+   (`iNbr`), so a wall knows the roofline of whatever is pressed against it and darkens just above
+   it, fading upward. This is the strongest voxel cue in the reference after the cluster itself.
+2. **Bevel.** A rounded edge does not change a face's colour, it rotates its normal toward the
+   neighbouring face — so the shader blends the tone across the last ~1.4 m instead, at zero
+   geometry cost (12 extra triangles times 4,459 instances was not worth paying).
+3. **Across-face gradient**, small: walls brighten toward the top, roofs away from the light.
+
+### The three numbers that were wrong, and how each was fixed
+
+**1. Cubes were tall and thin, because the height step was not tied to the cell size.** At matched
+190 m scale the reference's cubes are roughly as tall as they are wide; ours were several courses
+tall and one cell wide. The derivation that fixes it has to account for the zoom height gain,
+because that scales height *without* scaling footprint:
+
+    drawn cube height = HEIGHT_STEP_M * zoomHeightGain(z)
+    drawn cube width  = CELL_M
+    cubic  =>  HEIGHT_STEP_M = CELL_M / zoomHeightGain(z)
+
+At the app's measured default framing (z 16.182) the gain is 1.386, so **`HEIGHT_STEP_M` goes 24 ->
+17** and a course draws 23.6 m against a 24 m cell. This does **not** shorten buildings — a finer
+step yields *more* courses for the same real height (raw 41 m: two 24 m courses = 48 m before,
+three 17 m courses = 51 m now). The tower is the same height and is now built of three cubes
+instead of two slabs.
+
+**2. Needles.** Toronto's tiles carry plenty of 6–8 m laneway footprints, and a quantised two or
+three courses on one of those renders as a spike; the reference contains nothing of the kind, and
+at 5x they were the loudest artefact in the first cluster build. `MAX_ASPECT = 2.2` caps a
+cluster's courses at its own narrowest span measured in cells. It is a rule about how a real height
+is **drawn**, in the same class as the sqrt compression `quantizeHeightM` has always applied, and
+it only ever draws a building shorter than its data, never taller.
+
+**3. Under-lit.** Running §38's own vertical-edge sampler over **both** images with one code path
+put the reference's median top-face luminance at **61–63** and ours at **55**. The frame histogram
+agreed: our two brightest bands held 4.1% and 3.4% of the frame against the reference's 12.3% and
+6.1%. The dark palette's top tones are lifted **1.28x** in value only — hue and saturation
+untouched — and the trees **1.09x**, which is the gap §38 item 13 had already measured between the
+reference's tree pixels (mean RGB 65, 77, 63) and ours (60, 69, 57).
+
+### Measured, before and after (production build, real Chrome, app default framing)
+
+Camera unchanged and measured: **z 16.182, pitch 48, FOV 16, a 960 x 740 pane covering 732 m**.
+
+| | before (§38) | after |
+|---|---|---|
+| drawn instances | 2,059 prisms | **4,459 cubes** from the same 2,059 footprints |
+| footprints producing a multi-cube, multi-height cluster | 0 | **418** |
+| oversize rings dropped | 0 | **0** |
+| median top-face luminance (ref 61–63) | 55 | **62** |
+| six-band luminance deviation from the reference | 28.1 | **21.1** |
+| frame timings, foregrounded, 4.5 s | p50 4.2 / p95 5.3 / worst 14.6 ms | **p50 4.2 / p95 6.2 / worst 18.1 ms** |
+
+Bands, against the reference's 3.2 / 38.0 / 27.3 / 13.1 / 12.3 / 6.1:
+
+| | 0-16 | 16-32 | 32-48 | 48-64 | 64-80 | >80 | deviation |
+|---|---|---|---|---|---|---|---|
+| before | 0.2 | 37.8 | 34.1 | 20.4 | 4.3 | 3.3 | 28.1 |
+| clusters, before the lift | 0.2 | 32.1 | 33.7 | 19.6 | 9.8 | 4.6 | 25.8 |
+| clusters + 1.28x lift | 0.2 | 30.5 | 29.5 | 17.5 | **15.0** | **7.4** | **21.1** |
+
+The bright tail now slightly *overshoots* the reference (15.0 / 7.4 against 12.3 / 6.1), which is
+the signal that the lift has gone far enough and the next increment would start moving away again.
+
+**Cell size was swept at 17 / 20 / 24 / 30 m**, all four built and rendered:
+
+| CELL_M | cubes in frame | clustered footprints | p50 | p95 |
+|--------|----------------|----------------------|-----|-----|
+| 17 | 7,419 | 504 | 4.3 | 6.3 |
+| 24 | 4,459 | 418 | 4.2 | 6.2 |
+| 30 | 3,364 | 264 | 4.3 | 6.1 |
+
+**Performance is flat across the whole sweep** — the extra instances cost nothing measurable, which
+is what one `InstancedMesh` and one draw call buys. So cell size was chosen on the reference, not on
+the budget: at 5x, a reference mass ~120 px across resolves into 4 roof cells and one ~80 px across
+into 3, i.e. a cube pitch of ~27 px, and at §32's 0.95 m/px that is **~25 m of ground**. `CELL_M =
+24` is that number, and it is also a near-exact match for the height step above, which is what makes
+each emitted box an actual cube.
+
+### What is still not matched, honestly
+
+- **Face separation.** The two wall tones measure 0.663 : 0.682 against the reference's 0.504 :
+  0.422 — our walls are bunched where the reference's are 20% apart. The shader is *configured* to
+  §38's measured 1.000 : 0.641 : 0.491 and computes exactly that at a face centre, so the likeliest
+  explanation is that the measurement is now confounded: a cluster has many internal step edges
+  where one cube's wall abuts another's roof, our render has roughly twice the reference's detected
+  edge count (83 vs 43), and `leftBrighterPct` has fallen to a coin-flip 48% against the
+  reference's 67%. **This is unresolved**, and the next pass should restrict the sampler to convex
+  outer corners before drawing any conclusion from it.
+- **The cube-pitch autocorrelation is not trustworthy at this signal level.** Run identically on
+  both images it reports 17.1 m for the reference and 8.4 m for ours, where ours is 24 m by
+  construction; it is picking a sub-harmonic. The direct 5x measurement (~25 m) is the one relied
+  on above.
+- **Granularity, still** — the whole first half of this section. Our masses are 44 m where the
+  reference's are ~105 m, and that gap is unchanged.
+- **Trees.** Colour is lifted to §38's measured target, but size and count are left where their own
+  measurement put them, and that measurement is in direct conflict with a reviewer's read at
+  matched scale. `voxelTrees.ts` has now been tuned in three passes against three different
+  measurements of the same quantity; the next pass should re-measure coverage once, carefully,
+  before moving either knob again.
+
+### Verification
+
+- `npm test`: **208 passing, 0 failing.**
+- **§F overlap probe `trueOverlaps: 0`, `hScroll: false`, 0 page errors** at 1280x800 and 390x844,
+  light and dark.
+- **2,059 footprints, 0 dropped**, one `InstancedMesh` draw call for the cubes plus one for the
+  shadows; no per-frame allocation, geometry rebuilt on `idle` only.
+- Bundle: the MapCard chunk goes 1,505.77 -> 1,510.06 kB raw and **395.69 -> 397.47 kB gzipped,
+  +1.8 kB** — the cluster expansion and the three shader additions together.
+- Evidence images in `screenshots/reference-match/final4/`:
+  `STRUCT-190m-ref-before-c17-after.png` (four panels, all resampled to 620 px across 190 m of
+  ground so cube sizes compare directly — the single most useful artefact of this whole effort),
+  `ZOOM-ref-5x-a.png` and `ZOOM-ours-BEFORE-5x.png` / `ZOOM-ours-c24-5x.png` at 5x, and
+  `final-{desktop,mobile}-{dark,light}.png`.

@@ -65,10 +65,33 @@ const LABEL_ABOVE_LAYER_IDS = ['vehicles', 'marker-blockers'];
  * Toronto's OSM footprints are whole-block developments (s ~ 100 m), and 24 m with
  * the zoom gain lands that ratio near the reference's.
  *
+ * 24 -> 17, AND IT IS NOW DERIVED FROM `voxelMesh.CELL_M` RATHER THAN CHOSEN.
+ *
+ * Since voxelMesh draws a CLUSTER OF CUBES per footprint instead of one prism, a
+ * course is no longer an abstract skyline tier — it is the height of an actual cube,
+ * and a cube whose height does not match its width is not a cube. Measured against
+ * the reference at matched 190 m scale, ours read as thin towers where the
+ * reference's read as squat blocks, and this is the number that was wrong.
+ *
+ * The derivation, and note it has to account for the zoom height gain because that
+ * scales height WITHOUT scaling footprint:
+ *
+ *     drawn cube height = HEIGHT_STEP_M * zoomHeightGain(z)
+ *     drawn cube width  = CELL_M                        (the gain does not touch it)
+ *     cubic  =>  HEIGHT_STEP_M = CELL_M / zoomHeightGain(z)
+ *
+ * At the app's measured default framing, z = 16.182, `zoomHeightGain` interpolates to
+ * 1.386, so 24 / 1.386 = 17.3. At 17 a course draws 23.6 m against a 24 m cell.
+ *
+ * This does NOT make buildings shorter — that was explicitly not the goal. A finer
+ * step means MORE courses for the same real height: raw 41 m gives 2 courses of 24
+ * (48 m) under the old step and 3 courses of 17 (51 m) under this one. The tower is
+ * the same height; it is now built of three cubes instead of two slabs.
+ *
  * Note what this does NOT do: it does not add, subdivide or merge a single
- * footprint. Every block is one real OSM building.
+ * footprint. Every cube stands inside one real OSM building's own outline.
  */
-export const HEIGHT_STEP_M = 24;
+export const HEIGHT_STEP_M = 17;
 /** Buildings with no OSM height at all. */
 export const DEFAULT_HEIGHT_M = 8;
 /**

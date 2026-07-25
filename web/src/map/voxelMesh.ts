@@ -78,6 +78,7 @@ import type {
 
 import {
   DEFAULT_HEIGHT_M,
+  HEIGHT_STEP_M,
   quantizeHeightM,
   minHeightForZoom,
   zoomHeightGain,
@@ -165,8 +166,12 @@ interface MeshPalette {
   ground: string;
   shadow: string;
   shadowAlpha: number;
-  seam: number;
+  /** Occlusion in the crevice where a cube abuts a shorter neighbour. */
+  crevice: number;
+  /** Ground contact darkening at the foot of a wall. */
   aoStrength: number;
+  /** Across-face gradient amplitude — no face in the reference is one flat tone. */
+  gradient: number;
 }
 
 const PALETTES: Record<VoxelTheme, MeshPalette> = {
@@ -180,15 +185,26 @@ const PALETTES: Record<VoxelTheme, MeshPalette> = {
     //   A indigo-violet 235 / 0.50 / 52   (34%)   B lavender     245 / 0.38 / 70 (30%)
     //   C blue-slate    227 / 0.52 / 60   (26%)   D violet       257 / 0.48 / 62 ( 6%)
     //   teal 190 / 0.42 / 55 (2%)         rose   300 / 0.42 / 64 (2%)
-    tops: ['#2e325c', '#46426b', '#303b64', '#46376a', '#253b40', '#5b355b'],
+    // LIFTED 1.28x over �38's values (1.14 then 1.12), and the lift is measured rather than judged:
+    // running �38's own vertical-edge sampler over BOTH images gives a median
+    // top-face luminance of 63 on the reference and 55 on our render. Same code,
+    // same masking, both panels � so the roofs really were eight levels dark, and
+    // the frame histogram agreed (bands 64-80 and >80 sat at 4.1 / 3.4 against the
+    // reference's 12.3 / 6.1). Hue and saturation are untouched; this is value only.
+    tops: ['#3a4076', '#5a5489', '#3e4b80', '#5a4787', '#2f4b52', '#744374'],
     ground: '#0e142b',
     shadow: '#05070f',
     // Night: the wall tones already separate the blocks, so the contact shadow is a
     // whisper. Measured on the reference, the darkening under a block bottoms out
     // ~18% below the surrounding ground.
     shadowAlpha: 0.34,
-    seam: 0.085,
+    // Night leans on wall TONE for separation, so the crevice can be firm without
+    // muddying the frame; the gradient stays small because the measured face ratios
+    // (1.000 : 0.641 : 0.491) are what the palette match is pinned to and a large
+    // ramp would smear them together.
+    crevice: 0.30,
     aoStrength: 0.34,
+    gradient: 0.10,
   },
   light: {
     tops: ['#f3f1ec', '#eceae4', '#f6f4f1', '#eee9f0', '#dfe6df', '#f0e3e2'],
@@ -199,8 +215,12 @@ const PALETTES: Record<VoxelTheme, MeshPalette> = {
     // This is the single largest reason the old fill-extrusion light theme read as
     // "near-uniform white" — it had no shadows at all.
     shadowAlpha: 0.46,
-    seam: 0.055,
+    // Daylight's right wall is within 2% of its roof, so tone separates almost
+    // nothing and the crevice has to do more of the work of showing where one cube
+    // ends and the next begins.
+    crevice: 0.34,
     aoStrength: 0.22,
+    gradient: 0.09,
   },
 };
 
@@ -225,22 +245,79 @@ const MIN_HALF_M = 2.4;
 const MAX_HALF_M = 300;
 
 /**
- * Voxel cell size in metres — the lattice the seam shader draws.
+ * VOXEL CELL SIZE — and this is now the size of a REAL CUBE, not of a texture seam.
  *
- * MEASURED: on the reference's desktop map at ~0.95 m/px (§32's scale derivation),
- * a block's roof grid runs ~16 px per cube and its wall courses ~13 px, i.e. 12–16 m.
- * 14 m is the middle of that, and it is a clean half of voxelCity's 24 m height step
- * so wall courses line up with the quantised roof lattice instead of beating against it.
+ * §38 drew one smooth prism per footprint and painted a lattice on its faces to
+ * suggest cubes. Magnifying the reference to 5x shows why that could never land:
+ * **every building mass in the reference is a CLUSTER of 4-6 discrete cubes at
+ * different heights**, with real seams between them, real ambient occlusion in the
+ * crevices where a tall cube meets a short one, and visibly softened edges. A painted
+ * lattice on one prism has none of those three things — it reads as architecture with
+ * a grid on it. The original project spec asked for exactly the cluster ("one box, or
+ * a few stacked boxes, with footprint and height quantised to a chunky voxel grid");
+ * it was lost somewhere between there and §38.
+ *
+ * MEASURED off the reference at 5x, on the desktop map region at §32's 0.95 m/px:
+ * a building mass ~120 px across resolves into 4 roof cells, and one ~80 px across
+ * into 3 — so the cube pitch is ~27 px, i.e. **~25 m of ground**. Swept at 17 / 20 /
+ * 24 / 30 m; see DECISIONS §39 for the numbers behind the choice.
+ *
+ * It is also a near-exact match for voxelCity's 24 m HEIGHT_STEP_M, which is what
+ * makes each emitted box an actual CUBE rather than a slab: one cell wide, one cell
+ * deep, one course tall.
  */
-const CELL_M = 17;
+const CELL_M = 24;
 
-/** How far up a wall the contact darkening reaches. */
+/** Hard cap on cells per axis for one footprint. A 300 m mall at 24 m cells is 12
+ *  across; past this the extra cubes are below a pixel and only cost instances. */
+const MAX_CELLS_PER_AXIS = 9;
+
+/**
+ * How much of a course a cell may drop below its building's real quantised height.
+ *
+ * This is the "differing heights" in the reference's clusters, and it is the one knob
+ * here that has to justify itself as stylisation rather than invention. It never adds
+ * height — a cell is either at the footprint's own quantised height or exactly one
+ * course below it — and at least one cell per footprint is always at the full height,
+ * so the building's real height is still what the mass reads as. The variation is
+ * within what the footprint's own height supports, in the same sense that a hatching
+ * or halftone screen varies within the tone of the photograph it renders.
+ */
+const CELL_DROP_CHANCE = 0.42;
+
+/** How far up a wall the ground contact darkening reaches. */
 const AO_HEIGHT_M = 9;
 
-/** Hard ceiling on instances. Beyond this the smallest footprints are dropped —
- *  ordinary cartographic generalisation, and it never triggers at the app's framings
- *  (the default desktop view builds ~400). */
-const MAX_INSTANCES = 9000;
+/**
+ * Bevel width in metres. The reference's cubes are not razor-sharp — the edges read
+ * soft and toy-like, which is a large part of why it looks like voxel art rather than
+ * CAD. Rather than bevelling the geometry (12 extra tris an instance, times ~7,000
+ * instances), the shader blends each face's tone toward its neighbour across the last
+ * couple of metres, which is what a rounded edge does to the light anyway.
+ */
+const BEVEL_M = 1.4;
+
+/**
+ * How far ABOVE a short neighbour's roofline the crevice occlusion reaches on the
+ * tall cube's wall. Roughly a third of a cell: in the reference the darkening in an
+ * inner corner fades out well before the top of the taller cube.
+ */
+const CREVICE_M = 8;
+
+/**
+ * Tallest a cluster may be drawn, as a multiple of its own narrowest footprint span.
+ *
+ * The spike guard. Toronto's tiles carry plenty of 6-8 m laneway and infill
+ * footprints, and a quantised 2-3 courses on one of those renders as a needle — the
+ * reference contains nothing remotely like it, and at 5x they were the loudest
+ * artefact in the first cluster build. 2.2 lets a real tower on a real tower-sized
+ * footprint keep its courses while collapsing the needles to one cube.
+ */
+const MAX_ASPECT = 2.2;
+
+/** Hard ceiling on instances. Beyond this the smallest FOOTPRINTS are dropped, whole
+ *  — never a cell out of the middle of a building, which would punch a hole in it. */
+const MAX_INSTANCES = 40000;
 
 /** Re-anchor the scene origin when the camera has wandered this far, so scene-space
  *  metres stay small and float32 in the shader stays exact. */
@@ -251,18 +328,20 @@ const ORIGIN_REANCHOR_M = 4000;
 const VERT = /* glsl */ `
 precision highp float;
 
-attribute vec3 iSize;     // metres: full width, depth, height
+attribute vec3 iSize;     // metres: full width, depth, height OF THIS ONE CUBE
 attribute vec3 iColor;    // authored top-face colour
+attribute vec4 iNbr;      // body-metre heights of the -x, +x, -y, +y neighbour cubes
 
 uniform float uHeightGain;  // camera-zoom height gain (voxelCity.zoomHeightGain)
 uniform float uFlatten;     // route-focus collapse
-uniform float uCellM;
 
 varying vec3 vColor;
 varying vec3 vNormalW;
-varying vec3 vCellM;      // metres from the block's own origin corner (for the lattice)
-varying float vUpM;       // metres above the block's base
-varying float vSeamAmt;   // how much voxel lattice this block earns (see below)
+varying vec3 vNormalL;    // the cube's OWN frame — picks the neighbour and the edges
+varying vec3 vLocalM;     // metres from the cube centre (x,y) / its base (z)
+varying vec3 vHalfM;      // this cube's half extents, post-scale
+varying float vUpM;       // metres above the cube's base
+varying vec4 vNbr;
 
 void main() {
   vColor = iColor;
@@ -270,25 +349,15 @@ void main() {
   float hScale = uHeightGain * uFlatten;
   vec3 local = vec3(position.x * iSize.x, position.y * iSize.y, position.z * iSize.z * hScale);
 
-  // Lattice coordinates run from a CORNER, not the centre, so a block's own edges
-  // always land on a seam and every block is outlined.
-  vCellM = local + vec3(iSize.x * 0.5, iSize.y * 0.5, 0.0);
+  vLocalM = local;
+  vHalfM = vec3(iSize.x * 0.5, iSize.y * 0.5, iSize.z * hScale);
   vUpM = local.z;
+  vNbr = iNbr * hScale;
+  vNormalL = normal;
 
   // instanceMatrix carries rotation + translation only (no scale), so its upper 3x3
   // is a pure rotation and doubles as the normal matrix.
   vNormalW = normalize(mat3(instanceMatrix) * normal);
-
-  // ONLY BIG BLOCKS GET THE VOXEL LATTICE.
-  //
-  // The reference's cube seams live on blocks the size of a city block; drawing the
-  // same fixed-metre lattice on a 20 m infill shophouse puts a full cross through a
-  // face two cells wide, and a reviewer reading the result called it "meshy /
-  // subdivided, like a wireframe". Fading the lattice in only once a block is a few
-  // cells across reproduces the reference (its small blocks are flat single tones
-  // too) and removes the artefact.
-  float span = min(iSize.x, iSize.y);
-  vSeamAmt = smoothstep(1.9 * uCellM, 3.4 * uCellM, span);
 
   vec4 world = instanceMatrix * vec4(local, 1.0);
   gl_Position = projectionMatrix * modelViewMatrix * world;
@@ -301,56 +370,112 @@ precision highp float;
 uniform vec2 uLitAxis;      // world-XY direction the LIT wall faces (viewport-anchored)
 uniform float uLit;         // lit-wall / top luminance ratio
 uniform float uShade;       // shaded-wall / top luminance ratio
-uniform float uSeam;        // voxel lattice darkening, 0..1
-uniform float uSeamHalfM;   // half-width of a seam line, in metres (kept ~1px)
-uniform float uCellM;
-uniform float uAo;          // base contact darkening, 0..1
+uniform float uAo;          // ground contact darkening, 0..1
 uniform float uAoHeightM;
+uniform float uCrevice;     // crevice occlusion between abutting cubes, 0..1
+uniform float uCreviceM;    // how far the crevice gradient reaches, metres
+uniform float uBevelM;      // bevel width, metres
+uniform float uGrad;        // across-face gradient amplitude, 0..1
 uniform vec3  uMute;        // route-focus target colour
 uniform float uMuteMix;
 
 varying vec3 vColor;
 varying vec3 vNormalW;
-varying vec3 vCellM;
+varying vec3 vNormalL;
+varying vec3 vLocalM;
+varying vec3 vHalfM;
 varying float vUpM;
-varying float vSeamAmt;
-
-// distance to the nearest lattice plane, in metres
-float latticeDist(float v) {
-  float f = fract(v / uCellM);
-  return min(f, 1.0 - f) * uCellM;
-}
+varying vec4 vNbr;
 
 void main() {
   vec3 base = mix(vColor, uMute, uMuteMix);
 
-  // --- face tone: three constant levels, exactly as the reference renders them ---
-  float tone;
   bool isTop = vNormalW.z > 0.5;
+
+  // --- the three measured face levels (§38: 1.000 : 0.641 : 0.491) --------------
+  // Computed for BOTH walls up front, because the bevel needs to know what the face
+  // across each edge is doing.
+  vec2 hw = vNormalW.xy;
+  float lenW = max(length(hw), 1e-4);
+  float toneThis;
   if (isTop) {
-    tone = 1.0;
+    toneThis = 1.0;
   } else {
-    vec2 h = vNormalW.xy;
-    float len = max(length(h), 1e-4);
-    float d = dot(h / len, uLitAxis);
-    // A narrow smoothstep rather than a hard step: it reads as two flat tones on the
-    // grid-aligned blocks that dominate the frame, but stops the handful of buildings
-    // sitting at 45 degrees to the light from aliasing along their own edge.
-    tone = mix(uShade, uLit, smoothstep(-0.12, 0.12, d));
+    // A narrow smoothstep rather than a hard step: two flat tones on the grid-aligned
+    // cubes that dominate the frame, without aliasing along the edge of the handful
+    // sitting at 45 degrees to the light.
+    toneThis = mix(uShade, uLit, smoothstep(-0.12, 0.12, dot(hw / lenW, uLitAxis)));
   }
 
-  vec3 c = base * tone;
+  float tone = toneThis;
 
-  // --- voxel lattice: the seams between stacked cubes -------------------------
-  float dSeam;
-  if (isTop) dSeam = min(latticeDist(vCellM.x), latticeDist(vCellM.y));
-  else       dSeam = min(min(latticeDist(vCellM.x), latticeDist(vCellM.y)), latticeDist(vCellM.z));
-  c *= 1.0 - uSeam * vSeamAmt * (1.0 - smoothstep(0.0, uSeamHalfM, dSeam));
+  // --- BEVEL: soften every cube edge -------------------------------------------
+  // A rounded edge does not change a face's colour, it rotates its normal toward the
+  // neighbouring face over the last millimetre or two — so the light it catches
+  // crosses smoothly between the two faces. Blending the TONE across the same band is
+  // the same thing to within a highlight, at zero geometry cost. It is what turns a
+  // razor-sharp CAD prism into the reference's soft, toy-like cube.
+  float dEdge;      // metres to the nearest edge of THIS face
+  float toneAcross; // the tone of the face on the other side of that edge
+  if (isTop) {
+    dEdge = min(vHalfM.x - abs(vLocalM.x), vHalfM.y - abs(vLocalM.y));
+    // The roof always meets a WALL, and a wall is always darker than the roof, so the
+    // exact wall matters less than the fact that the roof dims into it.
+    toneAcross = mix(uShade, uLit, 0.5);
+  } else {
+    float dTopEdge = vHalfM.z - vUpM;                       // meets the roof
+    float dSide = (abs(vNormalL.x) > 0.5)
+      ? vHalfM.y - abs(vLocalM.y)                            // meets the other wall
+      : vHalfM.x - abs(vLocalM.x);
+    float dBottom = vUpM;
+    if (dTopEdge <= dSide && dTopEdge <= dBottom) { dEdge = dTopEdge; toneAcross = 1.0; }
+    // The vertical corner where two walls meet is the ONE edge whose bevel must stay
+    // tiny. Blending a lit wall toward a shaded one across it is what closed the
+    // measured gap between them from 0.641 : 0.491 to 0.676 : 0.650 � the two walls
+    // bunched into near-identical values and the cube structure sank into shadow.
+    // The top edge (wall meeting roof) is where the toy-like rounding actually reads,
+    // so that one keeps its full blend.
+    else if (dSide <= dBottom)                    { dEdge = dSide * 3.0; toneAcross = (toneThis > (uLit + uShade) * 0.5) ? uShade : uLit; }
+    else                                          { dEdge = dBottom;  toneAcross = toneThis * (1.0 - uAo); }
+  }
+  tone = mix(toneAcross, tone, smoothstep(0.0, uBevelM, dEdge) * 0.30 + 0.70);
 
-  // --- contact darkening at the base of every wall ----------------------------
-  if (!isTop) c *= mix(1.0 - uAo, 1.0, smoothstep(0.0, uAoHeightM, vUpM));
+  // --- FACE GRADIENT: no face in the reference is one flat tone -----------------
+  // Walls brighten toward the top, roofs brighten away from the light. Small — this
+  // is the difference between "a flat swatch" and "a lit surface", not a new palette,
+  // and it is what stops big cube faces owning a whole luminance band.
+  float g = isTop
+    ? clamp(0.5 + dot(normalize(vec2(vLocalM.x, vLocalM.y) + 1e-4), uLitAxis) * 0.5, 0.0, 1.0)
+    : clamp(vUpM / max(vHalfM.z, 1e-3), 0.0, 1.0);
+  tone *= 1.0 + uGrad * (g - 0.5);
 
-  gl_FragColor = vec4(c, 1.0);
+  // --- CREVICE OCCLUSION where a cube abuts a shorter neighbour -----------------
+  // The single strongest voxel cue in the reference after the cluster itself: a tall
+  // cube's wall is dark just above the roofline of the short cube pressed against it,
+  // fading upward. Below that roofline the wall is hidden anyway; the visible artefact
+  // is the gradient in the corner between them.
+  if (!isTop) {
+    float nbr =
+        (vNormalL.x < -0.5) ? vNbr.x
+      : (vNormalL.x >  0.5) ? vNbr.y
+      : (vNormalL.y < -0.5) ? vNbr.z
+      : (vNormalL.y >  0.5) ? vNbr.w : 0.0;
+    if (nbr > 0.0) {
+      tone *= mix(1.0 - uCrevice, 1.0, smoothstep(nbr, nbr + uCreviceM, vUpM));
+    }
+  }
+
+  // --- ground contact darkening at the base of every wall ----------------------
+  // Scaled to the CUBE, not fixed in metres. A fixed 9 m skirt was a third of a 24 m
+  // cube's wall and dragged the whole face down; on the old one-prism-per-building
+  // renderer the same 9 m was a small skirt on a much taller wall. AO shapes the
+  // bottom of a cube, it does not tint it.
+  if (!isTop) {
+    float aoH = min(uAoHeightM, vHalfM.z * 0.30);
+    tone *= mix(1.0 - uAo, 1.0, smoothstep(0.0, aoH, vUpM));
+  }
+
+  gl_FragColor = vec4(base * tone, 1.0);
 }
 `;
 
@@ -445,6 +570,10 @@ function metresBetween(aLng: number, aLat: number, bLng: number, bLat: number): 
   return Math.hypot(dx, dy);
 }
 
+/**
+ * One real footprint. It is no longer one drawn box — `build` expands it into an
+ * `nx * ny` cluster of cubes, which is what the reference actually shows.
+ */
 interface Block {
   cx: number;
   cy: number;
@@ -455,6 +584,19 @@ interface Block {
   height: number;
   tint: number;
   area: number;
+  /** cluster shape, filled in by `push` */
+  nx: number;
+  ny: number;
+}
+
+/** Deterministic 0..1 from a footprint id and a cell index. Stable across tile
+ *  refetches, so a cube never changes height when its tile reloads. */
+function cellRand(id: number, ix: number, iy: number): number {
+  let h = (Math.imul(id, 0x27d4eb2d) ^ Math.imul(ix + 1, 0x9e3779b1) ^ Math.imul(iy + 1, 0x85ebca6b)) >>> 0;
+  h ^= h >>> 15;
+  h = Math.imul(h, 0x2545f491) >>> 0;
+  h ^= h >>> 13;
+  return (h % 4096) / 4096;
 }
 
 /**
@@ -523,7 +665,17 @@ export interface VoxelMeshLayer extends CustomLayerInterface {
   /** Rebuild the instance buffers from the tiles currently loaded. */
   sync(): void;
   /** Diagnostics for the verification harness. */
-  stats(): { blocks: number; built: number; features: number; dropped: number; origin: [number, number] };
+  stats(): {
+    /** CUBES drawn (one instance each). */
+    blocks: number;
+    /** real footprints behind them */
+    built: number;
+    features: number;
+    dropped: number;
+    /** footprints that produced a multi-cube, multi-height cluster */
+    clustered: number;
+    origin: [number, number];
+  };
   /**
    * Show/hide one half of the scene. Verification-only, and it earned its place:
    * when the first build came back with the whole map painted black, this is what
@@ -552,10 +704,16 @@ export function createVoxelMeshLayer(opts: VoxelMeshOptions): VoxelMeshLayer {
   let built = 0;
   let dropped = 0;
   let features = 0;
+  let clustered = 0;
 
   const iSize = new Float32Array(MAX_INSTANCES * 3);
   const iColor = new Float32Array(MAX_INSTANCES * 3);
+  const iNbr = new Float32Array(MAX_INSTANCES * 4);
+  // Shadows are one per FOOTPRINT, and a footprint is at least one cube, so the cube
+  // budget is a safe upper bound for them too.
   const iExtent = new Float32Array(MAX_INSTANCES * 2);
+  /** Reused per-cluster cell heights � at most MAX_CELLS_PER_AXIS squared. */
+  const cellH = new Float32Array(MAX_CELLS_PER_AXIS * MAX_CELLS_PER_AXIS);
   const scratch: Block[] = [];
   const local = { x: 0, y: 0 };
 
@@ -565,7 +723,8 @@ export function createVoxelMeshLayer(opts: VoxelMeshOptions): VoxelMeshLayer {
     const p = PALETTES[theme];
     blockMat.uniforms.uLit.value = t.lit;
     blockMat.uniforms.uShade.value = t.shade;
-    blockMat.uniforms.uSeam.value = p.seam;
+    blockMat.uniforms.uCrevice.value = p.crevice;
+    blockMat.uniforms.uGrad.value = p.gradient;
     blockMat.uniforms.uAo.value = p.aoStrength;
     const g = srgb(p.ground);
     (blockMat.uniforms.uMute.value as THREE.Vector3).set(g[0], g[1], g[2]);
@@ -641,6 +800,15 @@ export function createVoxelMeshLayer(opts: VoxelMeshOptions): VoxelMeshLayer {
       const halfD = Math.max(MIN_HALF_M, box.halfD - INSET_M);
       const height = quantizeHeightM(h);
       if (!(height > 0)) return;
+      // THE CLUSTER. The footprint is divided into a whole number of cells as close
+      // to CELL_M as it can manage, so the cubes exactly tile the footprint — no
+      // partial cell at the far edge, and nothing spilling outside the building.
+      // The grid is laid out in the footprint's OWN frame rather than in world space:
+      // a world grid would leave every off-grid building with a staircase silhouette
+      // and cells hanging over its edges, which is precisely the "do not spill
+      // outside its own footprint" rule.
+      const nx = Math.max(1, Math.min(MAX_CELLS_PER_AXIS, Math.round((halfW * 2) / CELL_M)));
+      const ny = Math.max(1, Math.min(MAX_CELLS_PER_AXIS, Math.round((halfD * 2) / CELL_M)));
       scratch.push({
         cx: box.cx,
         cy: box.cy,
@@ -651,6 +819,8 @@ export function createVoxelMeshLayer(opts: VoxelMeshOptions): VoxelMeshLayer {
         height,
         tint: id,
         area: halfW * halfD,
+        nx,
+        ny,
       });
     };
 
@@ -694,38 +864,51 @@ export function createVoxelMeshLayer(opts: VoxelMeshOptions): VoxelMeshLayer {
     features = feats.length;
     dropped = oversize;
     built = scratch.length;
-    if (scratch.length > MAX_INSTANCES) {
+
+    // INSTANCE BUDGET, spent in whole buildings. A cluster with a cell missing out of
+    // its middle is a building with a hole in it, so when the budget binds the
+    // smallest FOOTPRINTS are dropped entirely — the same cartographic generalisation
+    // as before, just counted in cubes.
+    let cubesWanted = 0;
+    for (const b of scratch) cubesWanted += b.nx * b.ny;
+    if (cubesWanted > MAX_INSTANCES) {
       scratch.sort((a, b2) => b2.area - a.area);
-      scratch.length = MAX_INSTANCES;
+      let acc = 0;
+      let keep = 0;
+      for (; keep < scratch.length; keep++) {
+        const n = scratch[keep].nx * scratch[keep].ny;
+        if (acc + n > MAX_INSTANCES) break;
+        acc += n;
+      }
+      scratch.length = keep;
     }
 
     const topsRgb = PALETTES[theme].tops.map(srgb);
     const litAxis = litAxisWorld();
-    count = scratch.length;
+    const nFootprints = scratch.length;
+    let cube = 0;
+    let clusters = 0;
 
-    for (let i = 0; i < count; i++) {
+    for (let i = 0; i < nFootprints; i++) {
       const b = scratch[i];
-      _pos.set(b.cx, b.cy, b.base);
       _q.setFromAxisAngle(_axisZ, b.yaw);
-      _m4.compose(_pos, _q, _scale);
-      blocks.setMatrixAt(i, _m4);
+      const cs = Math.cos(b.yaw);
+      const sn = Math.sin(b.yaw);
 
-      iSize[i * 3] = b.halfW * 2;
-      iSize[i * 3 + 1] = b.halfD * 2;
-      iSize[i * 3 + 2] = Math.max(1, b.height - b.base);
-
+      // --- colour: ONE per footprint, so a cluster reads as one building ---------
       const c = topsRgb[pickTint(b.tint, topsRgb.length)];
       const j = tintJitter(b.tint);
       const hj = hueJitter(b.tint);
       // Rotate warm<->cool about the block's own mean: +hj pushes toward violet,
       // -hj toward blue. Luminance is held by moving R and B in opposite directions.
       const mean = (c[0] + c[1] + c[2]) / 3;
-      iColor[i * 3] = Math.min(1, Math.max(0, (c[0] + (c[0] - mean) * hj * 2.2) * j));
-      iColor[i * 3 + 1] = Math.min(1, Math.max(0, c[1] * j));
-      iColor[i * 3 + 2] = Math.min(1, Math.max(0, (c[2] - (c[2] - mean) * hj * 0.9) * j));
+      const cr = Math.min(1, Math.max(0, (c[0] + (c[0] - mean) * hj * 2.2) * j));
+      const cg = Math.min(1, Math.max(0, c[1] * j));
+      const cb = Math.min(1, Math.max(0, (c[2] - (c[2] - mean) * hj * 0.9) * j));
 
-      // Contact shadow: the footprint, grown by a margin that scales with the
-      // block's height, and nudged away from the light like a cast shadow.
+      // --- contact shadow: ONE per footprint, not one per cube ------------------
+      // The building casts one shadow; a shadow quad per cube would stack alpha in
+      // the middle of every cluster and burn a dark core into it.
       const grow = 2.6 + b.height * 0.10;
       const off = b.height * 0.16;
       _pos.set(b.cx - litAxis[0] * off, b.cy - litAxis[1] * off, 0.12);
@@ -733,14 +916,79 @@ export function createVoxelMeshLayer(opts: VoxelMeshOptions): VoxelMeshLayer {
       shadows.setMatrixAt(i, _m4);
       iExtent[i * 2] = (b.halfW + grow) * 2;
       iExtent[i * 2 + 1] = (b.halfD + grow) * 2;
+
+      // --- the cluster ----------------------------------------------------------
+      const w = b.halfW * 2;
+      const d = b.halfD * 2;
+      const { nx, ny } = b;
+      const cw = w / nx;
+      const cd = d / ny;
+      const body = Math.max(1, b.height - b.base);
+      // Courses are whole steps of the SHARED height lattice, and `step` divides the
+      // real body exactly — so the tallest cell in every cluster is the footprint's
+      // own quantised height, never more.
+      // SPIKE GUARD. A voxel cube is about as tall as it is wide; a 6 m laneway
+      // footprint taking three quantised courses renders as a needle, and the
+      // reference has nothing of the kind. So a cluster's height is capped by its own
+      // horizontal extent � a rule about how a real height is DRAWN in this idiom,
+      // exactly like the sqrt compression `quantizeHeightM` already applies, and it
+      // only ever draws a real building shorter, never taller than it is.
+      const minSpanM = Math.min(w, d);
+      const maxCourses = Math.max(1, Math.floor((minSpanM * MAX_ASPECT) / CELL_M));
+      const courses = Math.max(1, Math.min(Math.round(body / HEIGHT_STEP_M), maxCourses));
+      const step = body / Math.max(1, Math.round(body / HEIGHT_STEP_M));
+
+      // Which cells stand a course lower. One cell is always held at full height, so
+      // the mass still reads as the building's real height; a single-course footprint
+      // gets no variation at all, because it has none to express.
+      const nCells = nx * ny;
+      const tallest = nCells > 1 ? Math.abs(b.tint * 2654435761) % nCells : 0;
+      for (let k = 0; k < nCells; k++) {
+        const ix = k % nx;
+        const iy = (k / nx) | 0;
+        const drop = courses >= 2 && k !== tallest && cellRand(b.tint, ix, iy) < CELL_DROP_CHANCE ? 1 : 0;
+        cellH[k] = (courses - drop) * step;
+      }
+      if (nCells > 1 && courses >= 2) clusters++;
+
+      for (let k = 0; k < nCells; k++) {
+        const ix = k % nx;
+        const iy = (k / nx) | 0;
+        const u = -w / 2 + (ix + 0.5) * cw;
+        const v = -d / 2 + (iy + 0.5) * cd;
+        _pos.set(b.cx + u * cs - v * sn, b.cy + u * sn + v * cs, b.base);
+        _m4.compose(_pos, _q, _scale);
+        blocks.setMatrixAt(cube, _m4);
+
+        iSize[cube * 3] = cw;
+        iSize[cube * 3 + 1] = cd;
+        iSize[cube * 3 + 2] = cellH[k];
+
+        iColor[cube * 3] = cr;
+        iColor[cube * 3 + 1] = cg;
+        iColor[cube * 3 + 2] = cb;
+
+        // Neighbour heights, in the cube's own frame, for the crevice occlusion. A
+        // zero means open air on that side — the cluster's outer walls get no
+        // crevice, which is right: there is nothing pressed against them.
+        iNbr[cube * 4] = ix > 0 ? cellH[k - 1] : 0;
+        iNbr[cube * 4 + 1] = ix < nx - 1 ? cellH[k + 1] : 0;
+        iNbr[cube * 4 + 2] = iy > 0 ? cellH[k - nx] : 0;
+        iNbr[cube * 4 + 3] = iy < ny - 1 ? cellH[k + nx] : 0;
+
+        cube++;
+      }
     }
 
-    blocks.count = count;
-    shadows.count = count;
+    count = cube;
+    clustered = clusters;
+    blocks.count = cube;
+    shadows.count = nFootprints;
     blocks.instanceMatrix.needsUpdate = true;
     shadows.instanceMatrix.needsUpdate = true;
     (blocks.geometry.getAttribute('iSize') as THREE.InstancedBufferAttribute).needsUpdate = true;
     (blocks.geometry.getAttribute('iColor') as THREE.InstancedBufferAttribute).needsUpdate = true;
+    (blocks.geometry.getAttribute('iNbr') as THREE.InstancedBufferAttribute).needsUpdate = true;
     (shadows.geometry.getAttribute('iExtent') as THREE.InstancedBufferAttribute).needsUpdate = true;
     map.triggerRepaint();
   }
@@ -857,6 +1105,7 @@ export function createVoxelMeshLayer(opts: VoxelMeshOptions): VoxelMeshLayer {
       box.deleteAttribute('uv');
       box.setAttribute('iSize', new THREE.InstancedBufferAttribute(iSize, 3));
       box.setAttribute('iColor', new THREE.InstancedBufferAttribute(iColor, 3));
+      box.setAttribute('iNbr', new THREE.InstancedBufferAttribute(iNbr, 4));
 
       blockMat = new THREE.ShaderMaterial({
         vertexShader: VERT,
@@ -865,9 +1114,10 @@ export function createVoxelMeshLayer(opts: VoxelMeshOptions): VoxelMeshLayer {
           uLitAxis: { value: new THREE.Vector2(-0.7, -0.7) },
           uLit: { value: TONES[theme].lit },
           uShade: { value: TONES[theme].shade },
-          uSeam: { value: PALETTES[theme].seam },
-          uSeamHalfM: { value: 1.0 },
-          uCellM: { value: CELL_M },
+          uCrevice: { value: PALETTES[theme].crevice },
+          uCreviceM: { value: CREVICE_M },
+          uBevelM: { value: BEVEL_M },
+          uGrad: { value: PALETTES[theme].gradient },
           uAo: { value: PALETTES[theme].aoStrength },
           uAoHeightM: { value: AO_HEIGHT_M },
           uHeightGain: { value: 1 },
@@ -940,11 +1190,11 @@ export function createVoxelMeshLayer(opts: VoxelMeshOptions): VoxelMeshLayer {
 
       const zoom = map.getZoom();
       blockMat.uniforms.uHeightGain.value = zoomHeightGain(zoom);
-      // Keep a seam about one CSS pixel wide at any zoom, and let it fade out
-      // entirely when a metre is smaller than a pixel (otherwise it aliases).
+      // Hold the bevel at roughly a constant SCREEN width. A fixed metre bevel is a
+      // fat smear when the camera is close and invisible when it is far, and both
+      // read as a different material rather than as the same rounded cube.
       const mpp = metresPerPixel(map);
-      blockMat.uniforms.uSeamHalfM.value = Math.max(0.35, mpp * 1.15);
-      blockMat.uniforms.uSeam.value = PALETTES[theme].seam * (mpp > 3.2 ? 0 : 1);
+      blockMat.uniforms.uBevelM.value = Math.max(BEVEL_M, mpp * 1.6);
       const axis = litAxisWorld();
       (blockMat.uniforms.uLitAxis.value as THREE.Vector2).set(axis[0], axis[1]);
 
@@ -992,7 +1242,7 @@ export function createVoxelMeshLayer(opts: VoxelMeshOptions): VoxelMeshLayer {
     },
 
     stats() {
-      return { blocks: count, built, features, dropped, origin: [origin.lng, origin.lat] };
+      return { blocks: count, built, features, dropped, clustered, origin: [origin.lng, origin.lat] };
     },
 
     setPartVisible(part, on) {
