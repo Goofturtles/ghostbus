@@ -15,7 +15,8 @@
 
 import type { Db } from './db.ts';
 import {
-  buildPatternIndex, emptyPatternIndex, type PatternIndex, type StaticTripSlot,
+  boardFingerprint, loadOrBuildPatternIndex, emptyPatternIndex,
+  type PatternIndex, type StaticTripSlot,
 } from './patterns.ts';
 import {
   nearestStopOnRoute, mergeRtTrip, resolvePatterns, promotionState,
@@ -259,8 +260,30 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
 
   // ---------- static reload ----------
 
+  /**
+   * Make the static pattern index current. Called on boot and every 6 hours.
+   *
+   * THIS USED TO READ 2.15M stop_times ROWS EVERY TIME, on a free-tier database with a
+   * monthly transfer quota — four rebuilds in one session spent the month. Now the first
+   * thing it does is take a one-row fingerprint of the static board, and three outcomes
+   * follow from it:
+   *
+   *   unchanged        keep the index we already hold and read nothing else at all. This
+   *                    is the 6-hourly reload's normal case, and it now costs one row.
+   *   changed          rebuild, and cache the result for the next boot.
+   *   unfingerprintable  rebuild, and cache nothing. Never guess.
+   *
+   * A boot has no index yet, so it falls through to loadOrBuildPatternIndex, which
+   * restores the cached blob when the fingerprint proves it still describes this board.
+   */
   async function reloadStatic(newBoardTag: string): Promise<void> {
-    const next = await buildPatternIndex(db, agency, newBoardTag);
+    const fingerprint = await boardFingerprint(db, agency);
+    if (ready && boardTag === newBoardTag && fingerprint !== null && index.fingerprint === fingerprint) {
+      console.log(`[engine] board ${boardTag} is unchanged (fingerprint ${fingerprint.slice(0, 12)}) ` +
+        '— keeping the loaded index, no static read');
+      return;
+    }
+    const next = await loadOrBuildPatternIndex(db, agency, newBoardTag, fingerprint);
     const boardChanged = newBoardTag !== boardTag && boardTag !== '?..?';
     index = next;
     boardTag = newBoardTag;
@@ -285,7 +308,7 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
     // must not stomp on fresher in-memory state with the row we ourselves wrote.
     if (xwalk.size === 0) await loadCrosswalk();
     console.log(`[engine] pattern index: ${index.patterns.size} patterns, ${index.tripIds.size} trips, ` +
-      `${index.routeStops.size} routes with geometry (${(index.elapsedMs / 1000).toFixed(1)}s)`);
+      `${index.routeStops.size} routes with geometry (${(index.elapsedMs / 1000).toFixed(1)}s, ${index.source})`);
   }
 
   /**
