@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import {
   metres, nearestStopOnRoute, mergeRtTrip, resolvePatterns, promotionState,
   xwalkConfidence, usableForDelay, crossRouteAgreement, monotonicityViolations,
-  type RtPattern, type StaticPatternLite,
+  crosswalkedStaticSeqs,
+  type RtPattern, type StaticPatternLite, type XwalkEntry,
 } from './xwalk.ts';
 import { dedupeByKey } from './engine.ts';
 
@@ -276,6 +277,69 @@ test('MONOTONICITY flags a trip whose crosswalked stops go backwards', () => {
   assert.equal(m.total, 3);
   assert.equal(m.violations, 2);
   assert.equal(monotonicityViolations([]).rate, null);
+});
+
+// ---------- the monotonicity gate's INPUT (BLOCKERS 17) ----------
+
+const xwEntry = (stopId: string, over: Partial<XwalkEntry> = {}): XwalkEntry => ({
+  rtStopId: 'rt', stopId, votes: 12, distinctPatterns: 2, geoResidM: null,
+  source: 'propagated', state: 'confirmed', confidence: 0.85, ...over,
+});
+const xwMap = (pairs: Record<string, string>, over: Partial<XwalkEntry> = {}): Map<string, XwalkEntry> =>
+  new Map(Object.entries(pairs).map(([rt, st]) => [rt, xwEntry(st, { rtStopId: rt, ...over })]));
+
+test('crosswalkedStaticSeqs reads the STATIC side, in realtime order', () => {
+  const staticStops = ['s1', 's2', 's3', 's4'];
+  // A healthy crosswalk: realtime order and static order agree.
+  assert.deepEqual(
+    crosswalkedStaticSeqs(['a', 'b', 'c'], staticStops, xwMap({ a: 's1', b: 's2', c: 's3' })),
+    [1, 2, 3]);
+  // The RT sequences need not equal the static ones — only the ORDER has to hold.
+  assert.deepEqual(
+    crosswalkedStaticSeqs(['a', 'b'], staticStops, xwMap({ a: 's2', b: 's4' })),
+    [2, 4]);
+  // Unknown, unconfirmed and under-confident identities contribute nothing either way.
+  const mixed = xwMap({ a: 's1', b: 's2', c: 's3' });
+  mixed.get('b')!.state = 'candidate';
+  assert.deepEqual(crosswalkedStaticSeqs(['a', 'b', 'c', 'zz'], staticStops, mixed), [1, 3]);
+  const thin = xwMap({ a: 's1', b: 's2' }, { confidence: 0.59 });
+  assert.deepEqual(crosswalkedStaticSeqs(['a', 'b'], staticStops, thin), []);
+  // A named stop that is not on this pattern is delay.ts's consistency gate to void, not
+  // evidence of disorder here.
+  assert.deepEqual(
+    crosswalkedStaticSeqs(['a', 'b'], staticStops, xwMap({ a: 's1', b: 'ELSEWHERE' })),
+    [1]);
+});
+
+test('crosswalkedStaticSeqs gives a looping pattern the benefit of the doubt', () => {
+  // A turnback pattern that visits s2 twice. Two realtime stops mapping to s2 in order is
+  // a legal trip, not an inversion — the audit must pick occurrences 2 then 4.
+  const loop = ['s1', 's2', 's3', 's2', 's5'];
+  assert.deepEqual(
+    crosswalkedStaticSeqs(['a', 'b', 'c'], loop, xwMap({ a: 's2', b: 's3', c: 's2' })),
+    [2, 3, 4]);
+  assert.equal(monotonicityViolations([{
+    staticSeqs: crosswalkedStaticSeqs(['a', 'b', 'c'], loop, xwMap({ a: 's2', b: 's3', c: 's2' })),
+  }]).violations, 0);
+});
+
+test('REGRESSION (BLOCKERS 17): the monotonicity gate can actually fail', () => {
+  // The bug: runCycle fed monotonicityViolations the binding's REALTIME stop sequences,
+  // sorted ascending. Sorted input is monotone by construction, so the audit compared a
+  // list against itself and returned 0 violations for EVERY possible crosswalk — a safety
+  // check that reported "healthy" because it could not report anything else.
+  const staticStops = ['s1', 's2', 's3', 's4', 's5'];
+  // A crosswalk error: realtime stops 1,2,3 are mapped to static stops 5,3,1 — the trip
+  // would be visiting its own route backwards.
+  const scrambled = xwMap({ a: 's5', b: 's3', c: 's1' });
+  const rtSeqsSorted = [1, 2, 3];               // what the old code passed
+  assert.equal(monotonicityViolations([{ staticSeqs: rtSeqsSorted }]).violations, 0,
+    'the OLD input is tautological: sorted realtime sequences can never violate');
+
+  const staticSeqs = crosswalkedStaticSeqs(['a', 'b', 'c'], staticStops, scrambled);
+  assert.deepEqual(staticSeqs, [5, 3, 1]);
+  assert.equal(monotonicityViolations([{ staticSeqs }]).violations, 1,
+    'the NEW input catches the inversion the gate exists to catch');
 });
 
 // ---------- regressions found by running the engine against the live feed ----------

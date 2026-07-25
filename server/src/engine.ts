@@ -19,7 +19,7 @@ import {
 } from './patterns.ts';
 import {
   nearestStopOnRoute, mergeRtTrip, resolvePatterns, promotionState, xwalkConfidence,
-  crossRouteAgreement, monotonicityViolations,
+  crossRouteAgreement, monotonicityViolations, crosswalkedStaticSeqs,
   type RtPattern, type StaticPatternLite, type XwalkEntry, type PatternState,
 } from './xwalk.ts';
 import { originLock, preferBinding, type LockAnchor, type LockSlot, type LockResult } from './bind.ts';
@@ -257,8 +257,76 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
       resolvedStatic = new Map(); resolvedIter = new Map();
       console.log(`[engine] board changed to ${boardTag} — crosswalk and bindings invalidated`);
     }
+    // COLD START. `rt_stop_xwalk` used to be written and never read, so every restart began
+    // from an empty crosswalk and needed ~8 cycles (a propagated entry needs 8 corroborating
+    // votes to clear the 0.60 floor) before it could back anything at all. On a host that
+    // sleeps when idle that warm-up is longer than the uptime, so the engine would publish
+    // nothing, ever. Only on a genuinely cold crosswalk: a periodic reload of the same board
+    // must not stomp on fresher in-memory state with the row we ourselves wrote.
+    if (xwalk.size === 0) await loadCrosswalk();
     console.log(`[engine] pattern index: ${index.patterns.size} patterns, ${index.tripIds.size} trips, ` +
       `${index.routeStops.size} routes with geometry (${(index.elapsedMs / 1000).toFixed(1)}s)`);
+  }
+
+  /**
+   * Restore the learned crosswalk for the CURRENT board tag.
+   *
+   * Three merge properties this has to get right, because a warm start that lies is worse
+   * than a cold one:
+   *
+   *  1. A loaded entry is NOT a fresh observation. `xwalkVotes` is seeded with the persisted
+   *     count and nothing else: the usual `+ 1` then only fires when this cycle genuinely
+   *     re-derives the identity. Crediting a vote for merely reading a row would let an
+   *     entry climb the confidence ladder by restarting the process.
+   *  2. New evidence must still be able to overturn a stale mapping. `xwalkProposals` is
+   *     seeded with the loaded stop id, so a later cycle proposing a DIFFERENT static stop
+   *     makes the set size 2 and marks the rt stop conflicted — exactly as it would have
+   *     within one process. Without this seeding a contradiction would silently overwrite,
+   *     which is the one outcome the conflict machinery exists to prevent.
+   *  3. Entries persisted as `conflicted` come back conflicted, at confidence 0, and stay
+   *     out of the propagation seed.
+   *
+   * Scoped by board tag, so a board rollover cannot resurrect stop identities that were
+   * learned against a schedule we no longer hold.
+   */
+  async function loadCrosswalk(): Promise<void> {
+    try {
+      const res = await db.query<{
+        rt_stop_id: string; stop_id: string; votes: number | string;
+        distinct_patterns: number | string; geo_resid_m: number | string | null;
+        source: string; state: string; confidence: number | string;
+      }>(
+        `SELECT rt_stop_id, stop_id, votes, distinct_patterns, geo_resid_m, source, state, confidence
+           FROM rt_stop_xwalk WHERE agency=$1 AND board_tag=$2`,
+        [agency, boardTag],
+      );
+      let usable = 0;
+      for (const r of res.rows) {
+        const state = r.state === 'confirmed' || r.state === 'conflicted' ? r.state : 'candidate';
+        const confidence = state === 'conflicted' ? 0 : Number(r.confidence);
+        xwalk.set(r.rt_stop_id, {
+          rtStopId: r.rt_stop_id,
+          stopId: r.stop_id,
+          votes: Number(r.votes),
+          distinctPatterns: Number(r.distinct_patterns),
+          geoResidM: r.geo_resid_m == null ? null : Number(r.geo_resid_m),
+          source: r.source === 'geo' ? 'geo' : 'propagated',
+          state,
+          confidence,
+        });
+        xwalkVotes.set(r.rt_stop_id, Number(r.votes));          // continue the count, do not restart it
+        xwalkProposals.set(r.rt_stop_id, new Set([r.stop_id])); // so a contradiction still conflicts
+        if (state === 'conflicted') conflictedStops.add(r.rt_stop_id);
+        else if (state === 'confirmed' && confidence >= XWALK_MIN_CONF) usable++;
+      }
+      if (res.rows.length > 0) {
+        console.log(`[engine] restored ${res.rows.length} crosswalk entries for ${boardTag} ` +
+          `(${usable} usable for a delay row, ${conflictedStops.size} conflicted) — warm start`);
+      }
+    } catch (e) {
+      // A failed restore costs warm-up time, not correctness: the crosswalk relearns.
+      console.error('[engine] crosswalk restore failed:', e instanceof Error ? e.message : e);
+    }
   }
 
   // ---------- (a) geometric anchors ----------
@@ -929,8 +997,16 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
       m.set(rtStopOfKey(key), stop);
     }
     const cra = crossRouteAgreement(perRoute);
+    // The monotonicity audit must be fed the STATIC sequences the crosswalk resolved each
+    // tracked stop to. It used to be fed `[...b.tracked.keys()].sort()` — the binding's own
+    // REALTIME sequences, ascending by construction — so it compared a sorted list against
+    // itself and could not fail on any input. See crosswalkedStaticSeqs in xwalk.ts.
     const mono = monotonicityViolations([...bindings.values()].map((b) => ({
-      staticSeqs: [...b.tracked.keys()].sort((a, c) => a - c),
+      staticSeqs: crosswalkedStaticSeqs(
+        [...b.tracked.keys()].sort((a, c) => a - c).map((seq) => b.tracked.get(seq)!.rtStopId),
+        index.patterns.get(b.staticPatternId)?.stops ?? [],
+        xwalk,
+      ),
     })));
     stats.xwalk = {
       rtStopsSeen: xwalk.size, confirmed, conflicted: conflictedStops.size,

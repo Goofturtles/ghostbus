@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { evaluateGates, patternHealthy, type GateInput } from './gates.ts';
+import { crosswalkedStaticSeqs, monotonicityViolations, type XwalkEntry } from './xwalk.ts';
 
 function gi(over: Partial<GateInput> = {}): GateInput {
   return {
@@ -76,6 +77,41 @@ test('the inactive board is reported ahead of every downstream symptom', () => {
     boardActive: false, xwalkOccurrenceCoverage: 0, crossRouteAgreement: 0, monotonicityViolationRate: 1,
   }));
   assert.equal(r.failed, 'boardActive');
+});
+
+test('REGRESSION (BLOCKERS 17): a bad crosswalk trips the monotonicity gate end to end', () => {
+  // Build the exact chain runCycle runs: a crosswalk -> static sequences -> violation rate
+  // -> evaluateGates. Before the fix runCycle handed the audit its own realtime sequences,
+  // so this whole path was pinned at 0 violations and the gate could not fire.
+  const staticStops = ['s1', 's2', 's3', 's4', 's5', 's6'];
+  const e = (rtStopId: string, stopId: string): XwalkEntry => ({
+    rtStopId, stopId, votes: 12, distinctPatterns: 2, geoResidM: null,
+    source: 'propagated', state: 'confirmed', confidence: 0.85,
+  });
+  // Twenty bound trips, one of which has its middle two stops crosswalked in the wrong
+  // order — 5% violations, exactly at the limit, so it must NOT fire...
+  const healthy = new Map([['a', e('a', 's1')], ['b', e('b', 's2')], ['c', e('c', 's3')]]);
+  const broken = new Map([['a', e('a', 's1')], ['b', e('b', 's4')], ['c', e('c', 's2')]]);
+  const trips = (nBroken: number, nTotal: number) =>
+    Array.from({ length: nTotal }, (_, i) => ({
+      staticSeqs: crosswalkedStaticSeqs(['a', 'b', 'c'], staticStops, i < nBroken ? broken : healthy),
+    }));
+
+  const atLimit = monotonicityViolations(trips(1, 20));
+  assert.equal(atLimit.violations, 1);
+  assert.equal(atLimit.rate, 0.05);
+  assert.equal(evaluateGates(gi({ monotonicityViolationRate: atLimit.rate })).publish, true);
+
+  // ...and two of twenty is 10%, which must suppress everything and say so.
+  const overLimit = monotonicityViolations(trips(2, 20));
+  assert.equal(overLimit.rate, 0.10);
+  const r = evaluateGates(gi({ monotonicityViolationRate: overLimit.rate }));
+  assert.equal(r.publish, false);
+  assert.equal(r.failed, 'monotonicity');
+  assert.match(r.reason ?? '', /out of order/);
+
+  // And the clean crosswalk must still publish, or the gate is merely noisy.
+  assert.equal(monotonicityViolations(trips(0, 20)).violations, 0);
 });
 
 test('per-pattern breaker voids only patterns that drifted half a headway', () => {

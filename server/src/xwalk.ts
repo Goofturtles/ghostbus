@@ -452,10 +452,65 @@ export function crossRouteAgreement(
 }
 
 /**
+ * Resolve one bound trip's tracked RT stops — handed in RT stop_sequence order — to the
+ * STATIC stop_sequences the crosswalk claims they occupy on the bound static pattern.
+ * This is the input `monotonicityViolations` has to be given.
+ *
+ * WHY THIS FUNCTION EXISTS. `runCycle` used to pass the binding's own RT stop sequences,
+ * sorted. Those are ascending by construction, so the audit compared a strictly increasing
+ * list against itself and returned 0 violations on every possible input: a gate that
+ * reported "healthy" because it was structurally incapable of reporting anything else.
+ * The falsifiable property is about the STATIC side — a crosswalk error shows up as the
+ * static sequence going backwards while the realtime sequence goes forwards.
+ *
+ * TWO DELIBERATE LENIENCIES, so that a reported violation is always a real one:
+ *  - A static pattern can visit the same stop twice (loops, turnbacks, on-street
+ *    terminals). Where a stop has several occurrences we take the earliest one that still
+ *    increases, which is the choice that maximises the remaining options — so a violation
+ *    is reported only when NO monotone assignment exists at all.
+ *  - Stops the crosswalk cannot name, and stops it names that are not on this pattern,
+ *    are skipped. An absent identity is not evidence of disorder, and a named stop that
+ *    is off-pattern is the per-trip consistency gate's business (`delay.ts`), which is
+ *    stricter than this one and voids the trip outright.
+ *
+ * Only entries that could actually back a published row are audited, so the gate covers
+ * exactly the crosswalk the product would be relying on.
+ */
+export function crosswalkedStaticSeqs(
+  rtStopsInRtOrder: readonly string[],
+  staticStops: readonly string[],
+  xwalk: ReadonlyMap<string, Pick<XwalkEntry, 'stopId' | 'state' | 'confidence'>>,
+): number[] {
+  const occurrences = new Map<string, number[]>();
+  for (let i = 0; i < staticStops.length; i++) {
+    let a = occurrences.get(staticStops[i]);
+    if (!a) { a = []; occurrences.set(staticStops[i], a); }
+    a.push(i + 1); // stop_sequence is 1-based
+  }
+  const out: number[] = [];
+  let prev = 0;
+  for (const rtStop of rtStopsInRtOrder) {
+    const e = xwalk.get(rtStop);
+    if (!usableForDelay(e)) continue;
+    const occ = occurrences.get((e as XwalkEntry).stopId);
+    if (!occ || occ.length === 0) continue;
+    // Earliest occurrence that keeps the run increasing; failing that, the earliest one at
+    // all — which is <= prev and so surfaces as the violation it is.
+    const chosen = occ.find((s) => s > prev) ?? occ[0];
+    out.push(chosen);
+    prev = chosen;
+  }
+  return out;
+}
+
+/**
  * MONOTONICITY. Within one bound trip, the crosswalked static stops must appear in
  * strictly increasing static stop_sequence order. A violation means the crosswalk has
  * mapped two RT stops to static stops that are out of order — a structural error the
  * geometry alone cannot catch.
+ *
+ * Feed this `crosswalkedStaticSeqs(...)`, never the realtime sequences: see that
+ * function's note on why the realtime side makes the audit tautological.
  */
 export function monotonicityViolations(
   trips: ReadonlyArray<{ staticSeqs: readonly number[] }>,
