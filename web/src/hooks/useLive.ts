@@ -11,8 +11,27 @@ import type {
 } from '@shared/types';
 import { useStore } from '@/store';
 
-/** Fallback when geolocation is denied/unavailable: King & Spadina, Toronto. */
-export const DEFAULT_LOCATION = { lat: 43.6455, lon: -79.3954 };
+/**
+ * Fallback when geolocation is denied/unavailable: downtown Toronto, on John St
+ * between Wellington and Front, in the Entertainment District.
+ *
+ * WHY THIS POINT AND NOT THE STOP ITSELF. The previous default (43.6455, -79.3954)
+ * sat ~30 m from its nearest stop, so the rider and the stop were effectively the
+ * same pixel: the walk was "1 min", the beaded walk path had no length to draw, and
+ * the map's collision avoidance correctly suppressed the stop marker as a duplicate
+ * of the You beacon. The default view therefore showed neither the walk nor the
+ * stop card, which is the least informative possible first impression of a
+ * "how far am I from my stop" app.
+ *
+ * This point is 236 m from stop 15644 `King St West at John St East Side` (504
+ * King, eastbound) — a real 4-minute walk at the default average pace — and its
+ * second-nearest stop, 15643 across the street, is 283 m away, so the framing holds
+ * even if the selection lands on either one. Nothing here is faked: the stop, the
+ * distance and the walk time are all computed from the real GTFS stop table by the
+ * same code that runs on a real geolocation fix. It is a starting viewpoint, shown
+ * only until the rider grants location, and the UI labels it as a default.
+ */
+export const DEFAULT_LOCATION = { lat: 43.645, lon: -79.38736 };
 const NEARBY_RADIUS_M = 800;
 const HEALTH_INTERVAL_MS = 20_000;
 const ARRIVALS_INTERVAL_MS = 30_000;

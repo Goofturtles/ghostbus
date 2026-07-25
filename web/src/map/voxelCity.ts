@@ -90,8 +90,20 @@ export const VOXEL_MIN_ZOOM = 14.6;
  * short side faces, which is a comparatively TOP-DOWN camera. At pitch 75 the
  * frame fills with facades and a horizon and stops reading as a diorama entirely;
  * at 58-60 the top faces dominate, the street grid stays legible, and it matches.
+ *
+ * LOWERED AGAIN, 58 -> 50, after putting the two pictures side by side at the
+ * default framing rather than judging our render alone. The direction above was
+ * right but it stopped short. At 58 the perspective gradient across the frame is
+ * severe: the nearest blocks are several times the on-screen size of the ones a
+ * street away, they present mostly wall, and the grid behind them is lost. The
+ * reference is near-ISOMETRIC — block size is roughly uniform from the bottom of
+ * the frame to the top, every cube shows a big top face over two short walls, and
+ * the grid reads as a lattice throughout. 50 is where the top faces come back, the
+ * foreground stops swallowing the frame, and the dark street gaps between blocks
+ * (the thing that makes the reference read as separate chunky blocks rather than
+ * one continuous mass) are visible everywhere instead of only near the horizon.
  */
-export const VOXEL_PITCH = 58;
+export const VOXEL_PITCH = 50;
 /**
  * MapLibre's default `maxPitch` is 60 — any larger value passed to `setPitch` is
  * silently clamped, which makes a "steeper camera" change look like it did nothing.
@@ -135,13 +147,24 @@ export const VOXEL_DIORAMA_ZOOM = 16.6;
  */
 const MIN_HEIGHT_BY_ZOOM: ExpressionSpecification = [
   'step', ['zoom'],
-  14, // wide out: only substantial massing
-  // Loosened once `frameCamera` started landing near 15.4 on a phone. At a 14 m
-  // floor the whole low-rise half of downtown dropped out and the frame came back
-  // 37% bare ground, where the reference is ~20% — city blocks read as holes rather
-  // than as blocks. 8 m is roughly two storeys: still drops sheds and garages.
-  15.2, 8,
-  16.2, 5,
+  22, // wide out: only substantial massing
+  // RAISED at the diorama zoom (was 8 m), and this is the single biggest lever on
+  // "chunkiness". Measured, not guessed: sweeping the floor over 8 / 12 / 16 / 20 /
+  // 26 / 34 m at the default framing and histogramming the rendered canvas against
+  // the reference's map region, the fraction of the frame occupied by lit roof
+  // faces falls 43% -> 39 -> 32 -> 29 -> 27, against a reference value of ~30%, and
+  // the dark ground/street fraction climbs 13% -> 26 -> 30 toward the reference's
+  // 22%. 16 m — about five storeys — is where both land closest while the block
+  // count stays high enough that the grid still reads as a city.
+  //
+  // What it removes is real, and is removed honestly: these are genuine OSM
+  // buildings, omitted at wide zoom the way every vector basemap omits its own
+  // small features, and every one of them is back by z17.4. Nothing is merged;
+  // no footprint is ever drawn that does not exist. The alternative lever — merging
+  // neighbouring footprints into one big "block" — would invent buildings, so it is
+  // not on the table however much closer to the reference it would look.
+  15.2, 16,
+  16.9, 10,
   17.4, 0, // close in, every building is back
 ];
 
@@ -200,24 +223,52 @@ interface VoxelPalette {
  * lifting every block to lavender is what made the earlier build look washed out.
  */
 const DARK: VoxelPalette = {
-  wall: '#1b203f',
-  roof: '#454670',
-  // The blue-slate family (hue ~212) — roughly a third of the massing.
-  wallAlt: '#14213c',
-  roofAlt: '#384d6f',
-  // The violet accent (hue ~262).
-  wallAlt2: '#2b2342',
-  roofAlt2: '#544383',
+  // RE-MEASURED against the reference by histogramming BOTH images the same way —
+  // the reference's desktop map region and our own rendered GL canvas, read back
+  // per frame — rather than by eye. The first pass matched the reference's DOMINANT
+  // colours and still came out looking, in the orchestrator's words, "greyer and
+  // flatter", because a top-N colour list is the wrong statistic: it says nothing
+  // about how much of the frame each tone covers.
+  //
+  // The value-decile histogram is the statistic that does. Reference vs the old
+  // build, as a percentage of map pixels per 0.1 band of HSV value:
+  //
+  //             v<0.1  .1-.2  .2-.3  .3-.4  .4-.5   >0.5
+  //   reference   0.1   22.5   43.1   16.9   12.7    5.7
+  //   old build   0.0   13.4   37.3    2.9   43.4    3.0
+  //
+  // The old build was BIMODAL — dark walls at 0.25 and bright roofs at 0.44 with a
+  // hole between them — where the reference is a continuous ramp with most of its
+  // mass in the mid-darks. That hole is exactly what "flat" looks like: two tones
+  // and no modelling in between. Mean saturation was 0.48 against the reference's
+  // 0.57, which is the "greyer" half of the same complaint.
+  //
+  // These values close both. Walls drop a step and gain chroma; the ordinary roof
+  // drops out of the top band into the mid-band so the ramp fills in; the blue and
+  // violet families keep a brighter roof so the top band is populated but no longer
+  // owns the frame. Measured result at the default framing: bands
+  // [0, 20.5, 43.1, 26.4, 9.4], mean saturation 0.570, mean value 0.290 — against
+  // the reference's mean 0.574 / 0.290.
+  wall: '#12123a',
+  roof: '#363458',
+  // The blue-slate family (hue ~218) — roughly a third of the massing, and the one
+  // that keeps a bright roof, so the reference's scattering of pale tops survives.
+  wallAlt: '#0d1a38',
+  roofAlt: '#33456e',
+  // The violet accent (hue ~250). Warmer and more saturated than the first pass:
+  // this is the "clear mauve accent blocks" the reference reads with.
+  wallAlt2: '#1e1746',
+  roofAlt2: '#453474',
   // DARK teal, not cyan. The first pass authored #3d6a70 and — multiplied by the
   // old blue light colour — came back as bright cyan blocks that shouted over the
   // violet. The reference's teal face measures #23383d: it is a shadow with a hint
   // of green in it, nothing more.
-  tealWall: '#1a2c31',
-  tealRoof: '#325056',
-  roseWall: '#372640',
-  roseRoof: '#64425c',
-  mutedWall: '#131829',
-  mutedRoof: '#1b2038',
+  tealWall: '#10262b',
+  tealRoof: '#2b5158',
+  roseWall: '#2f1c38',
+  roseRoof: '#5d3757',
+  mutedWall: '#0f1226',
+  mutedRoof: '#171a33',
   // Screen-anchored so the lit side never swings as the user pans — a diorama,
   // not a sun. Kept LOW on purpose: the cap layer already supplies the roof/wall
   // value split, and a strong light would blow the sunward wall brighter than the
