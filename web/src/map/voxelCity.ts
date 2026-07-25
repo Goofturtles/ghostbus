@@ -223,26 +223,33 @@ const MIN_HEIGHT_BY_ZOOM: ExpressionSpecification = [
   // only — the comment on MIN_HEIGHT_FILTER below has always said so. `frameCamera`
   // lands the diorama between z15.4 and z16.0, which floors to 15, and 15 < 15.2, so
   // the filter took the FIRST branch and applied a 22 m floor to the whole diorama.
-  // Downtown that is survivable (towers clear 22 m); at the Riverdale default it
-  // deleted the neighbourhood, and the frame came back as ground, trees and a road.
+  // Downtown that is survivable — towers clear 22 m — which is why it hid for so
+  // long; framed on a low-rise neighbourhood it deleted the neighbourhood outright
+  // and the frame came back as ground, trees and a road.
   //
-  // Moving the boundary to VOXEL_DIORAMA's own floor (14.6) is what actually put the
-  // city in. Measured on the §32 statistic — HSV value deciles over the desktop map
-  // region, computed identically on the reference sheet and on our production frame:
+  // Moving the boundary to VOXEL_MIN_ZOOM (14.6) is what actually put the city in.
+  // With the boundary fixed, the VALUE was then swept at the real default framing
+  // (King & Spadina) against the §32 statistic — HSV value deciles over the desktop
+  // map region, computed identically on the reference sheet and on our own frame:
   //
-  //                     v<.1   .1-.2   .2-.3   .3-.4   .4-.5   >.5    meanS  meanV
-  //   reference          0.1    25.2    41.9    15.9    12.4    4.5   0.566  0.284
-  //   boundary 15.2      0.0    64.3    25.4     3.5     4.4    2.4   0.604  0.219
-  //   boundary 14.6      0.0    27.2    32.1    13.3    25.0    2.4   0.559  0.287
+  //                v<.1   .1-.2   .2-.3   .3-.4   .4-.5   >.5    meanS  meanV   |dev|
+  //   reference     0.1    25.2    41.9    15.9    12.4    4.5   0.566  0.284      -
+  //   floor  4      0.1    22.0    36.0    12.2    26.9    2.9   0.541  0.302   27.3
+  //   floor  8      0.1    28.6    36.7    10.4    21.4    2.9   0.554  0.287   23.1
+  //   floor 14      0.1    33.6    35.9     9.3    18.1    3.1   0.561  0.278   26.7
+  //   floor 20      0.1    40.4    35.3     8.2    13.3    2.8   0.574  0.261   30.4
   //
-  // Two thirds of the frame in the darkest band is what "the city is missing" looks
-  // like as a number; 27.2 against 25.2 is what a city looks like. Mean saturation
-  // and mean value both land within 0.01 of the reference.
+  // (|dev| is the summed absolute deviation across the four middle bands.) It is a
+  // real trade rather than a monotone dial: raising the floor pulls the .4-.5 band
+  // down towards the reference, because the buildings it removes are small ones that
+  // present almost pure ROOF — and pushes the darkest band up, because what is left
+  // behind is ground. 8 m is the minimum of that trade, and lands mean value at
+  // 0.287 against 0.284.
   //
-  // 4 m, and it is a cliff rather than a dial: the same sweep at 8 m and 12 m goes
-  // straight back to 59.5% and 62.5% in the darkest band, because Toronto's
-  // two-and-three-storey stock is 4-8 m and there is nothing in between to trade.
-  14.6, 4,
+  // For the record, at the same 8 m floor the OLD 15.2 boundary measured 64.3% in
+  // the darkest band against the reference's 25.2 — two thirds of the frame in the
+  // void. That is what "the city is missing" looks like as a number.
+  14.6, 8,
   17.4, 0, // close in, every building is back
 ];
 

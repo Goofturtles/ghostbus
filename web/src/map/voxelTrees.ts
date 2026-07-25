@@ -83,10 +83,13 @@ const ROAD_LAYERS = ['road-minor', 'road-med', 'road-major'];
 const CANOPY_PX = 7.5;
 /** Target gap between trees along a street, in CSS pixels — keeps the density of
  *  the set dressing constant on screen instead of exploding as you zoom in.
- *  RAISED 30 -> 52: half of closing the 4.9% / 0.98% gap above. The other half is
- *  KEEP. Spread across both so the verges thin out evenly rather than turning into
- *  long bare stretches punctuated by a surviving clump. */
-const SPACING_PX = 52;
+ *  RAISED 30 -> 48, half of the thinning; the other half is KEEP. Spread across both
+ *  so the verges thin evenly rather than turning into long bare stretches punctuated
+ *  by a surviving clump. (A first attempt at 52/0.18 was calibrated on a low-rise
+ *  frame with far more road verge per square kilometre than downtown has, and
+ *  over-thinned to 0.50% coverage against the reference's 1.02%; a second at 40/0.24
+ *  overshot the other way to 1.67%. 48/0.20 is measured at 1.1%.) */
+const SPACING_PX = 48;
 /** Metre clamps, so an extreme zoom cannot produce a 2 m shrub or a 60 m monolith
  *  (which would read as a building — §C: never focal). */
 const CANOPY_MIN_M = 5;
@@ -104,12 +107,12 @@ const VERGE_RATIO = 1.4;
 const MAX_TREES = 520;
 /** Fraction of candidate slots that actually get a tree (hash-gated, not random),
  *  so the spacing never reads as a metronome. */
-/** THINNED AGAIN, 0.3 -> 0.18. See the CANOPY_PX note: the run-length scan puts our
- *  olive coverage at 4.91% of the desktop map region against the reference's 0.98%.
- *  0.18 with SPACING_PX 52 takes the tree count to ~35% of what it was, which lands
- *  the coverage near 1.7% before the buildings the lowered height floor puts back
- *  occlude any of it. Trees are set dressing here; the city is the subject. */
-const KEEP = 0.18;
+/** THINNED, 0.3 -> 0.24. See the CANOPY_PX note: the run-length scan put our olive
+ *  coverage at 4.91% of the desktop map region against the reference's ~1.0%, so the
+ *  count had to come down even though the size was already right. With SPACING_PX 40
+ *  this leaves ~48% of the trees, measured at the shipped default framing. Trees are
+ *  set dressing here; the city is the subject. */
+const KEEP = 0.20;
 export const TREE_MIN_ZOOM = 14.8;
 
 interface TreePalette {

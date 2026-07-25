@@ -12,8 +12,9 @@ import type {
 import { useStore } from '@/store';
 
 /**
- * Fallback when geolocation is denied/unavailable: Toronto's east downtown, in
- * Riverdale, a short walk west of the Dundas St E / Broadview Ave corner.
+ * Fallback when geolocation is denied/unavailable: KING ST W AT SPADINA AVE — the
+ * intersection the design reference shows — standing on Wellington St W in the block
+ * south-west of it.
  *
  * WHY A POINT A FEW MINUTES FROM ITS STOP. An earlier default (43.6455, -79.3954)
  * sat ~30 m from its nearest stop, so the rider and the stop were effectively the
@@ -23,29 +24,46 @@ import { useStore } from '@/store';
  * stop card, which is the least informative possible first impression of a
  * "how far am I from my stop" app.
  *
- * WHY THIS CORNER AND NOT THE PREVIOUS ONE (43.645, -79.38736, King at John). That
- * point produced the right walk but the wrong picture: 504 King is dead straight for
- * its whole downtown run, so the red route line crossed the frame as a single
- * unbroken diagonal. The route's shape is the agency's published geometry and must
- * never be bent to add interest — so the honest lever is WHICH real corner the
- * default viewpoint stands at, not what shape is drawn (see DESIGN-TARGET §H).
+ * WHY THIS EXACT POINT. King & Spadina is ringed by four stops, so almost every
+ * standing point near it is one or two minutes from one of them. A 13 m grid over
+ * ±450 m, keeping only points whose NEAREST stop is one of those four, has exactly
+ * one member that reaches a four-minute walk — this one:
  *
- * Measured against the real seeded GTFS (`stops` + `shapes`), from this point:
+ *   43.64354, -79.39699
+ *     nearest      stop 15647  `King St West at Spadina Ave West Side`   225 m
+ *     walkSeconds(225, 1.333 m/s, routeFactor 1.25) = 211 s  ->  4 min
+ *     runner-up    stop 15649  `King St West at Portland St East Side`   227 m
+ *                  which also computes to 4 min, so the label holds either way
  *
- *   nearest stop 2115  `Dundas St East at Broadview Ave`   226 m  ->  4 min walk
- *   next three stops   1756 / 3372 / 2127                261-283 m -> also 4 min
- *   routes at 2115     505 Dundas (317 trips), 305 Dundas night (43)
- *   both of their representative shapes turn -92 deg  80 m from the frame centre
+ * The walk time is never written down anywhere — it is `walkSeconds()` applied to
+ * the distance `/api/stops/nearby` returns for the real stop, exactly as it would be
+ * on a real geolocation fix. Move this point 2 m closer and the app will say 3 min,
+ * and 3 min is what would ship.
  *
- * So the walk is a genuine 4 minutes however the selection lands, and the 505's
- * real right-angle turn from Dundas onto Broadview sits inside the frame whichever
- * of the two routes the board resolves to. Nothing here is faked: the stop, the
- * distance and the walk time are computed from the real stop table by the same code
- * that runs on a real geolocation fix, and the turn is in the published shape. It is
- * a starting viewpoint, shown only until the rider grants location, and the UI
- * labels it as a default.
+ * WHAT THIS INTERSECTION CANNOT GIVE — and it must not be faked. The reference shows
+ * the red route making a hard dogleg at the stop. Measured against the polyline the
+ * app actually draws (`/api/routes/:id/shape`, the agency's published geometry),
+ * the largest accumulated heading change within 320 m of King & Spadina is:
+ *
+ *     504 King   dir 0 / dir 1   1 deg      304 King (night)   1 deg
+ *     510 Spadina dir 0 / dir 1  3 deg      310 Spadina        3 deg
+ *
+ * King Street and Spadina Avenue are both dead straight through this intersection
+ * and neither route turns off the other. The mockup's dogleg is an illustration; the
+ * data has no turn here. Bending, smoothing or splicing the line to produce one
+ * would be fabricating map data in an app whose entire argument is that it does not
+ * (DESIGN-TARGET §H). So the line runs straight, and that is reported rather than
+ * disguised.
+ *
+ * (For the record, a genuine right-angle turn IS reachable — 43.6618, -79.35456 puts
+ * the 505's real turn from Dundas onto Broadview 80 m from the frame centre with the
+ * same honest 4-minute walk — but that is a different intersection from the one the
+ * reference shows, and the reference wins.)
+ *
+ * This is a starting viewpoint, shown only until the rider grants location, and the
+ * UI says so on its face: "Using a default location — tap to use yours".
  */
-export const DEFAULT_LOCATION = { lat: 43.6618, lon: -79.35456 };
+export const DEFAULT_LOCATION = { lat: 43.64354, lon: -79.39699 };
 const NEARBY_RADIUS_M = 800;
 const HEALTH_INTERVAL_MS = 20_000;
 const ARRIVALS_INTERVAL_MS = 30_000;
