@@ -260,8 +260,9 @@ verification to zero is the point.
   statistic that changes value depending on which driver produced it is not a statistic.
 - **Batched writes, not per-row writes.** PGlite is single-threaded WASM and Neon's free
   pool is small, so inserts are built as multi-row `VALUES` statements (500 rows per
-  statement in the collector and the engine, 1,000 in the seeder) and committed in chunks
-  rather than one enormous transaction. Same code path, both drivers, no `COPY`.
+  statement in the collector and the engine, 1,000 in the seeder) and committed in
+  40,000-row transactions rather than one enormous one. Same code path, both drivers, no
+  `COPY`.
 - **`ON CONFLICT DO UPDATE` cannot name one key twice in a single `VALUES` list** — Postgres
   rejects the whole statement. Since RT patterns are identified by a content hash, two
   pattern objects can legitimately carry one identity, and this actually broke the crosswalk

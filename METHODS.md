@@ -424,7 +424,7 @@ cycle 17 of the running collector:
 | `rt_trip_binding` rows | **0** |
 | RT stop ids seen / confirmed / conflicted | 7,966 / 2,693 / 65 (DB); 6,632 / 2,542 / 69 in the current process |
 | Crosswalk entries usable for a delay row (`confirmed` ∧ conf ≥ 0.60) | **1,935** |
-| Crosswalk occurrence coverage | **35.6%** — below the 0.50 gate, so it would suppress even with an active board |
+| Crosswalk occurrence coverage | **35.6%** at cycle 17, flattening at **36.5–37.2%** across cycles 25–32 — below the 0.50 gate, so it would suppress even with an active board |
 | Cross-route agreement | **93.8%** |
 | Direct `trip_id` match rate | **0.3%** |
 
@@ -816,7 +816,9 @@ than measured (they cannot be measured while the board is inert):
   bound, so its static trips are permanently absent;
 - after any process restart, trips already running are `refused_midroute` and stay absent until
   they finish;
-- the crosswalk warm-up in 9.3 suppresses binding for the first several cycles of any run.
+- the crosswalk warm-up in 9.3 suppresses binding for the first several cycles of any run,
+  and its coverage has so far plateaued below the gate that would let anything publish at all
+  (BLOCKERS.md entry 10).
 
 In each case the mass-ghost breakers (§5.3) are the only thing standing between that and a wall
 of false ghosts, and a breaker is a blunt instrument: it suppresses a whole route or a whole

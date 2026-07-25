@@ -267,19 +267,26 @@ New entry, 2026-07-25. `evaluateGates` requires
 `StopTimeUpdate` occurrences that resolve through a `confirmed` crosswalk entry with
 confidence ≥ 0.60.
 
-Measured on the current run (`.data/collector.log`), coverage climbs to **35.6% by cycle 17**
-and has not crossed 0.50. In the production `rt_stop_xwalk` table: 7,966 realtime stop ids
-seen, 2,693 `confirmed`, 65 `conflicted`, and **1,935 entries usable for a delay row**
-(`confirmed` ∧ confidence ≥ 0.60).
+Measured on the current run (`.data/collector.log`): coverage is 0.0% through cycle 9, jumps
+to **34.5% at cycle 11** when the first entries clear the 8-vote confidence threshold, and
+then **flattens — 36.5% to 37.2% across cycles 25–32**. It has not approached 0.50. In the
+production `rt_stop_xwalk` table (read at cycle ~17): 7,966 realtime stop ids seen, 2,693
+`confirmed`, 65 `conflicted`, and **1,935 entries usable for a delay row** (`confirmed` ∧
+confidence ≥ 0.60).
 
 **So even if the board were active today, the engine would still publish nothing** — it would
 report `xwalkOccurrenceCoverage` rather than `boardActive` as the reason. This is the gate
 behaving correctly, but it means the board activating on 2026-07-26 is **not by itself
 sufficient** for the engine to start emitting, and any plan that assumes it is will be wrong.
 
-Whether 0.50 is reachable at all on this feed is currently unknown: the crosswalk had not
-plateaued when this was measured, but it had also only been warming for 17 cycles from empty
-(entry 11).
+**Whether 0.50 is reachable at all on this feed is now genuinely in doubt.** Fifteen cycles
+of plateau is not proof — new stop identities are still being confirmed each cycle, just
+slowly, and the run started from an empty crosswalk (entry 11) — but the curve is flat, not
+climbing, and the gate is 13 points away. If it does not clear, the honest options are to
+find the coverage that is being lost (a large share of `StopTimeUpdate` occurrences name
+stops the geometry has never anchored) or to justify a different threshold on evidence
+rather than on convenience. Lowering the gate to fit the measurement would be exactly the
+move this project exists not to make.
 
 ---
 
