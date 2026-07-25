@@ -409,6 +409,22 @@ index in ~120 s), which also **stopped the collector at cycle 88**. The after-nu
 rest on two runs of 10 and 6 cycles, not on a long soak. They are consistent with each other
 and both are rising, but they are short.
 
+> **FIXED 2026-07-25 — the cause, not the outage.** A rebuild was measured at **143.70 MiB** of
+> Postgres wire bytes (142.94 MiB for the 2,227,328-row paged build query at a mean 67.3 B/row,
+> plus 0.77 MiB for the `routeStops` geometry query), and it was charged on every process boot
+> and again every six hours. The index is now serialised and restored instead: a cold boot on a
+> fresh container costs **1.21 MiB**, a boot whose container disk survived costs **~300 B**, and
+> a 6-hourly reload of an unchanged board costs **~300 B and exactly one statement** — the
+> board fingerprint that decides whether a rebuild is needed at all. 118x on the worst case; the
+> same budget that bought four rebuilds now buys roughly 475 cold wakes. Time to a usable index
+> goes from 109–120 s to a **312 ms** restore. See DECISIONS §36 for the layout, the two
+> serialisation choices that were measured and reversed, and the list of what could not be
+> verified while the database is down.
+>
+> **This does not un-exhaust the quota**, which resets on its own — it removes the thing that
+> spent it. The short-soak caveat above therefore still stands for the numbers in this entry;
+> what changes is that repeating them no longer costs 143.70 MiB a run.
+
 ---
 
 ## 11. RESOLVED for `rt_stop_xwalk`, OPEN for the rest — the learned crosswalk was written to Postgres and never read back

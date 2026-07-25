@@ -1406,3 +1406,216 @@ quota rebuilding an index that has not changed. The warm-start work above makes 
 cheaper for the *crosswalk*; it does nothing for the index. Caching the built index — or paging
 it from a materialised table instead of `stop_times` — is the obvious next correction, and is
 not attempted here.
+
+---
+
+## §36 — The index rebuild was the dominant transfer cost, and a boot no longer pays it
+
+§35 ended by naming the next correction and not making it: *"the index rebuild is the dominant
+data-transfer cost in this system, and nothing in the design accounts for that… Caching the
+built index — or paging it from a materialised table instead of `stop_times` — is the obvious
+next correction, and is not attempted here."* This is that correction.
+
+It is not an optimisation. The deploy target is Render's free tier, which sleeps after 15
+minutes of inactivity; every wake is a fresh boot, and every boot re-read 2.15M `stop_times`
+rows. Four rebuilds in one afternoon had already exhausted the month's Neon transfer quota and
+stopped the collector at cycle 88. Deployed as it stood, the app would have spent its quota
+waking up and then stopped working. Everything below is a prerequisite, not a polish pass.
+
+### What a rebuild actually cost, in bytes
+
+The old figure for this was a wall-clock one (~109–120 s over Neon). Wall clock is not what the
+quota meters, so the first thing worth having is the byte count. `node-postgres` reads results
+in the **text** format, so each row arrives as a `DataRow` message: 1 byte tag, 4 bytes length,
+2 bytes field count, then 4 bytes plus the text for each column. That is exactly computable
+from the real feed's field widths, and computing it over the same 2,227,328-row window the
+board holds gives:
+
+| query | rows | wire bytes |
+| --- | ---: | ---: |
+| the paged build query (8 text columns) | 2,227,328 | **142.94 MiB** (mean 67.3 B/row) |
+| the `routeStops` geometry query (4 columns) | 16,555 | 0.77 MiB |
+| **per rebuild** | | **143.70 MiB** |
+
+That is the number the design has to beat, and it is charged on every boot and again every six
+hours.
+
+### The shape of the fix: prove the board is unchanged, then don't read it
+
+Three pieces, in the order a boot meets them.
+
+**1. A one-row board fingerprint.** `boardFingerprint()` issues a single statement of scalar
+sub-selects over `calendar`, `calendar_dates`, `trips`, `stop_times` and `stops`. It returns
+five short text columns — a few hundred bytes — however large the board is, so the check can
+never grow into the cost it exists to avoid. It covers every column the index derives from:
+route, direction and service on `trips`; sequence, stop, arrival and departure on `stop_times`;
+the lat/lon on `stops` that become `routeStops`.
+
+It also covers `calendar` and `calendar_dates`, which the index does **not** read. That is the
+part worth arguing for. The board tag is only `min(start_date)..max(end_date)`, so a calendar
+edit that leaves those two dates alone — a service withdrawn from Wednesdays, an exception
+added for one date — changes which trips are active on a date while the tag stays
+character-for-character identical. A tag-only check would serve a cached index against a
+calendar that had moved underneath it. Two of the nine mutation tests are exactly those two
+edits, and both fail a tag comparison and pass the fingerprint.
+
+Two details that are correctness, not taste. Every sum is integer-typed: a `float8` sum is at
+the mercy of whatever aggregation order a parallel plan picks, and a fingerprint that flapped
+would rebuild every six hours forever and silently undo this whole entry. And when the
+fingerprint cannot be taken at all, it returns `null` rather than a guess — which disables both
+cache tiers and falls back to exactly today's always-build behaviour.
+
+**2. A serialised index.** `packIndex` writes a sealed blob: `'GBPX'`, a `u32` format version, a
+sha256, then a compressed body of one interned string table, the patterns, the slots and the
+route geometry. Nothing derivable is stored. Pattern ids, `byRoute`, `maxLenByRoute`,
+`medianHeadwayS`, `stopsByTrip`, `serviceByTrip`, `tripsByService`, `tripIds` and the slot
+ordering are all recomputed on load — by the *same* `insertTrip` and `finalizeIndex` the build
+uses. That was the point of splitting them out of `foldTrip`: it makes "a restored index is
+identical to a built one" a property of the construction rather than a claim a test has to take
+on faith. In particular the pattern id is re-derived from the stops on both paths, so a cache
+cannot introduce a pattern identity a rebuild would not have produced.
+
+**3. Two cache tiers, file then Postgres.** Weighed against the actual failure modes:
+
+- **The local file** is free to read and write and **dies with the container**. On Render's
+  free tier the disk is ephemeral, so a cold wake never sees it. It is nonetheless the whole
+  answer for a process restart on a live container and for the local collector, which restarts
+  often — those boots cost the fingerprint row and nothing else.
+- **The Postgres row** survives the container, so it is the only tier that helps the cold wake
+  that was killing us — at the cost of transferring the blob back. That is the trade, and it is
+  only a good one because the blob is two orders of magnitude smaller than the rows it replaces.
+
+So: both, file first because it costs nothing, Postgres as the authority because it is the one
+that survives. The Postgres lookup puts `board_tag`, `fingerprint` and `format` in the `WHERE`
+clause rather than comparing them in JavaScript afterwards, so a row that no longer describes
+the current board is filtered server-side and **is never downloaded to be rejected**. That is
+the whole economics of the table; a `SELECT *` plus a JS check would have paid the transfer on
+every boot and defeated the point.
+
+`payload_b64` is base64 `TEXT` and not `BYTEA` for the same reason: node-postgres reads in the
+text format, where a bytea comes back hex-encoded at 2.00x the payload against base64's 1.33x.
+Measured on the real board that is 1.21 MiB against 1.81 MiB per cold wake, for a column type.
+
+### Measuring the payload, and being wrong twice on the way
+
+Neon refuses even `SELECT 1` while the quota is out, so none of this could be measured against
+it. It could be measured against the **same GTFS feed the database was seeded from**
+(`.data/gtfs/extracted`), folded through the same `foldTrip`: 70,986 trips, 2,227,328
+`stop_times` rows, 1,195 patterns, 222 routes with geometry. That window is 3.8% larger than the
+seeded board's 68,401 trips, so every payload figure below is very slightly conservative.
+
+The first serialisation was the obvious one — every integer as a little-endian `int32`, gzipped.
+It produced **6.46 MiB**, and it was wrong twice.
+
+The body is 19.17 MiB, of which the times and arrivals are **16.99 MiB**. So the layout of that
+one section decides the answer, and absolute seconds-since-midnight is a poor way to write it:
+every value is a five-digit number whose bytes vary. Written as **per-trip deltas** — a running
+sum inverts them exactly, including the `-1` "no time" sentinel — the gap between two stops is
+two or three minutes and its top two bytes are zero. That section alone:
+
+| times/arrivals layout | gzip 6 | brotli q5 |
+| --- | ---: | ---: |
+| absolute int32 | 5.74 MiB | 3.70 MiB |
+| **delta int32** | **0.56 MiB** | **0.45 MiB** |
+| delta + byte-plane transpose | 0.61 MiB | 0.43 MiB |
+
+Ten times smaller, and *faster* to compress and to inflate than the absolute form. The byte-plane
+transposition on top — a classic columnar trick — was measured and does not pay: it is worse
+under gzip and 0.02 MiB better under brotli, which does not buy its complexity.
+
+The second mistake was reaching for gzip by habit. On the identical delta-coded body:
+
+| compressor | payload | compress | decompress |
+| --- | ---: | ---: | ---: |
+| gzip level 1 | 1.44 MiB | 26 ms | 21 ms |
+| gzip level 6 | 1.31 MiB | 97 ms | 18 ms |
+| gzip level 9 | 1.31 MiB | 234 ms | 17 ms |
+| **brotli q5** | **0.90 MiB** | **96 ms** | **19 ms** |
+| brotli q9 | 0.90 MiB | 305 ms | 18 ms |
+| brotli q11 | 0.78 MiB | 27,620 ms | 28 ms |
+
+Brotli q5 is 31% smaller than the best gzip for the same time in both directions — strictly
+better on every axis, so there is nothing to trade. q11 buys a further 0.12 MiB for 27.6 seconds,
+which is not something to put on a boot path. Both findings are the reason the code comments
+carry the numbers: "use gzip" and "int32 is compact" are both reasonable-sounding instincts and
+both were wrong here by 5x and 1.5x respectively.
+
+### What it costs now
+
+| | before | after |
+| --- | ---: | ---: |
+| cold boot, fresh container | 143.70 MiB | **1.21 MiB** (fingerprint + blob) |
+| boot with the container's disk intact | 143.70 MiB | **~300 B** (fingerprint only) |
+| the 6-hourly reload, board unchanged | 143.70 MiB | **~300 B** (fingerprint only) |
+| time to a usable index | 109–120 s (Neon) | **312 ms** to restore |
+
+**118x fewer bytes on the worst case**, and the same transfer budget that bought four rebuilds
+now buys roughly 475 cold wakes. Packing costs 169 ms and happens only when the board actually
+changes.
+
+The 6-hourly reload deserves its own line, because it is the case a cache alone would not have
+fixed. `reloadStatic` now fingerprints *first* and returns early — keeping the very same index
+object — when the board is unchanged. A reload of an unchanged board issues **exactly one
+statement**, which a regression test asserts by counting them.
+
+And the check does not smuggle the cost back in as compute. Against 2,227,328 synthetic rows on
+PGlite — WebAssembly, so slower than Neon's native Postgres and therefore an upper bound rather
+than a prediction — the fingerprint query runs in **1.29–1.42 s**, repeatably, against **2.93 s
+for a single one** of the build's twelve 200,000-row pages.
+
+### How it is proved, without a database to prove it against
+
+The tests run on PGlite: real Postgres, real migrations, on disk, no quota. The fixture is a
+432-trip board across six patterns and three services, not 2.15M rows — scale is not what makes
+a cache correct, round-tripping is, and 432 trips reach every branch: a short turn sharing a
+prefix, both directions, a null departure, a null arrival, and a trip with a hole in its
+`stop_sequence` that the build refuses (so the two paths must agree about what is *not* in the
+index too).
+
+The comparison is structural, never a row count: pattern ids, the pattern *order*, every slot's
+times and arrivals, the slot ordering, the derived headways, and every by-trip map. A cache that
+got the count right and the times wrong fails. Thirteen tests cover: a cold boot writing both
+tiers; a second boot restoring from disk while touching the database zero times; a wiped disk
+restoring from Postgres and re-landing on disk; nine board mutations each forcing a rebuild;
+eight kinds of damaged blob — truncation, a flipped payload byte, a flipped checksum byte, wrong
+magic, a future format version, empty, garbage — each **falling back rather than throwing or
+part-loading**; a truncated Postgres payload; a blob for another agency, board or fingerprint;
+a `null` fingerprint caching nothing at all; and the two engine-level regressions above. At real
+scale the round trip was verified exact over all 70,986 trips and all 4,454,656 integers.
+
+`unpackIndex` has exactly one failure mode: `null`. Every rejection — bad magic, wrong format,
+failed checksum, truncation, a length field running off the end, a count disagreeing with the
+metadata, trailing bytes, a fingerprint that is not the one asked for — returns `null` so the
+caller rebuilds. Nothing may hand a partial index back, because a board short of trips would
+bind realtime vehicles against a schedule with holes in it, and a slow boot is enormously
+preferable to that.
+
+### What could not be verified, and what is still open
+
+The database is down, so these are honest gaps rather than omissions:
+
+- **No number here was taken from Neon.** The 143.70 MiB is *computed* exactly from the
+  Postgres v3 `DataRow` framing over the real feed's field widths — not captured from a socket.
+  TLS framing and any Neon proxy overhead sit on top of it, so it understates the true saving
+  slightly. The 109–120 s build time is quoted from the earlier runs recorded in §35, not
+  re-measured.
+- **Neon's own compute time for the fingerprint scan is unmeasured.** The 1.3 s PGlite figure is
+  a conservative upper bound, not a prediction.
+- **Migration 005 has not been applied to Neon**, only to PGlite. It is one `CREATE TABLE IF NOT
+  EXISTS` of plain types, but it is unrun there.
+- **The 1.21 MiB round trip has not been timed over the wire.**
+- The restored index was verified structurally and through the engine's boot path, **not against
+  a live realtime feed** — no feed run was possible in this state.
+
+One thing deliberately left alone. When the board *content* changes but the tag does not, the
+crosswalk is still carried across, because `boardChanged` keys on the tag exactly as it did
+before. The fingerprint now makes detecting that case possible, and arguably a content change
+should invalidate the learned stop identities too. It is not changed here: that is a crosswalk
+decision with its own evidence to gather, the behaviour is identical to what shipped before, and
+widening this change into it would have been scope this entry cannot justify. Filed, not done.
+
+Also unchanged, and worth naming because it is now the largest remaining static read:
+`loadStaticContext()` in `poller.ts` still returns one row per trip on every boot and every
+reload (a `DISTINCT ON` over `trips` joined to `stop_times`). At 68,401 rows that is roughly 3%
+of what the index rebuild used to cost, so it is no longer the dominant term — but it is not
+free, and `poller.ts` belongs to another workstream.
