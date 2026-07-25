@@ -1,0 +1,278 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  metres, nearestStopOnRoute, mergeRtTrip, resolvePatterns, promotionState,
+  xwalkConfidence, usableForDelay, crossRouteAgreement, monotonicityViolations,
+  type RtPattern, type StaticPatternLite,
+} from './xwalk.ts';
+
+// A degree of latitude is ~111,320 m; place test stops by offsetting metres directly.
+const LAT0 = 43.70, LON0 = -79.40;
+const atMetres = (stopId: string, north: number): { stopId: string; lat: number; lon: number } =>
+  ({ stopId, lat: LAT0 + north / 111_320, lon: LON0 });
+
+const seq = (...pairs: Array<[number, string]>): Map<number, string> => new Map(pairs);
+
+// ---------- geometry ----------
+
+test('nearestStopOnRoute accepts a clean anchor and rejects both failure modes', () => {
+  // Clean: 19 m away, next-nearest 65 m further.
+  const clean = [atMetres('S1', 19), atMetres('S2', 19 + 65)];
+  const hit = nearestStopOnRoute(LAT0, LON0, clean);
+  assert.ok(hit);
+  assert.equal(hit.stopId, 'S1');
+  assert.ok(Math.abs(hit.distM - 19) < 0.5, `distM ${hit.distM}`);
+  assert.ok(Math.abs(hit.gapM - 65) < 0.5, `gapM ${hit.gapM}`);
+
+  // Too far: 95 m from the nearest stop on this route means the bus is not at it.
+  assert.equal(nearestStopOnRoute(LAT0, LON0, [atMetres('S1', 95), atMetres('S2', 400)]), null);
+
+  // TERMINAL-BAY AMBIGUITY: 20 m away but the runner-up is only 8 m further. Picking the
+  // nearer by a hair would bind a whole pattern to the wrong bay.
+  assert.equal(nearestStopOnRoute(LAT0, LON0, [atMetres('S1', 20), atMetres('S2', 28)]), null);
+
+  assert.equal(nearestStopOnRoute(LAT0, LON0, []), null);
+  // A lone candidate has no runner-up to be ambiguous with.
+  assert.ok(nearestStopOnRoute(LAT0, LON0, [atMetres('S1', 20)]));
+});
+
+test('metres is symmetric and zero at identity', () => {
+  assert.equal(metres(LAT0, LON0, LAT0, LON0), 0);
+  assert.ok(Math.abs(metres(LAT0, LON0, LAT0 + 100 / 111_320, LON0) - 100) < 0.01);
+});
+
+// ---------- pattern merge ----------
+
+test('THE ROUTE-52 REGRESSION: a merge may not exceed the route\'s longest static pattern', () => {
+  // A short-turn (sequences 1..40) and a full run (36..78) agree on their shared prefix
+  // 36..40, so the naive "every shared sequence agrees" rule fuses them into a phantom
+  // pattern of maxSeq 78 — longer than anything the route actually runs.
+  const shortTurn = seq(...Array.from({ length: 40 }, (_, i) => [i + 1, `X${i + 1}`] as [number, string]));
+  const fullRun = seq(...Array.from({ length: 43 }, (_, i) => [i + 36, `X${i + 36}`] as [number, string]));
+
+  const capped: RtPattern[] = [];
+  mergeRtTrip(capped, '52', shortTurn, { maxStaticLen: 73 });
+  const second = mergeRtTrip(capped, '52', fullRun, { maxStaticLen: 73 });
+  assert.equal(second.kind, 'created', 'the over-length union must not merge');
+  assert.equal(capped.length, 2, 'two separate RT patterns, not one phantom');
+
+  // Control: with no cap the naive rule does exactly the wrong thing, which is why the
+  // cap is not optional.
+  const uncapped: RtPattern[] = [];
+  mergeRtTrip(uncapped, '52', shortTurn, { maxStaticLen: null });
+  mergeRtTrip(uncapped, '52', fullRun, { maxStaticLen: null });
+  assert.equal(uncapped.length, 1);
+  assert.equal(uncapped[0].maxSeq, 78);
+});
+
+test('a 1-2 stop newborn must not fuse two distinct patterns', () => {
+  const patterns: RtPattern[] = [];
+  mergeRtTrip(patterns, 'R', seq([1, 'A'], [2, 'B'], [3, 'C'], [4, 'D']), { maxStaticLen: 20 });
+  mergeRtTrip(patterns, 'R', seq([1, 'A'], [2, 'B'], [3, 'Q'], [4, 'Z']), { maxStaticLen: 20 });
+  assert.equal(patterns.length, 2, 'the two branches diverge at sequence 3');
+
+  // A newborn publishing only {1:A, 2:B} agrees with BOTH — it must not pick one.
+  const out = mergeRtTrip(patterns, 'R', seq([1, 'A'], [2, 'B']), { maxStaticLen: 20 });
+  assert.equal(out.kind, 'created');
+  assert.equal(patterns.length, 3);
+});
+
+test('trips agreeing on >= 3 shared sequences DO merge, and the union is kept', () => {
+  const patterns: RtPattern[] = [];
+  mergeRtTrip(patterns, 'R', seq([1, 'A'], [2, 'B'], [3, 'C']), { maxStaticLen: 20 });
+  // Three shared sequences (1,2,3) clears the floor; 4 and 5 extend the pattern.
+  const out = mergeRtTrip(patterns, 'R', seq([1, 'A'], [2, 'B'], [3, 'C'], [4, 'D'], [5, 'E']), { maxStaticLen: 20 });
+  assert.equal(out.kind, 'extended');
+  assert.equal(patterns.length, 1);
+  assert.deepEqual([...patterns[0].seqStops.entries()].sort((a, b) => a[0] - b[0]),
+    [[1, 'A'], [2, 'B'], [3, 'C'], [4, 'D'], [5, 'E']]);
+  assert.equal(patterns[0].maxSeq, 5);
+  assert.equal(patterns[0].nTrips, 2);
+});
+
+test('one disagreeing shared sequence blocks the merge outright', () => {
+  const patterns: RtPattern[] = [];
+  mergeRtTrip(patterns, 'R', seq([1, 'A'], [2, 'B'], [3, 'C'], [4, 'D']), { maxStaticLen: 20 });
+  mergeRtTrip(patterns, 'R', seq([1, 'A'], [2, 'B'], [3, 'C'], [4, 'WRONG']), { maxStaticLen: 20 });
+  assert.equal(patterns.length, 2);
+});
+
+test('two identical newborn stop maps are one pattern, not a duplicate identity', () => {
+  const patterns: RtPattern[] = [];
+  const a = mergeRtTrip(patterns, 'R', seq([1, 'A']), { maxStaticLen: 20 });
+  const b = mergeRtTrip(patterns, 'R', seq([1, 'A']), { maxStaticLen: 20 });
+  assert.equal(a.kind, 'created');
+  assert.equal(b.kind, 'merged');
+  assert.equal(patterns.length, 1, 'identical content must not produce two objects sharing one hash');
+  assert.equal(patterns[0].nTrips, 2);
+});
+
+test('the per-route pattern cap is enforced and reported, not silently exceeded', () => {
+  const patterns: RtPattern[] = [];
+  for (let i = 0; i < 3; i++) mergeRtTrip(patterns, 'R', seq([1, `S${i}`]), { maxStaticLen: 20, maxPatternsPerRoute: 3 });
+  const out = mergeRtTrip(patterns, 'R', seq([1, 'S99']), { maxStaticLen: 20, maxPatternsPerRoute: 3 });
+  assert.equal(out.kind, 'capped');
+  assert.equal(out.pattern, null);
+  assert.equal(patterns.length, 3);
+});
+
+// ---------- resolution ----------
+
+function pat(id: string, routeId: string, stops: Array<[number, string]>): RtPattern {
+  return { rtPatternId: id, routeId, seqStops: new Map(stops), maxSeq: Math.max(...stops.map((s) => s[0])), nTrips: 1 };
+}
+const staticPat = (patternId: string, stops: string[]): StaticPatternLite => ({ patternId, stops });
+
+test('FIXPOINT PROPAGATION: a pattern with no geometric anchors resolves off another one', () => {
+  // Pattern A has 2 geometric anchors. Pattern B has none, but shares two rt stops with A.
+  const A = pat('A', 'R', [[1, 'rt1'], [2, 'rt2'], [3, 'rt3'], [4, 'rt4']]);
+  const B = pat('B', 'R', [[1, 'rt1'], [2, 'rt2'], [3, 'rt3'], [4, 'rt4']]);
+  B.rtPatternId = 'B';
+  const byRoute = new Map([['R', [staticPat('SP1', ['s1', 's2', 's3', 's4'])]]]);
+  const geo = new Map([['R|rt1', 's1'], ['R|rt2', 's2']]);
+
+  // With only A present, A resolves at iteration 0 from geometry alone.
+  const first = resolvePatterns([A], byRoute, geo, new Map());
+  assert.equal(first.resolved.get('A')?.iter, 0);
+  assert.equal(first.learned.get('rt3'), 's3', 'resolving A publishes the stops it implies');
+
+  // B alone, with NO geometric anchors, cannot resolve.
+  const bAlone = resolvePatterns([B], byRoute, new Map(), new Map());
+  assert.equal(bAlone.resolved.has('B'), false);
+  assert.equal(bAlone.states.get('B'), 'unresolved');
+
+  // B alone, seeded with the crosswalk A produced, resolves — that is the propagation.
+  const bSeeded = resolvePatterns([B], byRoute, new Map(), first.learned);
+  assert.equal(bSeeded.resolved.get('B')?.staticPatternId, 'SP1');
+});
+
+test('propagation walks a chain across ITERATIONS, which is the whole point of the fixpoint', () => {
+  // A is geo-anchored. B overlaps A by two stops. C overlaps only B by two stops.
+  // Presented in reverse order so neither B nor C can resolve on the first sweep, which
+  // is exactly the case a single non-iterated pass would leave on the table.
+  const A = pat('A', 'R', [[1, 'rt1'], [2, 'rt2'], [3, 'rt3'], [4, 'rt4']]);
+  const B = pat('B', 'R', [[3, 'rt3'], [4, 'rt4'], [5, 'rt5'], [6, 'rt6']]);
+  const C = pat('C', 'R', [[5, 'rt5'], [6, 'rt6'], [7, 'rt7']]);
+  const stops = ['s1', 's2', 's3', 's4', 's5', 's6', 's7'];
+  const byRoute = new Map([['R', [staticPat('SP1', stops)]]]);
+  const geo = new Map([['R|rt1', 's1'], ['R|rt2', 's2']]);
+
+  const r = resolvePatterns([C, B, A], byRoute, geo, new Map());
+  assert.equal(r.resolved.get('A')?.iter, 0, 'geometry resolves A immediately');
+  assert.equal(r.resolved.get('B')?.iter, 1, 'B needs A\'s output, so it waits a sweep');
+  assert.equal(r.resolved.get('C')?.iter, 2, 'C needs B\'s output, so it waits another');
+  assert.equal(r.learned.get('rt7'), 's7', 'a stop no vehicle was ever seen at is now known');
+
+  // A single non-iterating pass would have resolved only A — this is the measured gain.
+  const onePass = resolvePatterns([C, B, A], byRoute, geo, new Map(), { maxIters: 1 });
+  assert.equal(onePass.resolved.size, 1);
+
+  // The loop stopped on a no-progress sweep rather than exhausting its budget.
+  assert.ok(r.iterations < 8);
+  assert.equal(r.newlyResolvedPerIter[r.newlyResolvedPerIter.length - 1], 0);
+});
+
+test('AMBIGUITY IS JUDGED ON THE IMPLIED CROSSWALK, not on pattern identity', () => {
+  const P = pat('P', 'R', [[1, 'rt1'], [2, 'rt2'], [3, 'rt3']]);
+  const geo = new Map([['R|rt1', 's1'], ['R|rt2', 's2']]);
+
+  // Two surviving candidates that agree everywhere P has a stop: the choice is immaterial.
+  const agreeing = new Map([['R', [staticPat('SP1', ['s1', 's2', 's3']), staticPat('SP2', ['s1', 's2', 's3', 's9'])]]]);
+  const ok = resolvePatterns([P], agreeing, geo, new Map());
+  assert.equal(ok.states.get('P'), 'resolved');
+  assert.equal(ok.learned.get('rt3'), 's3');
+
+  // Two candidates that differ at sequence 3: stay silent, and write no crosswalk at all.
+  const differing = new Map([['R', [staticPat('SP1', ['s1', 's2', 's3']), staticPat('SP2', ['s1', 's2', 'sX'])]]]);
+  const amb = resolvePatterns([P], differing, geo, new Map());
+  assert.equal(amb.states.get('P'), 'ambiguous');
+  assert.equal(amb.learned.size, 0, 'an ambiguous pattern must not publish stop identities');
+});
+
+test('the hard anchor constraint eliminates a candidate that misses ONE anchor', () => {
+  const P = pat('P', 'R', [[1, 'rt1'], [2, 'rt2'], [3, 'rt3']]);
+  const geo = new Map([['R|rt1', 's1'], ['R|rt2', 's2'], ['R|rt3', 's3']]);
+  // SP2 matches anchors 1 and 3 but not 2. One violation is enough.
+  const byRoute = new Map([['R', [staticPat('SP2', ['s1', 'sZ', 's3'])]]]);
+  const r = resolvePatterns([P], byRoute, geo, new Map());
+  assert.equal(r.states.get('P'), 'no_candidate');
+  assert.equal(r.resolved.size, 0);
+  assert.equal(r.learned.size, 0);
+});
+
+test('fewer than two anchors leaves a pattern unresolved rather than guessing', () => {
+  const P = pat('P', 'R', [[1, 'rt1'], [2, 'rt2']]);
+  const byRoute = new Map([['R', [staticPat('SP1', ['s1', 's2'])]]]);
+  const r = resolvePatterns([P], byRoute, new Map([['R|rt1', 's1']]), new Map());
+  assert.equal(r.states.get('P'), 'unresolved');
+  assert.equal(r.resolved.size, 0);
+});
+
+test('two resolutions disagreeing about one rt stop mark it conflicted, not "latest wins"', () => {
+  // Two routes' patterns share rt stop 'rtX' but imply different static stops for it.
+  const A = pat('A', 'R1', [[1, 'a1'], [2, 'a2'], [3, 'rtX']]);
+  const B = pat('B', 'R2', [[1, 'b1'], [2, 'b2'], [3, 'rtX']]);
+  const byRoute = new Map<string, StaticPatternLite[]>([
+    ['R1', [staticPat('SP1', ['s1', 's2', 'sHERE'])]],
+    ['R2', [staticPat('SP2', ['t1', 't2', 'sTHERE'])]],
+  ]);
+  const geo = new Map([['R1|a1', 's1'], ['R1|a2', 's2'], ['R2|b1', 't1'], ['R2|b2', 't2']]);
+  const r = resolvePatterns([A, B], byRoute, geo, new Map());
+  assert.ok(r.conflicted.has('rtX'));
+  assert.equal(r.learned.has('rtX'), false, 'a conflicted stop must never back a delay row');
+});
+
+// ---------- promotion, confidence, audits ----------
+
+test('promotion: one propagated pattern stays candidate, two agreeing patterns confirm', () => {
+  assert.equal(promotionState(1, 'propagated', null, false), 'candidate');
+  assert.equal(promotionState(2, 'propagated', null, false), 'confirmed');
+  // A geometric anchor whose own centroid sits on the stop self-confirms.
+  assert.equal(promotionState(1, 'geo', 20, false), 'confirmed');
+  assert.equal(promotionState(1, 'geo', 90, false), 'candidate');
+  // A conflict overrides everything, at any vote count.
+  assert.equal(promotionState(9, 'geo', 5, true), 'conflicted');
+});
+
+test('only confirmed entries above the confidence floor may back a delay row', () => {
+  assert.equal(usableForDelay({ state: 'confirmed', confidence: 0.61 }), true);
+  assert.equal(usableForDelay({ state: 'confirmed', confidence: 0.59 }), false);
+  assert.equal(usableForDelay({ state: 'candidate', confidence: 0.99 }), false);
+  assert.equal(usableForDelay({ state: 'conflicted', confidence: 1 }), false);
+  assert.equal(usableForDelay(null), false);
+  assert.equal(usableForDelay(undefined), false);
+});
+
+test('confidence rises with votes, falls with residual, and discounts propagation', () => {
+  assert.equal(xwalkConfidence(10, 0, 'geo'), 1);
+  assert.ok(xwalkConfidence(5, 0, 'geo') < xwalkConfidence(10, 0, 'geo'));
+  assert.ok(xwalkConfidence(10, 50, 'geo') < xwalkConfidence(10, 10, 'geo'));
+  assert.ok(xwalkConfidence(10, 0, 'propagated') < xwalkConfidence(10, 0, 'geo'));
+  // The residual factor is floored, so a far-but-heavily-voted entry never reads as zero.
+  assert.ok(xwalkConfidence(10, 10_000, 'geo') >= 0.2);
+});
+
+test('CROSS-ROUTE AGREEMENT counts only stops seen from two or more routes', () => {
+  const perRoute = new Map<string, Map<string, string>>([
+    ['R1', new Map([['x', 's1'], ['y', 's2'], ['solo', 's9']])],
+    ['R2', new Map([['x', 's1'], ['y', 'DIFFERENT']])],
+  ]);
+  const a = crossRouteAgreement(perRoute);
+  assert.equal(a.total, 2, 'the single-route stop is not evidence either way');
+  assert.equal(a.agree, 1);
+  assert.equal(a.rate, 0.5);
+  // No multi-route stops at all means no estimate — null, never a flattering 1.0.
+  assert.equal(crossRouteAgreement(new Map([['R1', new Map([['x', 's1']])]])).rate, null);
+});
+
+test('MONOTONICITY flags a trip whose crosswalked stops go backwards', () => {
+  const m = monotonicityViolations([
+    { staticSeqs: [1, 2, 3, 4] },
+    { staticSeqs: [1, 5, 3] },       // backwards
+    { staticSeqs: [2, 2] },          // equal is also a violation
+    { staticSeqs: [7] },             // too short to judge
+  ]);
+  assert.equal(m.total, 3);
+  assert.equal(m.violations, 2);
+  assert.equal(monotonicityViolations([]).rate, null);
+});
