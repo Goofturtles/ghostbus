@@ -10,18 +10,32 @@ import type { EngineCycleInput, EngineVehicle, EngineTripUpdate } from './engine
 
 // ---------- a synthetic board ----------
 //
-// Route R1 with two static patterns that share a prefix, which is what real routes look
-// like and what the crosswalk's "two independent patterns agree" promotion rule needs:
-//   T1 / PA: st1 st2 st3 st4
-//   T2 / PB: st1 st2 st5
-// Realtime names those stops a b c d and a b x. Stops sit 100 m apart along a meridian.
+// Route R1 with two static patterns that share a three-stop prefix, which is what real
+// routes look like and what the crosswalk's "two independent patterns agree" promotion
+// rule needs:
+//   T1 / PA: st1 st2 st3 st4 st6      realtime  a b c d f
+//   T2 / PB: st1 st2 st3 st5          realtime  a b c x
+//
+// So a, b and c are corroborated by both patterns while d, f and x sit on one each. The
+// geometric anchors in these tests are placed on c, d and x only, which leaves a and b
+// PROPAGATED-ONLY — the class the promotion and confidence rules are actually about.
 
 const BOARD = '20260726..20260905';
 const LAT0 = 43.70, LON0 = -79.40;
 const at = (metresNorth: number): number => LAT0 + metresNorth / 111_320;
 const STOP_LAT: Record<string, number> = {
-  st1: at(0), st2: at(100), st3: at(200), st4: at(300), st5: at(800),
+  st1: at(0), st2: at(100), st3: at(200), st4: at(300), st5: at(800), st6: at(1500),
 };
+
+/** A vehicle dwelling exactly on a static stop, reporting it under a realtime id. */
+const dwellingAt = (vehicleId: string, rtStopId: string, metresNorth: number): EngineVehicle => ({
+  vehicleId, routeId: 'R1', rtTripId: null, rtStopId,
+  currentStatus: 1, lat: at(metresNorth), lon: LON0, tsS: 1_800_000_000,
+});
+/** Anchors on c, d and x — enough for both patterns to resolve, and on neither a nor b. */
+const ANCHORS: EngineVehicle[] = [
+  dwellingAt('VC', 'c', 200), dwellingAt('VD', 'd', 300), dwellingAt('VX', 'x', 800),
+];
 
 interface XwRow {
   rt_stop_id: string; stop_id: string; votes: number; distinct_patterns: number;
@@ -39,8 +53,8 @@ function stubDb(xwalkRows: XwRow[]): Db & { writes: Captured[] } {
     arrival_s: 36_000 + i * 300, departure_s: 36_000 + i * 300,
   }));
   const stopTimeRows = [
-    ...tripStops('T1', ['st1', 'st2', 'st3', 'st4']),
-    ...tripStops('T2', ['st1', 'st2', 'st5']),
+    ...tripStops('T1', ['st1', 'st2', 'st3', 'st4', 'st6']),
+    ...tripStops('T2', ['st1', 'st2', 'st3', 'st5']),
   ];
   const geometryRows = Object.entries(STOP_LAT).map(([stop_id, lat]) => ({ route_id: 'R1', stop_id, lat, lon: LON0 }));
 
@@ -71,7 +85,7 @@ const xw = (rtStopId: string, stopId: string, over: Partial<XwRow> = {}): XwRow 
 /** The crosswalk this deployment would have persisted before a restart. */
 const LEARNED = (over: Partial<XwRow> = {}): XwRow[] => [
   xw('a', 'st1', over), xw('b', 'st2', over), xw('c', 'st3', over),
-  xw('d', 'st4', over), xw('x', 'st5', over),
+  xw('d', 'st4', over), xw('f', 'st6', over), xw('x', 'st5', over),
 ];
 
 function tripUpdate(rtTripId: string, rtStops: string[]): EngineTripUpdate {
@@ -89,7 +103,7 @@ function cycle(over: Partial<EngineCycleInput> = {}): EngineCycleInput {
     nowMs: 1_800_000_000_000,
     serviceDate: 20260726,
     vehicles: [],
-    tripUpdates: [tripUpdate('RT1', ['a', 'b', 'c', 'd']), tripUpdate('RT2', ['a', 'b', 'x'])],
+    tripUpdates: [tripUpdate('RT1', ['a', 'b', 'c', 'd', 'f']), tripUpdate('RT2', ['a', 'b', 'c', 'x'])],
     activeServices: new Set<string>(),   // board inactive: coverage is still measured
     ...over,
   };
@@ -136,8 +150,8 @@ test('REGRESSION (BLOCKERS 11): a cold boot restores the crosswalk instead of re
   await warm.runCycle(cycle());
   assert.equal(warm.staticStopFor('a'), 'st1', 'a restored identity backs a delay row on cycle 1');
   assert.equal(warm.staticStopFor('b'), 'st2');
-  assert.equal(warm.getStats().xwalk.rtStopsSeen, 5);
-  // 4 of the 7 realtime stop occurrences this cycle (a and b, on both trips) are covered.
+  assert.equal(warm.getStats().xwalk.rtStopsSeen, 6);
+  // 6 of the 9 realtime stop occurrences this cycle (a, b and c, on both trips) are covered.
   assert.ok(warm.getStats().xwalk.occurrenceCoverage > 0.5,
     `cycle-1 coverage ${warm.getStats().xwalk.occurrenceCoverage} must beat the cold start's 0`);
 });
@@ -178,6 +192,50 @@ test('REGRESSION (BLOCKERS 11): new evidence can still overturn a restored mappi
   assert.equal(persisted.get('a')?.state, 'conflicted');
   assert.equal(persisted.get('a')?.confidence, 0);
   assert.equal(e.staticStopFor('b'), 'st2', 'the stops nobody contradicted are untouched');
+});
+
+// ---------- BLOCKERS 10: what the coverage plateau was actually made of ----------
+
+test('REGRESSION (BLOCKERS 10): corroboration once observed is not forgotten', async () => {
+  // `distinctPatterns` was recounted every cycle from the patterns resolved in THAT cycle,
+  // so a stop confirmed by two agreeing patterns fell back to `candidate` as soon as one
+  // of them stopped running — 03:00 unlearns what 08:00 established. The live run shows
+  // the oscillation directly (confirmed 3,043 -> 3,031 -> 3,019 -> 3,025 -> 3,042 across
+  // five consecutive cycles) and occurrence coverage drifting DOWN while still learning.
+  const db = stubDb([]);
+  const e = createDelayEngine(db, 'ttc');
+  await e.reloadStatic(BOARD);
+
+  // Enough cycles with BOTH patterns present for the vote count to clear the floor.
+  for (let i = 0; i < 8; i++) await e.runCycle(cycle({ vehicles: ANCHORS }));
+  assert.equal(e.staticStopFor('a'), 'st1', 'two agreeing patterns confirm it');
+  assert.equal(e.staticStopFor('b'), 'st2');
+
+  // Now only one of the two patterns is in the feed. The second pattern's agreement
+  // happened; it does not stop having happened.
+  await e.runCycle(cycle({ vehicles: ANCHORS, tripUpdates: [tripUpdate('RT1', ['a', 'b', 'c', 'd', 'f'])] }));
+  assert.equal(e.staticStopFor('a'), 'st1', 'the other pattern being off shift is not counter-evidence');
+  assert.equal(e.staticStopFor('b'), 'st2');
+});
+
+test('REGRESSION (BLOCKERS 10): a distant geometric anchor cannot demote an agreeing entry', async () => {
+  // The vehicle sits 40 m from st2 — a clean identification (the runner-up is 20 m further,
+  // well past the 15 m ambiguity floor), but 40 m is past the point where `1 - resid/60`
+  // falls under the 0.60 usability floor. Geometry AGREES with propagation about which stop
+  // this is, so the entry must not become unusable for having been measured.
+  const db = stubDb([]);
+  const e = createDelayEngine(db, 'ttc');
+  await e.reloadStatic(BOARD);
+  for (let i = 0; i < 8; i++) await e.runCycle(cycle({ vehicles: ANCHORS }));
+  assert.equal(e.staticStopFor('b'), 'st2', 'usable on propagation alone');
+
+  const near: EngineVehicle = {
+    vehicleId: 'V1', routeId: 'R1', rtTripId: 'RT1', rtStopId: 'b',
+    currentStatus: 1, lat: at(60), lon: LON0, tsS: 1_800_000_000,   // 40 m short of st2
+  };
+  await e.runCycle(cycle({ vehicles: [...ANCHORS, near] }));
+  assert.equal(e.getStats().xwalk.conflicted, 0, 'the two sources agree, so there is no conflict');
+  assert.equal(e.staticStopFor('b'), 'st2', 'and agreement must not cost it its usability');
 });
 
 test('a restored conflicted entry stays unusable and out of the propagation seed', async () => {

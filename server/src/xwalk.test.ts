@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   metres, nearestStopOnRoute, mergeRtTrip, resolvePatterns, promotionState,
   xwalkConfidence, usableForDelay, crossRouteAgreement, monotonicityViolations,
-  crosswalkedStaticSeqs,
+  crosswalkedStaticSeqs, corroboratedConfidence, XWALK_MIN_CONFIDENCE,
   type RtPattern, type StaticPatternLite, type XwalkEntry,
 } from './xwalk.ts';
 import { dedupeByKey } from './engine.ts';
@@ -252,6 +252,37 @@ test('confidence rises with votes, falls with residual, and discounts propagatio
   assert.ok(xwalkConfidence(10, 0, 'propagated') < xwalkConfidence(10, 0, 'geo'));
   // The residual factor is floored, so a far-but-heavily-voted entry never reads as zero.
   assert.ok(xwalkConfidence(10, 10_000, 'geo') >= 0.2);
+});
+
+test('REGRESSION (BLOCKERS 10): corroboration may never lower confidence', () => {
+  // A geometric anchor used to OVERWRITE a propagated entry, and geometry carries a
+  // residual penalty that propagation does not. So a stop propagation supported at 0.85
+  // was demoted to 0.33 the moment a vehicle was seen 40 m from it — while AGREEING about
+  // which stop it was. Measured cost on a live snapshot: 3,185 of 23,636 realtime stop
+  // occurrences (13.5%) sat `confirmed` and under the 0.60 floor for exactly this reason.
+  const votes = 12, resid = 40;
+  assert.ok(xwalkConfidence(votes, resid, 'geo') < XWALK_MIN_CONFIDENCE,
+    'geometry alone at 40 m genuinely is below the floor');
+  assert.ok(xwalkConfidence(votes, null, 'propagated') >= XWALK_MIN_CONFIDENCE);
+
+  const both = corroboratedConfidence(votes, resid, { geo: true, propagated: true });
+  assert.equal(both, xwalkConfidence(votes, null, 'propagated'));
+  assert.ok(both >= XWALK_MIN_CONFIDENCE, 'two agreeing sources must not be worse than one');
+
+  // It admits nothing either source would have refused on its own.
+  assert.equal(corroboratedConfidence(votes, resid, { geo: true, propagated: false }),
+    xwalkConfidence(votes, resid, 'geo'), 'geometry alone still carries its residual');
+  assert.equal(corroboratedConfidence(votes, null, { geo: false, propagated: true }),
+    xwalkConfidence(votes, null, 'propagated'));
+  assert.equal(corroboratedConfidence(votes, resid, { geo: false, propagated: false }), 0);
+  // A clean geometric anchor still beats propagation, so measurement keeps its edge.
+  assert.ok(corroboratedConfidence(votes, 0, { geo: true, propagated: true })
+    > corroboratedConfidence(votes, null, { geo: false, propagated: true }));
+  // Monotone in evidence: adding a source can only ever help.
+  for (const r of [0, 10, 25, 40, 79]) {
+    assert.ok(corroboratedConfidence(votes, r, { geo: true, propagated: true })
+      >= corroboratedConfidence(votes, r, { geo: true, propagated: false }), `resid ${r}`);
+  }
 });
 
 test('CROSS-ROUTE AGREEMENT counts only stops seen from two or more routes', () => {

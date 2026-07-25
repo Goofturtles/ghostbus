@@ -18,8 +18,8 @@ import {
   buildPatternIndex, emptyPatternIndex, type PatternIndex, type StaticTripSlot,
 } from './patterns.ts';
 import {
-  nearestStopOnRoute, mergeRtTrip, resolvePatterns, promotionState, xwalkConfidence,
-  crossRouteAgreement, monotonicityViolations, crosswalkedStaticSeqs,
+  nearestStopOnRoute, mergeRtTrip, resolvePatterns, promotionState,
+  crossRouteAgreement, monotonicityViolations, crosswalkedStaticSeqs, corroboratedConfidence,
   type RtPattern, type StaticPatternLite, type XwalkEntry, type PatternState,
 } from './xwalk.ts';
 import { originLock, preferBinding, type LockAnchor, type LockSlot, type LockResult } from './bind.ts';
@@ -183,6 +183,25 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
   const xwalk = new Map<string, XwalkEntry>();
   const xwalkProposals = new Map<string, Set<string>>(); // rtStopId -> static stop ids ever proposed
   const xwalkVotes = new Map<string, number>();
+  /**
+   * rtStopId -> every STATIC pattern that has agreed on this stop's identity, accumulated.
+   *
+   * This is the evidence `promotionState` weighs, and it used to be recounted from scratch
+   * every cycle off the patterns resolved in THAT cycle. Corroboration is a historical
+   * fact, not a property of the current minute: a stop confirmed by two patterns at
+   * 08:00 fell back to `candidate` at 03:00 when only one of them was running. The live
+   * run shows exactly that oscillation (confirmed 3,043 -> 3,031 -> 3,019 -> 3,025 -> 3,042
+   * over five consecutive cycles) and occurrence coverage drifting DOWN, 36.4% -> 35.3%,
+   * while the crosswalk was still learning.
+   *
+   * Keyed by STATIC pattern id rather than RT pattern id on purpose: an RT pattern's id is
+   * a content hash, so extending it renames it, and counting RT ids would let one line of
+   * evidence corroborate itself under two names. Two RT patterns that are really one
+   * resolve to the same static pattern and collapse to one vote here.
+   */
+  const xwalkAgreeingPatterns = new Map<string, Set<string>>();
+  /** distinct_patterns restored from the database, so a warm start does not forget it. */
+  const xwalkDistinctFloor = new Map<string, number>();
   const conflictedStops = new Set<string>();
   const rtPatterns: RtPattern[] = [];
   const rtPatternByTrip = new Map<string, RtPattern>();
@@ -251,6 +270,7 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
       // would silently map realtime stops onto a schedule they were never learned from.
       anchors.clear(); dwellSeen.clear(); geoAnchors.clear(); geoResid.clear();
       xwalk.clear(); xwalkProposals.clear(); xwalkVotes.clear(); conflictedStops.clear();
+      xwalkAgreeingPatterns.clear(); xwalkDistinctFloor.clear();
       rtPatterns.length = 0; rtPatternByTrip.clear(); patternStates.clear(); quarantined.clear();
       patternResid.clear(); births.clear(); bindings.clear(); refusedTrips.clear();
       claimedStatic.clear(); firstStopResids.length = 0;
@@ -316,6 +336,7 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
         });
         xwalkVotes.set(r.rt_stop_id, Number(r.votes));          // continue the count, do not restart it
         xwalkProposals.set(r.rt_stop_id, new Set([r.stop_id])); // so a contradiction still conflicts
+        xwalkDistinctFloor.set(r.rt_stop_id, Number(r.distinct_patterns));
         if (state === 'conflicted') conflictedStops.add(r.rt_stop_id);
         else if (state === 'confirmed' && confidence >= XWALK_MIN_CONF) usable++;
       }
@@ -435,12 +456,25 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
     // in the seed on every later cycle and so never appears in `learned` again. Counting
     // only new discoveries froze every propagated entry at one vote, permanently below the
     // 0.60 usability floor.
-    const proposals = new Map<string, { stop: string; source: 'geo' | 'propagated'; resid: number | null }>();
-    for (const [rtStop, stop] of rr.implied) proposals.set(rtStop, { stop, source: 'propagated', resid: null });
+    // Where geometry and propagation BOTH name a stop they are two agreeing sources, not a
+    // replacement — see corroboratedConfidence. Both are recorded rather than one
+    // overwriting the other.
+    interface Proposal { stop: string; geo: boolean; propagated: boolean; resid: number | null }
+    const proposals = new Map<string, Proposal>();
+    for (const [rtStop, stop] of rr.implied) {
+      proposals.set(rtStop, { stop, geo: false, propagated: true, resid: null });
+    }
     for (const [key, stop] of geoAnchors) {
-      proposals.set(rtStopOfKey(key), { stop, source: 'geo', resid: geoResid.get(key) ?? null });
+      const rtStop = rtStopOfKey(key);
+      const resid = geoResid.get(key) ?? null;
+      const prior = proposals.get(rtStop);
+      // Geometry is measured, so it names the stop when the two disagree — and the
+      // disagreement is recorded below, where two distinct ids mark the stop conflicted.
+      if (prior && prior.stop === stop) { prior.geo = true; prior.resid = resid; }
+      else proposals.set(rtStop, { stop, geo: true, propagated: false, resid });
     }
 
+    const agreeingPatterns = staticPatternsByRtStop();
     for (const [rtStop, prop] of proposals) {
       let seen = xwalkProposals.get(rtStop);
       if (!seen) { seen = new Set(); xwalkProposals.set(rtStop, seen); }
@@ -449,12 +483,13 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
       xwalkVotes.set(rtStop, votes);
       const hasConflict = conflictedStops.has(rtStop) || seen.size > 1;
       if (hasConflict) conflictedStops.add(rtStop);
-      const distinctPatterns = countResolvedPatternsUsing(rtStop);
+      const distinctPatterns = accumulateAgreement(rtStop, agreeingPatterns.get(rtStop));
+      const source = prop.geo ? 'geo' : 'propagated';
       xwalk.set(rtStop, {
         rtStopId: rtStop, stopId: prop.stop, votes, distinctPatterns, geoResidM: prop.resid,
-        source: prop.source,
-        state: promotionState(distinctPatterns, prop.source, prop.resid, hasConflict),
-        confidence: hasConflict ? 0 : xwalkConfidence(votes, prop.resid, prop.source),
+        source,
+        state: promotionState(distinctPatterns, source, prop.resid, hasConflict),
+        confidence: hasConflict ? 0 : corroboratedConfidence(votes, prop.resid, prop),
       });
     }
     // A stop that became conflicted after it was written must lose its usability too.
@@ -479,13 +514,33 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
     return rr.resolved.size;
   }
 
-  function countResolvedPatternsUsing(rtStop: string): number {
-    let n = 0;
+  /**
+   * rt stop id -> the STATIC patterns that agree on it this cycle. Built once and inverted,
+   * rather than scanned per stop: the previous per-stop scan was O(stops x patterns x
+   * pattern length), roughly 4.5e8 comparisons a cycle at live volumes.
+   */
+  function staticPatternsByRtStop(): Map<string, Set<string>> {
+    const out = new Map<string, Set<string>>();
     for (const p of rtPatterns) {
       if (patternStates.get(p.rtPatternId) !== 'resolved') continue;
-      for (const s of p.seqStops.values()) if (s === rtStop) { n++; break; }
+      const staticPatternId = resolvedStatic.get(p.rtPatternId);
+      if (!staticPatternId) continue;
+      for (const rtStop of p.seqStops.values()) {
+        let s = out.get(rtStop);
+        if (!s) { s = new Set(); out.set(rtStop, s); }
+        s.add(staticPatternId);
+      }
     }
-    return n;
+    return out;
+  }
+
+  /** Fold this cycle's agreement into the accumulated set and report its size. */
+  function accumulateAgreement(rtStop: string, thisCycle: ReadonlySet<string> | undefined): number {
+    let all = xwalkAgreeingPatterns.get(rtStop);
+    if (!all) { all = new Set(); xwalkAgreeingPatterns.set(rtStop, all); }
+    if (thisCycle) for (const sp of thisCycle) all.add(sp);
+    // A restored entry brings the count it was promoted on; it cannot bring the set.
+    return Math.max(all.size, xwalkDistinctFloor.get(rtStop) ?? 0);
   }
 
   // ---------- (d) births and origin lock ----------

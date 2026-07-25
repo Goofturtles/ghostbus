@@ -413,6 +413,35 @@ function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
 }
 
+/**
+ * Confidence for an entry that SEVERAL independent sources name the same static stop for.
+ *
+ * The rule is that corroboration may never make us less sure. It used not to hold. A
+ * geometric anchor overwrote a propagated entry outright, and geometry carries a residual
+ * penalty that propagation does not: `1 - resid/60` is below the 0.60 usability floor for
+ * any residual over 24 m, while `nearestStopOnRoute` accepts up to 80 m. So a stop that
+ * propagation supported at 0.85 was demoted to 0.33 the moment a vehicle was seen 40 m
+ * from it — WHILE AGREEING about which stop it was. Two agreeing lines of evidence
+ * yielding less than one is incoherent, and it is expensive: measured on a live snapshot,
+ * 3,185 of 23,636 StopTimeUpdate occurrences (13.5%) resolved to an entry that was
+ * `confirmed` and under the floor for exactly this reason.
+ *
+ * Taking the best of the agreeing sources admits nothing that either source would not have
+ * admitted alone, so this is not a loosened threshold — it is the removal of a penalty for
+ * having more evidence. The residual still caps what GEOMETRY ALONE is worth, which is the
+ * question it can actually answer.
+ */
+export function corroboratedConfidence(
+  votes: number,
+  geoResidM: number | null,
+  sources: { geo: boolean; propagated: boolean },
+): number {
+  let best = 0;
+  if (sources.geo) best = Math.max(best, xwalkConfidence(votes, geoResidM, 'geo'));
+  if (sources.propagated) best = Math.max(best, xwalkConfidence(votes, null, 'propagated'));
+  return best;
+}
+
 /** Only a confirmed, sufficiently-confident entry may back a written delay row. */
 export function usableForDelay(e: Pick<XwalkEntry, 'state' | 'confidence'> | undefined | null): boolean {
   return !!e && e.state === 'confirmed' && e.confidence >= XWALK_MIN_CONFIDENCE;
