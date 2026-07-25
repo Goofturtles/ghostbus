@@ -87,6 +87,27 @@ function haversineM(lat1: number, lon1: number, lat2: number, lon2: number): num
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
 }
 
+// Douglas–Peucker tolerance for the route polyline, in degrees.
+//
+// The stored shape is the agency's own shapes.txt, loaded losslessly by
+// seed_toronto.ts (median 226 points/shape; the 504's is 177 points over 10.3 km,
+// spaced ~50 m). That feed is the ceiling on how well the line can trace a street,
+// and we never invent geometry to beat it.
+//
+// This tolerance is what we are allowed to throw away on the way out. 1e-6° is
+// 0.08 m of longitude / 0.11 m of latitude at Toronto's latitude, so the drawn line
+// stays within ~0.11 m of the agency's centreline. The map opens at zoom 16.6 and
+// allows 18, where a pixel is 1.14 m and 0.43 m respectively, so the worst-case
+// error is a quarter of a pixel at the deepest zoom the app can reach — invisible.
+// It still collapses the long dead-straight runs the TTC grid is full of.
+//
+// The previous 1.5e-5 (~1.4 m) was ~1.2 px off the street at the default zoom and
+// ~3.9 px at zoom 18 — about a line-width adrift, which is exactly the "the route
+// doesn't follow the road" artefact. Cost of the change: the 504 polyline goes from
+// 46 to 141 points (1.0 KB → 3.1 KB of coordinates); the largest shape we hold tops
+// out at 1,141 points (~27 KB). Nothing is stored differently — the DB is unchanged.
+const SHAPE_SIMPLIFY_EPS_DEG = 1e-6;
+
 /** Douglas–Peucker on [lon, lat] points. epsilon in degrees (~1e-4 ≈ 11 m).
  *  Keeps the route line faithful to the streets while shrinking the payload. */
 function simplify(pts: [number, number][], epsilon: number): [number, number][] {
@@ -614,7 +635,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     // points stored as [lat, lon][] (JSONB); pg returns it parsed, PGlite may return text.
     const raw = (typeof shapeRow.points === 'string' ? JSON.parse(shapeRow.points) : shapeRow.points) as [number, number][];
     const lonLat: [number, number][] = raw.map(([lat, lon]) => [lon, lat]);
-    const coordinates = simplify(lonLat, 1.5e-5); // ~1.7 m — trims collinear runs, keeps every curve
+    const coordinates = simplify(lonLat, SHAPE_SIMPLIFY_EPS_DEG); // ~0.11 m — trims only truly collinear runs
 
     // A representative trip on that exact shape → its real ordered stops.
     const repDir = rep.direction_id;
