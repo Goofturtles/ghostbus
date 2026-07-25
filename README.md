@@ -190,8 +190,10 @@ GhostBus doesn't need the confession.
 That distinction is the whole engineering problem. Detecting a cancellation the agency
 announces is a UI feature. Detecting one it doesn't announce — on a feed whose trip IDs
 don't match the schedule, which omits start times and start dates, and which publishes no
-standard cancellations at all — is the identity join, the evidence gates, the
-confirm-and-retract cycle, and the circuit breakers documented in `METHODS.md`.
+standard cancellations at all — is the whole pipeline documented in `METHODS.md`: a static
+pattern index, a stop crosswalk learned from live traffic (realtime `stop_id` is a different
+namespace from the schedule's), an origin lock that binds a running vehicle to a scheduled
+trip, the evidence gates, the confirm-and-retract cycle, and the circuit breakers.
 
 ---
 
@@ -345,7 +347,7 @@ reports `dbDriver` so you always know which one you are looking at.
 | Command | What it does |
 |---|---|
 | `npm run dev:api` / `npm run dev:web` | Run either half alone |
-| `npm test` | 86 unit tests — time/DST, GTFS parsing, the identity join, ETA percentiles, bbox, grades, forecast |
+| `npm test` | 162 unit tests — time/DST, GTFS parsing, pattern matching and the stop crosswalk, ETA percentiles, bbox, grades, forecast |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run collect` | Run the collector standalone; `GHOSTBUS_MAX_CYCLES=5` for a bounded calibration run |
 | `npm run aggregate` | Recompute the delay aggregates now |
