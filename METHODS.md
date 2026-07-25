@@ -7,6 +7,13 @@ it can be opened and checked. Every number attributed to "our data" was measured
 the source tree, the production Neon database, or the running collector's own log — and the
 source of each measurement is named.
 
+**Two caveats about sourcing, stated up front.** Some measurements are recorded only as a
+comment in the module that acted on them (the settle rate in `delay.ts`, the birth-lead
+distribution and candidate-MAD in `bind.ts`, the arrival/departure split in `poller.ts`).
+Those are cited to the module rather than to an external artifact, and they cannot be
+re-derived today — the feed has moved on. Where a figure came from a one-time probe with no
+retained artifact at all, it is labelled as such rather than dressed up.
+
 **Verification stamp.** This document was rewritten against the source tree and re-measured
 on **2026-07-25**, with the database census taken at **10:43 America/Toronto** and the
 collector's own figures taken from cycle 17 of the run in `.data/collector.log`. The
@@ -94,10 +101,18 @@ timeout (`REQUEST_TIMEOUT_MS`); per-feed exponential backoff from 5 s, capped at
 within the 6–30 min detection window — and long enough that a full day is 1,920 cycles
 rather than a rate-limit problem for a public feed we do not pay for.
 
-**Presence-aware decoding.** Every optional scalar read from either feed goes through
+**Presence-aware decoding.** Every optional scalar the **delay engine** reads goes through
 `server/src/pb.ts` (`present`, `presentInt`, `presentStr`), which tests
 `Object.prototype.hasOwnProperty` rather than comparing against a value. This is not
 defensive padding: §4 is what happens without it.
+
+The map's vehicle DTO path is the stated exception: `processVehicles` in `poller.ts` still
+reads `currentStopSequence`, `position.bearing`, `position.speed` and `timestamp` with
+`!= null` checks, and `processAlerts` reads `effect`/`cause` raw. `bearing` and `speed` are
+proto2 optional floats, so a vehicle that never sent a bearing renders as heading due north.
+Nothing on that path reaches a delay measurement or a published statistic — it is a sprite
+rotation — but it is the same trap and it is recorded rather than glossed (BLOCKERS.md
+entry 16).
 
 **Freshness gate (`feedsFresh`).** The delay engine and the ghost scan run only when
 **both** the vehicles and trips feeds returned a fresh `200` in *this* cycle. If either
@@ -108,10 +123,12 @@ into "the buses didn't come".
 (`STALE_AFTER_MS`), `stale` beyond that, `down` if it has never succeeded. `/api/health`
 exposes this per feed, so the UI degrades honestly instead of showing confident stale data.
 
-**Retention.** `trip_delay_obs` older than **14 days** (`RETENTION_DAYS`) is deleted once
-per service day. That is the same window the aggregates are computed over (§6), exported
-from a single constant (`WINDOW_DAYS` in `server/src/aggregate.ts`) so the retention horizon
-and the `windowDays` reported in every evidence object cannot drift apart.
+**Retention.** `trip_delay_obs` older than **14 days** (`RETENTION_DAYS` in `poller.ts`) is
+deleted once per calendar day. That matches the window the aggregates are computed over
+(`WINDOW_DAYS` in `server/src/aggregate.ts`), which is what the `windowDays` in every
+evidence object reports. **The two are separate literals, not one shared constant** — they
+agree today and nothing enforces that they keep agreeing. The prune is also keyed on the
+Toronto calendar date rather than the service date, and carries no `agency` predicate.
 
 **Raw pings are never persisted.** Vehicle positions live in a `Map` inside the process with
 a 6-deep ring buffer per vehicle, evicted after 10 cycles without a sighting. See
@@ -189,9 +206,13 @@ Geometry alone is far too slow: only ~100 of ~1,400 vehicles per cycle are usabl
 **b. RT pattern clustering (`mergeRtTrip`).** Realtime trips are folded into per-route
 `(stop_sequence → rt_stop_id)` patterns. Three clauses, each load-bearing:
 
+0. **an exactly identical stop map is the same pattern by definition**, whatever the overlap
+   floor says. Without this, two newborns that both publish only `{1: X}` would create two
+   pattern objects with the same content hash — a duplicate identity that collapses in every
+   downstream map keyed by `rtPatternId`;
 1. **every shared sequence must agree** — one disagreement means a different pattern;
 2. **at least `minOverlap` = 3 shared sequences** — without this floor a newborn trip
-   publishing one or two stops fuses two genuinely distinct patterns that share an origin,
+   publishing one or two stops fuses two genuinely *distinct* patterns that share an origin,
    and newborns are exactly what we bind on;
 3. **the merged pattern may not exceed the route's longest *static* pattern** — without the
    cap, a short-turn and a full run agree on their shared prefix and fuse into a phantom
@@ -225,10 +246,19 @@ static stop for **every** anchor. One violation eliminates a candidate. `minAnch
 
 **Transitive propagation is the multiplier.** Once a pattern resolves, every stop on it is
 crosswalked and those stops become anchors for other patterns. `rt_pattern.resolve_iter`
-records which iteration each resolution came from, so the value of iterating is measurable
-rather than asserted. In the production table today (queried 2026-07-25): of 4,025 resolved
-pattern rows, **3,787 resolved at iteration 0 and 238 were reachable only by iterating** —
-67 at iteration 1, 72 at 2, 39 at 3, 27 at 4, 20 at 5, 11 at 6, 2 at 7.
+records which iteration a resolution came from, so the value of iterating is measurable
+rather than asserted.
+
+Read that column carefully: `resolvePatterns` starts from an empty `resolved` map every
+cycle, and `persistCrosswalk` overwrites the column on every write, so the stored value is
+the iteration a pattern resolved at **in the last cycle that touched it** — not the
+iteration it was *first* reachable at. It therefore understates propagation, because a
+pattern that needed six iterations on the day it was discovered resolves at iteration 0 once
+its stops are in the seed. With that caveat, the production table today (queried 2026-07-25)
+holds 4,025 resolved pattern rows, of which **3,787 last resolved at iteration 0 and 238 at
+iterations 1–7**. The un-understated figure is the one taken on a cold eight-cycle run in
+DECISIONS §29: 569 of 1,106 RT patterns resolved, **503 at iteration 0 and 66 reachable only
+by iterating to a fixpoint**.
 
 **d. Promotion and confidence.** An entry becomes `confirmed` when **two independent RT
 patterns** agree on it, or when it is a geometric anchor whose own centroid sits within
@@ -256,14 +286,22 @@ formula:
   through cycle 9, **0.9%** at cycle 10, then **34.5%** at cycle 11 and **35.6%** by cycle
   17 (`.data/collector.log`). The step is the vote threshold clearing, not a bug.
 
-**e. The crosswalk's own falsifiable audits.** Neither requires ground truth, and both can
-fail:
+**e. The crosswalk's own falsifiable audits.** Neither requires ground truth, and both are
+designed to be able to fail. Both, as currently wired, are narrower than the gate names
+suggest — stated here because a reviewer will check, and because an audit that cannot fail
+is not an audit:
 
 - **Cross-route agreement** (`crossRouteAgreement`) — a realtime stop id seen from two or
   more routes must resolve to the same static stop from each route independently. Measured
-  **93.8%** at cycle 17.
-- **Monotonicity** (`monotonicityViolations`) — within one bound trip, the crosswalked
-  static stops must appear in strictly increasing static `stop_sequence` order.
+  **93.8%** at cycle 17. **This audits geometric anchors only:** `runCycle` builds its
+  per-route map from `geoAnchors`, so propagated entries — the bulk of the crosswalk — are
+  not covered by it.
+- **Monotonicity** (`monotonicityViolations`) — within one bound trip, the crosswalked static
+  stops must appear in strictly increasing static `stop_sequence` order. **As wired it cannot
+  currently fail:** `runCycle` passes each binding's `[...b.tracked.keys()].sort()`, which are
+  the *realtime* sequence numbers, already sorted ascending, so the check is tautological. It
+  needs to pass the static sequences the crosswalk resolved those stops to. Filed as
+  BLOCKERS.md entry 17; the gate is therefore inert rather than passing.
 
 ### 3.4 Binding a realtime trip to a static trip (`server/src/bind.ts`)
 
@@ -288,8 +326,10 @@ will.
 
 #### 3.4.2 One forced deviation: capture at birth, bind later
 
-A newborn publishes a **median of one stop**, which can never clear the 3-shared-sequence
-merge floor, so its pattern is usually not resolvable in the cycle it is born. The binding
+A newborn publishes a **median of one stop**. It cannot clear the 3-shared-sequence merge
+floor (only clause 0 will take it, and only into a pattern with an identical one-stop map),
+and a one- or two-stop pattern cannot clear `minAnchors = 2` either, so its pattern is not
+resolvable in the cycle it is born. The binding
 therefore waits — but it waits on the **anchors captured at birth, which are never
 refreshed**. The property the design rests on is preserved; only the moment of the database
 write moves. Births that are still unbindable after **`BIRTH_EXPIRY_S` = 3600 s** are
@@ -315,7 +355,7 @@ disclosed. It is bounded by §3.4.4 and disclosed on every row, which carries `m
 
 | Constant | Value | Rationale |
 |---|---|---|
-| `MIN_PUBLISHABLE_HEADWAY_S` | **300 s** | Below a 5-minute scheduled headway, identification is hopeless *and* it is the busiest, most-watched service. The whole band is refused at any confidence (`refused_headway_band`); the honest product statement is "too frequent to measure reliably", never a guess. Measured trip-weighted share of the sub-300 s band on service 1: **4.9%** (DECISIONS §29). |
+| `MIN_PUBLISHABLE_HEADWAY_S` | **300 s** | Below a 5-minute scheduled headway, identification is hopeless *and* it is the busiest, most-watched service. The whole band is refused at any confidence (`refused_headway_band`); the honest product statement is "too frequent to measure reliably", never a guess. Measured trip-weighted share of the sub-300 s band on service 1: **4.9%** (DECISIONS §29). The same refusal also covers an **unknown** headway — `medianHeadwayForSlots` returns null for a pattern with fewer than 3 slots on its dominant service — so thin patterns are refused too, and the counter conflates the two cases. |
 | `HIGH_CONFIDENCE_HEADWAY_S` | **600 s** | At or above a 10-minute headway a binding is `high` confidence; 300–600 s is `low`. Only `high` rows enter the aggregates (§6.1). |
 | `MARGIN_MIN_S` | **120 s** | Neighbouring slots are exact clones, so the `\|resid\|` separation is what decides. If the runner-up is within 120 s we genuinely cannot tell them apart and say so (`refused_ambiguous`). |
 | `MARGIN_MIN_AGREE` | **2** | A winner that beats the runner-up by two or more agreeing anchors is accepted even inside the 120 s band, because the anchors are independent evidence the origin residual is not. |
@@ -323,9 +363,11 @@ disclosed. It is bounded by §3.4.4 and disclosed on every row, which carries `m
 
 Slots are filtered to the calendar-active services for the service date and to trips not
 already claimed. Refusals are counted by kind (`refused_ambiguous`, `refused_no_slot`,
-`refused_midroute`, `refused_headway_band`, `refused_board_inactive`,
-`refused_unresolved`, `refused_schedule_relationship_8`) and reported, because they are the
-honest denominator behind every published delay.
+`refused_midroute`, `refused_headway_band`, `refused_board_inactive`, `refused_unresolved`,
+`refused_schedule_relationship_8`) and reported, because they are the honest denominator
+behind every published delay. An eighth kind, `refused_too_few_anchors`, is declared and
+counted but never returned by `originLock` — a thin-anchor pattern simply stays unresolved
+and its births expire — so that counter reads zero by construction.
 
 `scheduleRelationship === 8` — an undocumented value not in the GTFS-realtime enum, carried
 by 13 of 1,392 entities on a live snapshot, exactly the ones with a negative synthetic trip
@@ -388,16 +430,23 @@ specifically because **loop routes visit the same stop twice on one trip** and t
 
 ### 3.6 The honesty gates (`server/src/gates.ts`)
 
-Evaluated every cycle, **before anything is written**. Any failure means the engine emits
-nothing and reports, in words, why. Each has a distinct machine-readable name so the UI can
-say what is actually happening instead of rendering a reassuring zero.
+Evaluated every cycle, before the settle step and before any **delay row** is written. Any
+failure means no observation is emitted, and the engine reports in words why. Each gate has a
+distinct machine-readable name so the UI can say what is actually happening instead of
+rendering a reassuring zero.
+
+Precisely what the gates do and do not hold back: `trip_delay_obs` is gated. The engine's own
+evidence is not — `persistCrosswalk()` writes anchors, votes, crosswalk entries and pattern
+states every cycle regardless, and `rt_trip_binding` / `sched_slot_claim` are written whenever
+the board is active. That is deliberate: the audit trail has to keep accumulating while the
+system is refusing to publish, or there would be no record of *why* it refused.
 
 | Gate | Condition to publish | Rationale |
 |---|---|---|
 | `boardActive` | at least one calendar-active `service_id` for this service date | "We hold no schedule for today" is a different statement from "no data yet" and from "0 min delay". Checked first so it is reported ahead of every downstream symptom. |
 | `xwalkOccurrenceCoverage` | **≥ 0.50** | Share of realtime `StopTimeUpdate` **occurrences** — not distinct stops — that resolve through a confirmed, ≥0.60-confidence crosswalk entry. Occurrences, because what matters is how much of the live feed we can actually read, and popular stops appear far more often. |
-| `crossRouteAgreement` | **≥ 0.85** when measurable | The crosswalk disagreeing with itself across routes means it is wrong, not merely thin. |
-| `monotonicity` | violation rate **≤ 0.05** | Bound trips visiting their crosswalked stops out of order is a structural error geometry alone cannot catch. |
+| `crossRouteAgreement` | **≥ 0.85** when measurable | The crosswalk disagreeing with itself across routes means it is wrong, not merely thin. Computed over geometric anchors only — see §3.3e. |
+| `monotonicity` | violation rate **≤ 0.05** | Bound trips visiting their crosswalked stops out of order is a structural error geometry alone cannot catch. **Inert as wired** — see §3.3e; it is fed realtime sequences and so cannot fail. |
 | `boardAgreement` | median \|first-stop residual\| **≤ 300 s** over the last 200 bindings | A large systematic residual means the realtime feed and our seeded static are simply different boards. This self-detects a mid-transition case that a hand-set flag would miss. |
 
 **Per-pattern breaker** (`patternHealthy`): a pattern whose rolling median `|residual|`
@@ -405,13 +454,18 @@ exceeds **half its own headway** has drifted onto the wrong slots and would prod
 that are self-consistent and wrong by roughly one headway. Its bindings are voided *without*
 stopping the rest of the cycle, because the fault is local.
 
-Births and locking keep running while suppressed, so the machinery keeps warming; only the
-**write** of delay rows is gated.
+**Birth capture** keeps running while suppressed, so the machinery keeps warming. The
+**origin lock itself does not**: `runCycle` guards `lockPendingBirths` with `boardActive`,
+which is exactly the gate failing today. Captured births therefore accumulate in the pending
+map and are expired after an hour without ever being tested — 1,334 pending and 0 active at
+cycle 32 of the current run. So the crosswalk warms today; the binding half will get its
+first real exercise only when the board activates.
 
 ### 3.7 State today, stated plainly
 
 Verified against the production database at 2026-07-25 10:43 America/Toronto and against
-cycle 17 of the running collector:
+cycle 17 of the running collector (the run continues; later cycles are cited where they
+change the picture):
 
 | Measure | Value |
 |---|---|
@@ -632,8 +686,10 @@ two must not look identical.
 Each table is rebuilt atomically inside a transaction so a reader never sees a half-written
 aggregate. Percentiles are continuous (linear interpolation between closest ranks), matching
 Postgres `percentile_cont`, but computed **in JavaScript** so the numbers are identical on the
-`pg` and PGlite drivers rather than subtly diverging by backend; `percentile_cont` support is
-probed and logged on each run for the record, and the JS path is used regardless.
+`pg` and PGlite drivers rather than subtly diverging by backend. `percentile_cont` support is
+probed on every run and the JS path is used regardless; note the probe result is only
+*printed* by the standalone `npm run aggregate` entry point — the in-process boot and hourly
+runs discard it.
 
 ### 6.2 The estimator
 
@@ -784,13 +840,14 @@ matching the ids directly produces confident, plausible, entirely wrong results 
 identity must be *learned*, and the crosswalk is only as good as the geometric anchors feeding
 it. Every published delay row carries `xwalk_conf` so a consumer can see this.
 
-**9.3 The learned crosswalk is not restored across restarts.** `rt_stop_xwalk`,
-`rt_stop_xwalk_votes`, `rt_pattern`, `rt_trip_binding` and `sched_slot_claim` are **written but
-never read back** by the engine — they are an audit trail, not a cache. Every process restart
-begins with an empty crosswalk and must re-earn the 8 votes an entry needs (§3.3d), which on the
-current run took until cycle 11 to reach 34.5% occurrence coverage and has not yet crossed the
-0.50 gate at cycle 17. The consequence is that a restarting deployment publishes nothing for
-tens of minutes, and a deployment that restarts more often than that publishes nothing at all.
+**9.3 The learned crosswalk is not restored across restarts.** `rt_stop_anchor`,
+`rt_stop_xwalk`, `rt_stop_xwalk_votes`, `rt_pattern`, `rt_trip_binding` and `sched_slot_claim`
+are **written but never read back** by the engine — they are an audit trail, not a cache. Every
+process restart begins with an empty crosswalk and must re-earn the votes each entry needs to
+clear the 0.60 floor (§3.3d): 6 for a perfect geometric anchor, **8 for a propagated one**,
+which is most of them. On the current run coverage was 0.0% through cycle 9 and reached 34.5%
+only at cycle 11. The consequence is that a restarting deployment publishes nothing for tens of
+minutes, and a deployment that restarts more often than that publishes nothing at all.
 
 **9.4 Board-transition inertness.** The loaded board covers **20260726..20260905** and today is
 2026-07-25, so there is **zero calendar-active service**, therefore zero due trips, therefore
@@ -799,12 +856,20 @@ extrapolate from — the denominator is zero. **No ghost count from this project
 estimated, projected or annualised.** Schedule-dependent features are genuinely inert until the
 board activates.
 
-Separately, the seeded board has a **hole on Saturdays**: `calendar` contains `service_id = '2'`
-with `sat = true`, but **zero trips reference it** (verified: trips exist only for services 1,
-3, 6701, 7001, 4501, 4401 and 501). Total seeded trips are **68,401** against roughly 133,682 in
-TTC's published board, so the gap is probably wider than Saturday alone. Every Saturday inside
-the board window the engine will legitimately find no schedule, and the honest product state on
-those days is "no calendar-active schedule for this date".
+Separately, and independently of the transition, **7 of the board's 42 days carry no schedule
+at all in our database**. The seeder loads only services active inside a 7-day window; it ran
+on 2026-07-24, two days before the board starts, so the Saturday service (`'2'`, 32,874 trips)
+and the civic-holiday service (`'4'`, 31,295 trips, active only on 2026-08-03) were both
+dropped whole, along with three tiny specials. Total seeded trips are **68,401** against
+**133,682** published, and the 65,281-trip difference is exactly those five services — the gap
+is fully accounted for.
+
+The consequence is dated and specific: the six Saturdays in the window (Aug 1/8/15/22/29,
+Sep 5) resolve to a service with zero trips, and **Monday 2026-08-03** is blank outright,
+because `calendar_dates` removes the entire weekday service `'1'` that day and adds the
+holiday service we do not have. On those dates the engine correctly reports "no
+calendar-active schedule", which is honest but is not the truth about the city. See
+BLOCKERS.md entry 9; it is fixed by a re-seed, not by the engine.
 
 **9.5 Ghost detection inherits every binding refusal.** A trip is "present" only if it is bound.
 A trip the origin lock refuses — sub-300 s headway, mid-route arrival, ambiguous slot,
@@ -834,10 +899,12 @@ accountability product.
 **9.7 No ground truth.** There is no independent record of which TTC trips actually operated. We
 cannot compute precision or recall for ghost detection, or accuracy for binding, because there is
 nothing to compute them against. Every guard in §3 and §5 is a *design* argument about failure
-modes, not a *measured* false-positive rate. The crosswalk's cross-route agreement and
-monotonicity audits (§3.3e) are the only falsifiable accuracy estimates available, and they audit
-stop identity, not trip identity. **No accuracy figure for binding or delay is claimed anywhere
-in this repo**; in particular the simulation-derived numbers that appeared in earlier design
+modes, not a *measured* false-positive rate. The crosswalk's cross-route agreement audit
+(§3.3e) is the only falsifiable accuracy estimate the system currently has — and it audits
+*stop* identity, not trip identity, over *geometric* anchors only. The monotonicity audit that
+was meant to cover the propagated majority is inert as wired. **No accuracy figure for binding
+or delay is claimed anywhere in this repo**; in particular the simulation-derived numbers that
+appeared in earlier design
 documents (33.2% / 70.5% / 90.2% / 97.7%) rest on an assumed delay distribution and assumed noise
 and must not be reported as performance.
 

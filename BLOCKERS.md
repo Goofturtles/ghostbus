@@ -24,6 +24,8 @@ Last reconciled against the source tree, the production database and the running
 | 13 | OPEN, filed | `/api/health` does not surface the delay engine's own stats |
 | 14 | OPEN (structural) | No end-to-end accuracy validation is possible before 2026-07-26 |
 | 15 | NOTE | Route 501 hits the RT pattern cap every cycle |
+| 16 | OPEN | The proto2 default trap still applies on the map's vehicle path |
+| 17 | OPEN | The two crosswalk self-audits are narrower than their gate names |
 
 ---
 
@@ -195,8 +197,9 @@ read through `server/src/pb.ts`.
 - **Write path:** fixed. Nothing is written from a feed-supplied delay; `delay_s` is
   `event_epoch_s − sched_epoch_s` with the scheduled side from our own `stop_times`
   (`server/src/delay.ts`).
-- **Decoder:** fixed. Every optional scalar in `poller.ts` and `engine.ts` goes through
-  `pb.ts`; `pb.test.ts` pins the behaviour.
+- **Decoder:** fixed **on the delay path**. `engineVehicles()` and `processTripUpdates()` —
+  everything the delay engine consumes — read through `pb.ts`, and `pb.test.ts` pins the
+  behaviour. The map's vehicle DTO path does not; see entry 16.
 - **Join:** deleted (entry 3).
 - **Data:** purged. `trip_delay_obs`, `agg_delay` and `agg_delay_route` were truncated and
   collection restarted from zero. Verified 2026-07-25: **all three tables hold 0 rows.**
@@ -241,22 +244,46 @@ wire. Direction must be inferred from the stop pattern and must never be read fr
 
 ---
 
-## 9. OPEN, filed, NOT fixed (`seed_toronto.ts` is not owned by this workstream) — Saturday has no trips
+## 9. OPEN, filed, NOT fixed (`seed_toronto.ts` is not owned by this workstream) — the seeded board is missing Saturdays and the civic holiday
 
-`calendar` contains service_id `'2'` with `sat = true`, but **zero trips reference it**. Trips
-per service in the seeded board: `1` = 38,112 (Mon–Fri), `3` = 29,870 (Sun), `6701` = 360, and
-59 more across four small specials. **Every Saturday the engine will legitimately find no
-schedule**, and the honest product state on those days is "no calendar-active schedule for
-this date".
+**The symptom.** `calendar` contains service_id `'2'` with `sat = true`, but **zero trips
+reference it**. Trips per service in the seeded board: `1` = 38,112 (Mon–Fri), `3` = 29,870
+(Sun), `6701` = 360, and 59 more across four small specials — 68,401 in total, against
+**133,682** rows in the published `trips.txt`.
 
-Total seeded trips are **68,401** against roughly 133,682 in TTC's published board, so the gap
-is probably wider than Saturday alone. This needs a re-seed; it is not something the delay
-engine can or should paper over.
+**The cause, now diagnosed exactly.** This is not a malformed feed and not a seeder bug: it
+is the seeder's deliberate 7-day window (`GHOSTBUS_SEED_WINDOW_DAYS`, default 7, bypassed by
+`GHOSTBUS_SEED_FULL=1`), which loads only trips whose `service_id` is active inside that
+window. The seed ran on 2026-07-24; the board starts 2026-07-26; so the window covered
+20260724..20260730, whose only Saturday (07-25) predates the board. Service `'2'` had no
+active day in it and was dropped whole. The arithmetic closes exactly:
 
-*Re-verified 2026-07-25 (itself a Saturday): `calendar` holds 12 service rows, all covering
-20260726..20260905, and service `'2'` is the only one with `sat = true`. Trips exist for
-services 1, 3, 6701, 7001, 4501, 4401 and 501 only — none of them Saturday services. Services
-`'4'`, `'6702'`, `'6703'` and `'6704'` are also referenced by no trips at all.*
+| service | trips in `trips.txt` | seeded | why not |
+|---|---:|---|---|
+| `2` (Saturday) | 32,874 | no | no Saturday inside the seed window |
+| `4` (holiday) | 31,295 | no | active only via `calendar_dates` on **20260803**, outside the window |
+| `6702` / `6703` / `6704` | 390 / 361 / 361 | no | no weekday flags and no `calendar_dates` rows — never active |
+| all others | 68,401 | yes | |
+
+32,874 + 31,295 + 390 + 361 + 361 = **65,281**, and 133,682 − 68,401 = **65,281**. The gap is
+fully accounted for; the earlier note that it was "probably wider than Saturday alone" is
+resolved rather than left hanging.
+
+**What it costs, on specific dates.** Inside the board window 20260726..20260905:
+
+- **Six Saturdays** (Aug 1, 8, 15, 22, 29 and Sep 5) resolve to service `'2'` with zero
+  trips.
+- **Monday 2026-08-03** is worse. `calendar_dates` holds exactly two rows: service `4` added
+  and service **`1` removed** on that date. Service 1 is the entire weekday board. So on the
+  civic holiday the seeded database has the weekday service switched off and the holiday
+  service empty — **a completely blank service day**, not a reduced one.
+
+That is **7 of the board's 42 days** with no schedule at all. The engine will correctly
+report "no calendar-active schedule for this date", which is honest but is not the truth
+about the city. A re-seed with a wider window (or `GHOSTBUS_SEED_FULL=1`) fixes it; nothing
+in the delay engine can or should paper over it.
+
+*Verified 2026-07-25 against both the seeded database and `.data/gtfs/extracted/{calendar,calendar_dates,trips}.txt`.*
 
 ---
 
@@ -294,8 +321,9 @@ move this project exists not to make.
 
 New entry, 2026-07-25. `rt_stop_anchor`, `rt_stop_xwalk`, `rt_stop_xwalk_votes`,
 `rt_pattern`, `rt_trip_binding` and `sched_slot_claim` are written by `engine.ts` and
-**never read by any code path** (verified: the only occurrences outside tests are `INSERT`
-statements and one `UPDATE`). They are an audit trail, not a cache.
+**never `SELECT`ed by any code path, test or otherwise** — the only statements touching them
+are `INSERT`s plus four `UPDATE`s (three voiding a binding, one quarantining a pattern). They
+are an audit trail, not a cache.
 
 **Consequence.** Every process restart begins with an empty crosswalk. Because a propagated
 entry needs 8 corroborating cycles to clear the 0.60 confidence floor
@@ -319,7 +347,10 @@ never ran**. Refusals happen for good reasons, and each one is a false-absence c
 
 - **sub-300 s headway** (`refused_headway_band`) — refused outright at any confidence.
   Measured trip-weighted share on service 1: **4.9%** (DECISIONS §29). Those static trips can
-  never be bound and so are permanently absent.
+  never be bound and so are permanently absent. The same refusal, under the same counter,
+  also fires when the headway is **unknown** — `medianHeadwayForSlots` returns null for a
+  pattern with fewer than three slots on its dominant service — so thin patterns are a second
+  false-absence channel hidden inside a name that suggests only frequent ones.
 - **mid-route arrival** (`refused_midroute`) — after any process restart, every trip already
   running is refused and stays absent until it finishes.
 - **crosswalk not yet confident** — the entire warm-up window in entry 11.
@@ -379,11 +410,65 @@ identity.
 ## 15. NOTE — route 501 hits the RT pattern cap every cycle
 
 New entry, 2026-07-25. `mergeRtTrip` caps a route at 48 distinct RT patterns
-(`maxPatternsPerRoute`). On the current run exactly one route hits it — **501**, on every
-cycle (80 log lines). Trips beyond the cap are not clustered, so they are never bound and
+(`maxPatternsPerRoute`). On the current run exactly one route hits it — **501** — and it hits
+it repeatedly: **105 warnings across 30 logged engine cycles**, roughly 3–4 realtime trips
+per cycle turned away. Trips beyond the cap are not clustered, so they can never be bound and
 never contribute delay observations for that route.
 
 This is logged loudly rather than silenced, and it is recorded here because a route that is
 permanently uncapturable is a coverage hole with a specific name. Whether 48 is too low for a
 streetcar route with many short-turn branches, or whether 501's realtime patterns are
 genuinely fragmenting, has not been determined.
+
+---
+
+## 16. OPEN — the proto2 default trap still applies on the map's vehicle path
+
+New entry, 2026-07-25. Entry 6's rule — every optional scalar goes through `pb.ts` — holds
+for everything the delay engine consumes (`engineVehicles`, `processTripUpdates`). It does
+**not** hold for the vehicle DTO the map renders: `processVehicles` reads
+`v.currentStopSequence`, `v.position.bearing`, `v.position.speed`, `v.timestamp` and
+`v.trip.tripId` with `!= null` / truthiness checks, and `processAlerts` reads
+`al.effect`, `al.cause` and `activePeriod` raw.
+
+`bearing` and `speed` are proto2 **optional floats**, so the same materialised-default
+behaviour applies: a vehicle that never published a bearing decodes as `0` and renders
+pointing **due north**, indistinguishable from one genuinely heading north.
+
+Nothing on this path reaches a delay measurement, an aggregate or a published statistic — it
+is sprite rotation and a speed readout. It is filed anyway, because "we fixed the decoder"
+is exactly the kind of claim that should be true everywhere it is stated, and because the
+fix is mechanical.
+
+---
+
+## 17. OPEN — the two crosswalk self-audits are narrower than their gate names
+
+New entry, 2026-07-25. `METHODS.md` §3.3e presents cross-route agreement and monotonicity as
+the crosswalk's falsifiable audits. As wired in `runCycle`, both are narrower than that:
+
+- **Monotonicity cannot currently fail.** The gate is meant to catch a crosswalk that maps
+  two realtime stops onto static stops that are out of order. `runCycle` passes
+  `[...b.tracked.keys()].sort((a, c) => a - c)` — the binding's **realtime** stop sequences,
+  already sorted ascending — so `monotonicityViolations` compares a strictly increasing
+  sequence against itself and always returns 0. The `monotonicity` gate (`gates.ts`) and the
+  `xwalk.unhealthy` flag can never trip on it. It needs the **static** sequences the
+  crosswalk resolved those stops to.
+- **Cross-route agreement audits geometry only.** `runCycle` builds its per-route map
+  exclusively from `geoAnchors`, so the propagated entries — which are the bulk of the
+  crosswalk (2,148 of 2,693 confirmed rows in the database) and which `METHODS.md` calls
+  "the multiplier" — are never checked by it. The 93.8% is a geometric-anchor figure.
+
+Together these mean the system currently has **one** working falsifiable accuracy estimate,
+covering a minority of its own crosswalk, and it audits stop identity rather than trip
+identity. Neither is a wrong number being published — both are audits that would not catch
+the error they exist to catch. That is a worse failure for this project than a missing
+feature, which is why it is filed at this priority.
+
+---
+
+## Cross-document note (not a blocker in this file's own scope)
+
+`DECISIONS.md` §12 and `DEVPOST.md` still describe `server/src/join.ts` as a shipped
+component. Entry 3 records that it is deleted. Those files are owned by other workstreams and
+were not edited here; the contradiction is flagged rather than fixed.

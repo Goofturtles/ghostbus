@@ -42,9 +42,11 @@ to something measured.
    │   delay.ts      SETTLE AND EMIT   delay_s = event_epoch_s − sched_epoch_s            │
    │        │        scheduled time comes from OUR OWN stop_times, never from the feed    │
    │        ▼        a stop still in the future is never emitted                          │
-   │   gates.ts      boardActive · xwalk occurrence coverage ≥50% · cross-route ≥85%      │
+   │   gates.ts      evaluated BEFORE the settle step, every cycle                        │
+   │                 boardActive · xwalk occurrence coverage ≥50% · cross-route ≥85%      │
    │                 monotonicity ≤5% · board agreement ≤300 s                            │
-   │                 ANY FAILURE ⇒ WRITE NOTHING, AND NAME THE GATE AND THE REASON        │
+   │                 ANY FAILURE ⇒ NO DELAY ROW, AND NAME THE GATE AND THE REASON         │
+   │                 (the audit trail keeps accumulating — that is how you learn why)     │
    └──────┬──────────────────────────────────────────────────────────────────────────────┘
           │  the static trips currently bound = "present"
           ▼
@@ -79,7 +81,7 @@ to something measured.
    │  PROMISE ENGINE                server/src/eta.ts + api.ts                            │
    │  estimate = scheduled + median delay,  band = P25…P75                                │
    │  evidence gate: stop-hour n ≥ 8  ·  else route-hour n ≥ 20  ·  else NO ESTIMATE      │
-   │  trust grade A–E from (n, spread); ghost-risk chip only above 8 scheduled trips      │
+   │  trust grade A–E from (n, spread); ghost-risk chip needs ≥8 scheduled trips in cell  │
    │  every response carries { n, windowDays, bucket } — the number and its warrant       │
    └──────┬──────────────────────────────────────────────────────────────────────────────┘
           │  JSON typed once in shared/types.ts
@@ -107,9 +109,9 @@ value it has — is `METHODS.md` §3. What follows here is why the *system* is s
 
 This is the load-bearing architectural decision, and it was forced by arithmetic.
 
-**What the feed produces.** The vehicles feed carries roughly **1,190–1,200 vehicles with
-positions** per snapshot on the current run (measured, `.data/collector.log`, 2026-07-25;
-weekday snapshots earlier in the project ran ~1,400–1,500). At a 45 s cadence that is
+**What the feed produces.** The vehicles feed carries roughly **1,188–1,208 vehicles with
+positions** per snapshot on the current run (measured, `.data/collector.log`, 2026-07-25 —
+a Saturday; weekday snapshots earlier in the project ran ~1,400–1,500). At a 45 s cadence that is
 `86,400 / 45 = 1,920` cycles per day, or about **2.3 million position rows per day** if each
 ping were persisted.
 
@@ -120,8 +122,12 @@ numerics and two timestamps, which is very close to the shape of a position ping
 persisting raw pings would cost roughly **430 MB per day**.
 
 **What we have.** Neon's Free plan allows **0.5 GB of storage per project**. Measured
-2026-07-25, the database is **378 MB**, of which `stop_times` alone is **341 MB** (2,151,105
-rows — the static TTC schedule is simply large). That leaves roughly **120 MB** of headroom.
+2026-07-25 (`pg_database_size`), the database is **378 MB**, of which `stop_times` alone is
+**341 MB** (2,151,105 rows — the static TTC schedule is simply large). That leaves roughly
+**120 MB** of headroom. *(`README.md` records 426 MB for the same measurement taken before
+the purge described in `METHODS.md` §4.7; the difference is the 314,742 contaminated delay
+observations and the 87,955 aggregate buckets that no longer exist. The two figures are
+consistent, not contradictory.)*
 
 > **Raw pings would exhaust the entire remaining free-tier budget in under seven hours.**
 
@@ -167,11 +173,14 @@ discovered later.
 
 ---
 
-## 2. Why the engine is five pure modules and one impure one
+## 2. Why the algorithm lives outside the module that talks to the database
 
 `engine.ts` owns the state that has to survive a cycle, all the SQL, and the order of
 operations. Everything algorithmic lives in modules with **no database, no clock and no
-network**: `patterns.ts`, `xwalk.ts`, `bind.ts`, `delay.ts`, `gates.ts`.
+network**: `xwalk.ts`, `bind.ts`, `delay.ts` and `gates.ts` are pure end to end;
+`patterns.ts` is pure apart from `buildPatternIndex`, which is the paged read itself — its
+assembly logic is factored into `foldTrip` precisely so the shape rules can be tested
+without a database.
 
 That split is not tidiness. It is what makes the claims in `METHODS.md` checkable: the
 origin-lock margin test, the crosswalk promotion rule, the settle rule and every gate are
@@ -185,13 +194,22 @@ The per-cycle order in `runCycle` is fixed and matters:
 2. cluster realtime trip updates into RT patterns;
 3. resolve those patterns to static patterns, iterating to a fixpoint, and promote the stop
    identities that implies;
-4. capture births, and origin-lock the ones whose pattern has become resolvable;
-5. **evaluate the gates** — before anything is written;
-6. settle and emit, writing only if the gates said publish.
+4. **evaluate the gates** — the decision to publish is taken before the data that would be
+   published exists;
+5. capture births, and origin-lock the ones whose pattern has become resolvable (locking
+   only runs when the board is active);
+6. settle, and write delay rows only if step 4 said publish.
+
+*(The header comment in `engine.ts` still lists the gates as the last step. The code is the
+one above; the comment is stale.)*
 
 Steps 1–3 are **calendar-independent**: the crosswalk works and warms today, months before
-the loaded board activates. Steps 4–6 are gated off until it does. Births and locking still
-run while suppressed so the machinery keeps warming; only the *write* is gated.
+the loaded board activates. Steps 5–6 are gated off until it does — birth *capture* keeps
+running so the pending set stays current, but nothing is locked and nothing is emitted.
+
+What the gate holds back is precisely `trip_delay_obs`. `persistCrosswalk()` runs every
+cycle regardless, and bindings and slot claims are written whenever the board is active,
+because a system that is refusing to publish still has to leave a record of *why*.
 
 **The one thing the engine refuses to do is patch around a contradiction.** If the
 crosswalk names a different stop than the bound static trip has at that sequence, the whole
@@ -249,15 +267,18 @@ verification to zero is the point.
 **What it constrains.** Committing to two drivers means committing to their intersection:
 
 - **No Postgres-specific extensions**, no PostGIS. Proximity search is therefore a
-  bounding-box prefilter in SQL (using the `(agency, lat, lon)` range) followed by an exact
-  Haversine filter in JavaScript — fine at 9,361 stops and not at nine million. The delay
+  bounding-box prefilter in SQL (plain `lat`/`lon` `BETWEEN` predicates — there is no spatial
+  index, only `idx_stops_agency`) followed by an exact Haversine filter in JavaScript — fine
+  at 9,361 stops and not at nine million. The delay
   engine's own geometry is likewise plain arithmetic: a local equirectangular approximation
   centred on Toronto, whose error against a full haversine is far below a metre at the
   <200 m distances it discriminates (`metres` in `xwalk.ts`).
 - **Percentiles are computed in JavaScript**, not with `percentile_cont`. The function is
-  probed and its availability logged on every aggregation run for the record, but the JS
-  implementation is used regardless so `agg_delay` is byte-identical across drivers. A
-  statistic that changes value depending on which driver produced it is not a statistic.
+  probed on every aggregation run, but the JS implementation is used regardless so
+  `agg_delay` is byte-identical across drivers. A statistic that changes value depending on
+  which driver produced it is not a statistic. (The probe result is only *printed* by the
+  standalone `npm run aggregate`; the in-process boot and hourly runs discard it, which is a
+  small gap in the record rather than in the behaviour.)
 - **Batched writes, not per-row writes.** PGlite is single-threaded WASM and Neon's free
   pool is small, so inserts are built as multi-row `VALUES` statements (500 rows per
   statement in the collector and the engine, 1,000 in the seeder) and committed in
@@ -269,10 +290,12 @@ verification to zero is the point.
   persist on three of eight cycles against the live feed. Every batch upsert now collapses
   on its conflict key first (`dedupeByKey` in `engine.ts`).
 
-**Where the seam shows.** `shapes.points` is `JSONB`; `pg` returns it already parsed while
-PGlite may hand back text, so the shape endpoint parses defensively. That is the only place
-in the codebase where the two drivers required different handling, and it is handled by
-accepting both rather than branching on `db.driver`.
+**Where the seam shows.** Three places, all handled by accepting both shapes rather than
+branching on `db.driver`: `shapes.points` is `JSONB` and `pg` returns it already parsed while
+PGlite may hand back text, so the shape endpoint parses defensively; `/api/alerts` parses the
+`informed` `JSONB` column the same way; and `db.ts` normalises `rowCount`, because PGlite
+reports `affectedRows` for writes and 0 for `SELECT`s where `pg` reports row counts for both.
+Nothing else in the codebase needs to know which driver it is talking to.
 
 ---
 
@@ -353,16 +376,19 @@ React + TypeScript, built by Vite, served in production by the same Fastify proc
   boundary whose fallback is the styled placeholder card, keeping the initial JS bundle
   small with the map arriving as a separate chunk after first paint.
 - **Vehicles are one data-driven symbol layer**, never DOM markers — the difference between
-  ~1,200 sprites at 60 fps and a stuttering page. Sprites are drawn procedurally on an
-  offscreen canvas and cached per `(kind, colour)`; the live feed yields only four distinct
-  route colours, so eight images cover the fleet.
-- **Markers that need rich styling** (the You beacon, the boarding pin, the selected vehicle
-  badge) *are* DOM markers, because there are at most three of them and a collision routine
-  hides the lower-priority label rather than letting them overlap.
+  ~1,200 sprites at 60 fps and a stuttering page. Sprites are drawn procedurally on a
+  detached `<canvas>` and cached per `(kind, colour)`; the live feed yields only four
+  distinct route colours, so eight images cover the fleet.
+- **Markers that need rich styling** *are* DOM markers — four of them: the You beacon, the
+  boarding pin, the walk-target pin, and a vehicle badge (which follows the selected vehicle
+  when there is one, and otherwise attaches to the nearest vehicle on the focused route).
+  Four is few enough that a collision routine can hide the lower-priority label rather than
+  letting them overlap.
 - **Polling pauses when the tab is hidden** — vehicles every 5 s, health every 20 s,
-  arrivals every 30 s, all gated on `document.hidden`, all cleared on unmount.
-- **`prefers-reduced-motion` is honoured**: position animations become instant fades and
-  camera flights become cuts.
+  arrivals every 30 s, alerts and ghosts every 60 s, all gated on `document.hidden`, all
+  cleared on unmount.
+- **`prefers-reduced-motion` is honoured**: position animations are applied instantly with no
+  tween and no fade, and camera flights become cuts.
 - **Server clock skew is tracked** (`serverNowMs − Date.now()`) so a countdown stays honest
   on a device with a wrong clock — a freshness label computed against a skewed local clock is
   exactly the kind of confidently-wrong output this project exists to avoid.
