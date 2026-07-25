@@ -41,6 +41,12 @@ const DIST_CANDIDATES = [
   join(__dirname, '..', '..', 'web', 'dist'),
 ];
 
+// A missing file must 404, never fall through to the SPA shell. Answering a hashed
+// `.js` URL with `200 text/html` is how a dead map hid for a whole phase (DECISIONS §29),
+// and the service worker would happily cache that HTML under the immutable asset URL
+// forever. Anything that looks like a file gets a real 404; only navigations get the shell.
+const ASSET_EXT_RE = /\.(js|mjs|cjs|css|map|json|webmanifest|wasm|png|jpe?g|gif|svg|webp|avif|ico|woff2?|ttf|otf|eot|txt|xml)$/i;
+
 const NEARBY_DEFAULT_RADIUS_M = 600;
 const NEARBY_MAX_RADIUS_M = 3000;
 const NEARBY_MAX_RESULTS = 50;
@@ -808,8 +814,21 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
   }
   app.setNotFoundHandler((req, reply) => {
     if (req.url.startsWith('/api/')) return reply.code(404).send({ error: 'not found' });
-    if (webDist) return reply.type('text/html').send(readFileSync(join(webDist, 'index.html'), 'utf8'));
-    return reply.code(404).send({ error: 'not found' });
+    if (!webDist) return reply.code(404).send({ error: 'not found' });
+
+    const path = req.url.split(/[?#]/, 1)[0];
+    // A missing asset is a missing asset, whatever the client claims to Accept —
+    // this branch is checked first precisely so a browser navigating straight to a
+    // dead bundle URL still sees the 404 instead of a reassuring HTML page.
+    if (path.startsWith('/assets/') || ASSET_EXT_RE.test(path)) {
+      return reply.code(404).send({ error: 'not found' });
+    }
+    // Genuine navigations only: no file extension, or an explicit HTML Accept.
+    const wantsHtml = (req.headers.accept ?? '').includes('text/html');
+    const isNavigation = (req.method === 'GET' || req.method === 'HEAD') && (wantsHtml || !path.includes('.'));
+    if (!isNavigation) return reply.code(404).send({ error: 'not found' });
+
+    return reply.type('text/html').send(readFileSync(join(webDist, 'index.html'), 'utf8'));
   });
 
   return app;
