@@ -20,16 +20,26 @@ import { parseBbox, pointInBbox } from './bbox.ts';
 import { selectEvidence, type Agg } from './eta.ts';
 import { WINDOW_DAYS } from './aggregate.ts';
 import { activeServiceIds, type CalendarRow, type CalendarDateRow } from './gtfs.ts';
-import { torontoDay, torontoMidnightEpoch, hourOfWeek } from './tz.ts';
+import { torontoDay, torontoMidnightEpoch, hourOfWeek, torontoParts } from './tz.ts';
 import type {
   HealthResponse, VehiclesResponse, VehicleDto, StopsResponse, StopDto,
   ArrivalsResponse, DepartureDto, StatsResponse, FeedId,
   RouteShapeResponse, RouteStopDto,
+  AlertsResponse, AlertDto, AlertInformedDto,
+  GhostFeedResponse, GhostEventDto, GhostKind, GhostCounters,
+  TrustGrade, GradeLetter, GhostRisk, EtaBucket,
 } from '../../shared/types.ts';
 
 const AGENCY = 'ttc';
+const AGENCY_TZ = 'America/Toronto';
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const WEB_DIST = join(__dirname, '..', '..', 'web', 'dist');
+// Vite builds the SPA to <root>/dist (vite.config.ts `build.outDir: '../dist'` with
+// `root: 'web'`). Serve exactly that. `web/dist` is also accepted so a future config
+// change — or a `vite build` run from inside web/ — still finds the bundle.
+const DIST_CANDIDATES = [
+  join(__dirname, '..', '..', 'dist'),
+  join(__dirname, '..', '..', 'web', 'dist'),
+];
 
 const NEARBY_DEFAULT_RADIUS_M = 600;
 const NEARBY_MAX_RADIUS_M = 3000;
@@ -42,6 +52,12 @@ const ARRIVALS_MAX_DEPARTURES = 60;
 const LIVE_ETA_MAX_SKEW_MS = 10 * 60_000; // only attach live ETAs to a near-"now" query
 const AT_FLOOR_MS = Date.parse('2020-01-01T00:00:00Z'); // reject nonsense far-past `at`
 const AT_MAX_FUTURE_MS = 30 * 86_400_000;               // reject `at` more than 30 days out
+const ALERTS_DEFAULT_LIMIT = 50;
+const ALERTS_MAX_LIMIT = 100;
+const GHOSTS_DEFAULT_HOURS = 24;
+const GHOSTS_MAX_HOURS = 168;    // one week — the counters already cover the week
+const GHOSTS_MAX_EVENTS = 200;
+const FORECAST_REFRESH_MS = 30 * 60_000; // the denominator query is heavy; twice an hour is plenty
 
 interface RouteMeta { shortName: string | null; longName: string | null; routeType: number | null; color: string | null }
 
@@ -89,6 +105,158 @@ function simplify(pts: [number, number][], epsilon: number): [number, number][] 
   return left.slice(0, -1).concat(right);
 }
 
+// =====================================================================================
+// Trust grades — pure, exported, unit-tested (api.test.ts).
+// =====================================================================================
+//
+// A grade answers "how much should I trust this ETA?", and it is derived from exactly
+// the two things we actually measured:
+//
+//   n         — how many historical delay observations back the estimate
+//   spreadMin — half the P25..P75 delay spread, in whole minutes (the "± X min" shown)
+//
+// A grade is the BEST tier whose BOTH thresholds are met, so a wide spread can never be
+// bought with sample size and a large sample can never rescue a wide spread. The tiers
+// slide from "many observations, tight band" (A) down to "we have evidence but it is
+// thin or all over the place" (E):
+//
+//   A: n >= 40 and spread <=  4 min
+//   B: n >= 25 and spread <=  6 min
+//   C: n >= 15 and spread <=  9 min
+//   D: n >=  8 and spread <= 14 min
+//   E: has evidence, meets no tier
+//
+// n >= 8 is the same floor `selectEvidence` uses for its tightest bucket, so D is the
+// weakest grade a stop-hour bucket can earn on sample size alone.
+//
+// A departure whose evidence bucket is 'none' gets NO grade object at all: the UI shows
+// "untracked". We never invent a letter for a departure we have not watched.
+export const GRADE_TIERS: ReadonlyArray<{ letter: GradeLetter; minN: number; maxSpreadMin: number }> = [
+  { letter: 'A', minN: 40, maxSpreadMin: 4 },
+  { letter: 'B', minN: 25, maxSpreadMin: 6 },
+  { letter: 'C', minN: 15, maxSpreadMin: 9 },
+  { letter: 'D', minN: 8, maxSpreadMin: 14 },
+];
+
+/** Half the P25..P75 spread in whole minutes, from percentile *seconds*. Never negative. */
+export function spreadMinutes(p25Sec: number, p75Sec: number): number {
+  return Math.max(0, Math.round((p75Sec - p25Sec) / 2 / 60));
+}
+
+/** The grade for a departure, or null when there is nothing to grade. */
+export function gradeFor(bucket: EtaBucket, n: number, spreadMin: number): TrustGrade | null {
+  if (bucket === 'none') return null;
+  if (!Number.isFinite(n) || n <= 0 || !Number.isFinite(spreadMin) || spreadMin < 0) return null;
+  for (const tier of GRADE_TIERS) {
+    if (n >= tier.minN && spreadMin <= tier.maxSpreadMin) return { letter: tier.letter, n, spreadMin };
+  }
+  return { letter: 'E', n, spreadMin };
+}
+
+// =====================================================================================
+// Ghost Forecast — pure, exported, unit-tested (api.test.ts).
+// =====================================================================================
+//
+// rate = ghosts / scheduled trips, for one (route_id, hour_of_week) cell over a trailing
+// WINDOW_DAYS window. The denominator is the hard part and it is derived, never assumed:
+//
+//   * A *watched cell* is a wall-clock (calendar-date, hour-of-week) pair in which the
+//     collector demonstrably ran — proven by at least one row in `trip_delay_obs` whose
+//     `ts` falls in that hour. This is a true watched-window denominator, not the
+//     "days with any observation" proxy: an hour the collector slept through is excluded.
+//   * The denominator counts scheduled trips (from trips × stop_times × calendar) whose
+//     scheduled start lands in a watched cell.
+//   * The numerator counts ghosts whose scheduled start lands in the SAME watched cells.
+//     Restricting both sides to the same cells is what makes the ratio meaningful — a
+//     ghost in an unwatched hour would otherwise inflate the rate against a denominator
+//     that never counted its scheduled siblings.
+//   * An hour in which the collector ran but recorded zero observations is
+//     indistinguishable from an hour it did not run, so it is treated as unwatched. That
+//     drops matching ghosts too, so the ratio stays consistent rather than inflated.
+//
+// Thresholds (structural, chosen a priori — deliberately NOT tuned to any observed
+// distribution):
+//   n >= 8       a cell with fewer than eight scheduled trips is an anecdote, not a rate
+//   rate > 0.08  'elevated' — roughly one run in twelve went missing
+//   rate > 0.20  'high'     — more than one run in five went missing
+// Below the elevated threshold there is no chip at all: the field is simply absent.
+export const GHOST_RISK_MIN_N = 8;
+export const GHOST_RISK_ELEVATED_RATE = 0.08;
+export const GHOST_RISK_HIGH_RATE = 0.20;
+
+export function ghostRiskFor(ghosts: number, scheduled: number, windowDays: number): GhostRisk | null {
+  if (!Number.isFinite(ghosts) || !Number.isFinite(scheduled)) return null;
+  if (ghosts <= 0 || scheduled < GHOST_RISK_MIN_N) return null;
+  // A cell can never record more ghosts than it had scheduled trips; if it somehow does,
+  // the two sides disagree about the window and we withhold rather than report > 100%.
+  if (ghosts > scheduled) return null;
+  const rate = ghosts / scheduled;
+  if (rate <= GHOST_RISK_ELEVATED_RATE) return null;
+  return {
+    level: rate > GHOST_RISK_HIGH_RATE ? 'high' : 'elevated',
+    rate, n: scheduled, ghosts, windowDays,
+  };
+}
+
+/** One (route, scheduled-start-second) group of trips belonging to a single service_id. */
+export interface TripStartBucket { routeId: string; startS: number; n: number }
+export interface ForecastDay { ymd: number; midnightMs: number; serviceIds: readonly string[] }
+export interface ForecastCell { ghosts: number; scheduled: number }
+
+export interface ForecastInputs {
+  /** wall-clock cells the collector demonstrably watched, keyed `${ymd}|${hourOfWeek}`. */
+  watched: ReadonlySet<string>;
+  /** the service days to walk, with their agency-local midnight + active service ids. */
+  days: readonly ForecastDay[];
+  /** service_id -> its trips grouped by (route, scheduled start second). */
+  byService: ReadonlyMap<string, readonly TripStartBucket[]>;
+  /** ghost rows in the window (kind 'ghost' only — a cancellation is not a no-show). */
+  ghosts: readonly { routeId: string; scheduledStartMs: number }[];
+  /** epoch ms -> the wall-clock cell it belongs to. Injected so this stays pure. */
+  cellOf: (epochMs: number) => { ymd: number; how: number };
+}
+
+/** Build the (route_id, hour_of_week) -> {ghosts, scheduled} table. Key: `${routeId}|${how}`. */
+export function buildForecast(input: ForecastInputs): Map<string, ForecastCell> {
+  const out = new Map<string, ForecastCell>();
+  const add = (routeId: string, how: number, field: keyof ForecastCell, delta: number) => {
+    const key = `${routeId}|${how}`;
+    let cell = out.get(key);
+    if (!cell) { cell = { ghosts: 0, scheduled: 0 }; out.set(key, cell); }
+    cell[field] += delta;
+  };
+
+  for (const day of input.days) {
+    for (const serviceId of day.serviceIds) {
+      const buckets = input.byService.get(serviceId);
+      if (!buckets) continue;
+      for (const b of buckets) {
+        // The scheduled instant, resolved through agency-local midnight so GTFS times
+        // past 24:00:00 land on the following wall-clock day, exactly as they run.
+        const at = day.midnightMs + b.startS * 1000;
+        const cell = input.cellOf(at);
+        if (!input.watched.has(`${cell.ymd}|${cell.how}`)) continue;
+        add(b.routeId, cell.how, 'scheduled', b.n);
+      }
+    }
+  }
+
+  for (const g of input.ghosts) {
+    const cell = input.cellOf(g.scheduledStartMs);
+    if (!input.watched.has(`${cell.ymd}|${cell.how}`)) continue;
+    add(g.routeId, cell.how, 'ghosts', 1);
+  }
+
+  return out;
+}
+
+/** "YYYY-MM-DD HH:MM" in the agency's zone — the wire form of an agency-local time. */
+export function agencyLocalStamp(epochMs: number): string {
+  const p = torontoParts(epochMs);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${p.year}-${pad(p.month)}-${pad(p.day)} ${pad(p.hour)}:${pad(p.minute)}`;
+}
+
 export interface BuildApiOptions { db: Db; poller: PollerHandle }
 
 export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> {
@@ -117,7 +285,81 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     return torontoMidnightEpoch(Math.floor(ymd / 10000), Math.floor((ymd % 10000) / 100), ymd % 100);
   }
 
+  // ----- Ghost Forecast table, rebuilt in the background (see buildForecast above) -----
+  // The denominator query walks every trip's first stop_time, so it is far too heavy for
+  // a request path: it is computed off-thread of any request, cached, and refreshed on a
+  // timer. Until the first build lands the map is empty, which means arrivals simply omit
+  // `ghostRisk` — no data, no field, silently.
+  let forecast: ReadonlyMap<string, ForecastCell> = new Map();
+  const cellOf = (epochMs: number) => ({ ymd: torontoDay(epochMs).ymd, how: hourOfWeek(epochMs) });
+
+  async function refreshForecast(): Promise<void> {
+    const now = Date.now();
+    const since = new Date(now - WINDOW_DAYS * 86_400_000).toISOString();
+
+    // 1. Watched cells: every whole hour with at least one delay observation. Toronto is
+    //    a whole-hour offset from UTC, so a UTC hour bucket is also a Toronto hour bucket.
+    const watched = new Set<string>();
+    for (const r of (await db.query<{ hr: string | number }>(
+      `SELECT DISTINCT FLOOR(EXTRACT(EPOCH FROM ts) / 3600)::bigint AS hr
+       FROM trip_delay_obs WHERE agency=$1 AND ts >= $2`, [AGENCY, since])).rows) {
+      const bucketMs = Number(r.hr) * 3_600_000;
+      const cell = cellOf(bucketMs);
+      watched.add(`${cell.ymd}|${cell.how}`);
+    }
+
+    // 2. Denominator source: every static trip's route + scheduled start second, grouped
+    //    by the service_id that decides which days it runs.
+    const byService = new Map<string, TripStartBucket[]>();
+    for (const r of (await db.query<{ route_id: string; service_id: string; start_s: number | string; n: number }>(
+      `SELECT route_id, service_id, start_s, COUNT(*)::int AS n FROM (
+         SELECT DISTINCT ON (t.trip_id) t.trip_id, t.route_id, t.service_id,
+                COALESCE(st.departure_s, st.arrival_s) AS start_s
+         FROM trips t JOIN stop_times st ON st.agency = t.agency AND st.trip_id = t.trip_id
+         WHERE t.agency = $1 ORDER BY t.trip_id, st.stop_sequence
+       ) x
+       WHERE route_id IS NOT NULL AND service_id IS NOT NULL AND start_s IS NOT NULL
+       GROUP BY route_id, service_id, start_s`, [AGENCY])).rows) {
+      const list = byService.get(r.service_id) ?? [];
+      list.push({ routeId: r.route_id, startS: Number(r.start_s), n: Number(r.n) });
+      byService.set(r.service_id, list);
+    }
+
+    // 3. The service days inside the window, with their active services.
+    const days: ForecastDay[] = [];
+    const seen = new Set<number>();
+    for (let i = 0; i <= WINDOW_DAYS; i++) {
+      const d = torontoDay(now - i * 86_400_000);
+      if (seen.has(d.ymd)) continue;
+      seen.add(d.ymd);
+      days.push({ ymd: d.ymd, midnightMs: midnightFor(d.ymd), serviceIds: activeServicesFor(d.ymd, d.dow) });
+    }
+
+    // 4. Numerator: confirmed no-shows only. A cancellation is an announced absence, not
+    //    a broken promise, so it never enters the ghost rate.
+    const ghosts: { routeId: string; scheduledStartMs: number }[] = [];
+    for (const r of (await db.query<{ route_id: string | null; scheduled_start: string | Date }>(
+      `SELECT route_id, scheduled_start FROM ghosts
+       WHERE agency=$1 AND kind='ghost' AND scheduled_start >= $2`, [AGENCY, since])).rows) {
+      if (!r.route_id) continue;
+      const ms = r.scheduled_start instanceof Date ? r.scheduled_start.getTime() : Date.parse(String(r.scheduled_start));
+      if (!Number.isFinite(ms)) continue;
+      ghosts.push({ routeId: r.route_id, scheduledStartMs: ms });
+    }
+
+    forecast = buildForecast({ watched, days, byService, ghosts, cellOf });
+    console.log(`[forecast] ${forecast.size} route-hour cells from ${watched.size} watched hours, ${ghosts.length} ghosts, ${days.length} service days`);
+  }
+
   const app = Fastify({ logger: false, trustProxy: true });
+
+  // Build once at boot and refresh on a timer, both in the background and both non-fatal:
+  // a forecast failure must never take the API down or block a departure board.
+  const kickForecast = () => { void refreshForecast().catch((e) => console.error('[forecast] refresh failed:', e)); };
+  kickForecast();
+  const forecastTimer = setInterval(kickForecast, FORECAST_REFRESH_MS);
+  forecastTimer.unref?.();
+  app.addHook('onClose', async () => { clearInterval(forecastTimer); });
 
   await app.register(helmet, { contentSecurityPolicy: false }); // web app (Phase 3) sets its own CSP
   await app.register(cors, {
@@ -299,7 +541,16 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       const ev = selectEvidence(sAgg, rAgg);
       const hasEst = ev.bucket !== 'none' && ev.p50 != null;
       const liveEtaMs = attachLive ? poller.getLivePredictionMs(r.tripId, stopId) : null;
-      return {
+
+      // Evidence gates are structural: no grade without a sample, no risk chip without
+      // a denominator. Both fields are omitted entirely rather than sent empty.
+      const grade = hasEst
+        ? gradeFor(ev.bucket, ev.n, spreadMinutes(ev.p25 as number, ev.p75 as number))
+        : null;
+      const cell = r.routeId ? forecast.get(`${r.routeId}|${how}`) : undefined;
+      const ghostRisk = cell ? ghostRiskFor(cell.ghosts, cell.scheduled, WINDOW_DAYS) : null;
+
+      const dep: DepartureDto = {
         routeId: r.routeId, shortName: meta?.shortName ?? null, longName: meta?.longName ?? null,
         routeType: meta?.routeType ?? null, color: colorFor(meta),
         headsign: r.headsign, directionId: r.directionId,
@@ -313,6 +564,9 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
         },
         evidence: { n: ev.n, windowDays: WINDOW_DAYS, bucket: ev.bucket },
       };
+      if (grade) dep.grade = grade;
+      if (ghostRisk) dep.ghostRisk = ghostRisk;
+      return dep;
     });
 
     const body: ArrivalsResponse = {
@@ -380,6 +634,144 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     return reply.send(body);
   });
 
+  // ---------- /api/alerts?limit= ----------
+  // The agency's own words, unedited. Effect and cause are reported exactly as the feed
+  // publishes them (the TTC feed says UNKNOWN_EFFECT / UNKNOWN_CAUSE on every alert
+  // today) — we never infer an effect from the wording of the header.
+  app.get('/api/alerts', async (req, reply) => {
+    const q = req.query as Record<string, string | undefined>;
+    let limit = ALERTS_DEFAULT_LIMIT;
+    if (q.limit != null && q.limit.trim() !== '') {
+      const n = Number(q.limit);
+      if (!Number.isFinite(n) || n <= 0) return bad(reply, 'limit must be a positive number');
+      limit = Math.min(Math.floor(n), ALERTS_MAX_LIMIT);
+    }
+    const now = Date.now();
+    const nowIso = new Date(now).toISOString();
+
+    // "Active" = not yet expired. An alert with no activePeriod is active by virtue of
+    // being in the feed's current snapshot, which is what the poller upserts.
+    // Recent-first where the feed gives us recency; `alert_id` is the deterministic
+    // tie-break so a feed with no timestamps still returns a stable order.
+    const rows = (await db.query<{
+      alert_id: string; effect: string | null; cause: string | null; header: string | null;
+      description: string | null; active_start: string | Date | null; active_end: string | Date | null;
+      informed: unknown; is_accessibility: boolean | null;
+    }>(
+      `SELECT alert_id, effect, cause, header, description, active_start, active_end, informed, is_accessibility
+       FROM service_alerts
+       WHERE agency=$1 AND (active_end IS NULL OR active_end >= $2)
+       ORDER BY active_start DESC NULLS LAST, alert_id
+       LIMIT $3`, [AGENCY, nowIso, limit])).rows;
+
+    const toMs = (v: string | Date | null): number | null => {
+      if (v == null) return null;
+      const ms = v instanceof Date ? v.getTime() : Date.parse(String(v));
+      return Number.isFinite(ms) ? ms : null;
+    };
+    const blank = (s: string | null | undefined): string | null => {
+      const v = s?.trim();
+      return v ? v : null;
+    };
+
+    const alerts: AlertDto[] = rows.map((r) => {
+      // JSONB: pg returns it parsed, PGlite can hand back the text form.
+      const raw = typeof r.informed === 'string' ? JSON.parse(r.informed) : r.informed;
+      const list: AlertInformedDto[] = Array.isArray(raw)
+        ? (raw as Array<Record<string, unknown>>).map((e) => {
+          const routeId = blank(e.routeId as string | null);
+          return {
+            routeId,
+            routeShortName: routeId ? routeMeta.get(routeId)?.shortName ?? null : null,
+            stopId: blank(e.stopId as string | null),
+            tripId: blank(e.tripId as string | null),
+          };
+        })
+        : [];
+      return {
+        alertId: r.alert_id,
+        effect: blank(r.effect), cause: blank(r.cause),
+        header: blank(r.header), description: blank(r.description),
+        activeStartMs: toMs(r.active_start), activeEndMs: toMs(r.active_end),
+        informed: list,
+        isAccessibility: r.is_accessibility === true,
+      };
+    });
+
+    const publishesActivePeriod = alerts.some((a) => a.activeStartMs != null || a.activeEndMs != null);
+    const body: AlertsResponse = {
+      alerts, count: alerts.length,
+      feedUpdatedMs: poller.getFeedHealth().feeds.alerts.lastOkMs,
+      serverNowMs: now,
+      meta: { ordering: publishesActivePeriod ? 'active-start' : 'stable-id', publishesActivePeriod },
+    };
+    return reply.send(body);
+  });
+
+  // ---------- /api/ghosts/feed?hours= ----------
+  // Every row here is a promise the schedule made and the service did not keep. A ghost
+  // that was later retracted (the trip turned up inside its due window) is a DELETEd row
+  // — see DECISIONS §18 — so it simply never appears in this feed; there is no
+  // "retracted" state to render, which `meta.retractedAreDeleted` states on the wire.
+  app.get('/api/ghosts/feed', async (req, reply) => {
+    const q = req.query as Record<string, string | undefined>;
+    let hours = GHOSTS_DEFAULT_HOURS;
+    if (q.hours != null && q.hours.trim() !== '') {
+      const n = Number(q.hours);
+      if (!Number.isFinite(n) || n <= 0) return bad(reply, 'hours must be a positive number');
+      hours = Math.min(n, GHOSTS_MAX_HOURS);
+    }
+    const now = Date.now();
+    const sinceIso = new Date(now - hours * 3_600_000).toISOString();
+    const today = torontoDay(now);
+    const todaySinceMs = midnightFor(today.ymd);
+    const weekSinceMs = now - 7 * 86_400_000;
+
+    const [eventRows, counterRows] = await Promise.all([
+      db.query<{
+        trip_id: string; kind: string; route_id: string | null;
+        scheduled_start: string | Date; detected_at: string | Date; headsign: string | null;
+      }>(
+        `SELECT g.trip_id, g.kind, g.route_id, g.scheduled_start, g.detected_at, t.headsign
+         FROM ghosts g LEFT JOIN trips t ON t.agency = g.agency AND t.trip_id = g.trip_id
+         WHERE g.agency=$1 AND g.detected_at >= $2
+         ORDER BY g.detected_at DESC LIMIT $3`, [AGENCY, sinceIso, GHOSTS_MAX_EVENTS]),
+      db.query<{ kind: string; today: number; week: number }>(
+        `SELECT kind, COUNT(*) FILTER (WHERE detected_at >= $2)::int AS today, COUNT(*)::int AS week
+         FROM ghosts WHERE agency=$1 AND detected_at >= $3 GROUP BY kind`,
+        [AGENCY, new Date(todaySinceMs).toISOString(), new Date(weekSinceMs).toISOString()]),
+    ]);
+
+    const counters: GhostCounters = { todayGhosts: 0, todayCancelled: 0, weekGhosts: 0, weekCancelled: 0 };
+    for (const r of counterRows.rows) {
+      if (r.kind === 'ghost') { counters.todayGhosts = Number(r.today); counters.weekGhosts = Number(r.week); }
+      else if (r.kind === 'cancelled') { counters.todayCancelled = Number(r.today); counters.weekCancelled = Number(r.week); }
+    }
+
+    const ms = (v: string | Date): number => (v instanceof Date ? v.getTime() : Date.parse(String(v)));
+    const events: GhostEventDto[] = [];
+    for (const r of eventRows.rows) {
+      const scheduledStartMs = ms(r.scheduled_start);
+      const detectedAtMs = ms(r.detected_at);
+      if (!Number.isFinite(scheduledStartMs) || !Number.isFinite(detectedAtMs)) continue;
+      const meta = r.route_id ? routeMeta.get(r.route_id) : undefined;
+      events.push({
+        tripId: r.trip_id,
+        kind: (r.kind === 'cancelled' ? 'cancelled' : 'ghost') satisfies GhostKind,
+        routeId: r.route_id, shortName: meta?.shortName ?? null, longName: meta?.longName ?? null,
+        routeType: meta?.routeType ?? null, color: colorFor(meta),
+        headsign: r.headsign,
+        scheduledStartMs, scheduledStartLocal: agencyLocalStamp(scheduledStartMs), detectedAtMs,
+      });
+    }
+
+    const body: GhostFeedResponse = {
+      events, count: events.length, hours, counters, serverNowMs: now,
+      meta: { retractedAreDeleted: true, timezone: AGENCY_TZ, todaySinceMs },
+    };
+    return reply.send(body);
+  });
+
   // ---------- /api/stats ----------
   app.get('/api/stats', async (_req, reply) => {
     const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString();
@@ -401,13 +793,16 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
   });
 
   // ---------- static SPA (production) + JSON 404 for API ----------
-  if (existsSync(WEB_DIST)) {
-    await app.register(fastifyStatic, { root: WEB_DIST, wildcard: false });
+  // DECISIONS §26 deploy blocker: vite writes the bundle to <root>/dist but this served
+  // <root>/web/dist, so `/` 404'd in production. Resolved by probing for the real bundle
+  // (a directory that actually contains index.html) instead of assuming one path.
+  const webDist = DIST_CANDIDATES.find((dir) => existsSync(join(dir, 'index.html'))) ?? null;
+  if (webDist) {
+    await app.register(fastifyStatic, { root: webDist, wildcard: false });
   }
   app.setNotFoundHandler((req, reply) => {
     if (req.url.startsWith('/api/')) return reply.code(404).send({ error: 'not found' });
-    const indexHtml = join(WEB_DIST, 'index.html');
-    if (existsSync(indexHtml)) return reply.type('text/html').send(readFileSync(indexHtml, 'utf8'));
+    if (webDist) return reply.type('text/html').send(readFileSync(join(webDist, 'index.html'), 'utf8'));
     return reply.code(404).send({ error: 'not found' });
   });
 
