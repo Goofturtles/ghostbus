@@ -206,7 +206,16 @@
    reference px (1.67). At 4:3 a 390px viewport spent 292px on the map, about 58px
    more than the reference, and that 58px is the difference between the fold
    showing two full departure rows (as the reference does) and showing one clipped
-   one. */
+   one.
+
+   RE-MEASURED INDEPENDENTLY (edge-detected by pixel scan across both phone panels
+   of the reference sheet, rather than by eye): the light phone's screen runs
+   x 194..482 and its map card y 829..1005, i.e. 288 x 176 = 1.636; the dark phone
+   agrees at 290 x 176 = 1.648. So the reference is 1.64:1 and we are 1.67:1 — a
+   3px difference on a 390px-wide card. A brief for this pass described the
+   reference as "roughly 4:3, noticeably taller than ours"; it is not. 4:3 would be
+   1.33, which is 58px TALLER than the reference, i.e. it would move away from it.
+   Left at 5/3 deliberately. */
 .pane-map { position: relative; }
 .map-card {
   position: relative;

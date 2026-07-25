@@ -12,10 +12,10 @@ import type {
 import { useStore } from '@/store';
 
 /**
- * Fallback when geolocation is denied/unavailable: downtown Toronto, on John St
- * between Wellington and Front, in the Entertainment District.
+ * Fallback when geolocation is denied/unavailable: Toronto's east downtown, in
+ * Riverdale, a short walk west of the Dundas St E / Broadview Ave corner.
  *
- * WHY THIS POINT AND NOT THE STOP ITSELF. The previous default (43.6455, -79.3954)
+ * WHY A POINT A FEW MINUTES FROM ITS STOP. An earlier default (43.6455, -79.3954)
  * sat ~30 m from its nearest stop, so the rider and the stop were effectively the
  * same pixel: the walk was "1 min", the beaded walk path had no length to draw, and
  * the map's collision avoidance correctly suppressed the stop marker as a duplicate
@@ -23,15 +23,29 @@ import { useStore } from '@/store';
  * stop card, which is the least informative possible first impression of a
  * "how far am I from my stop" app.
  *
- * This point is 236 m from stop 15644 `King St West at John St East Side` (504
- * King, eastbound) — a real 4-minute walk at the default average pace — and its
- * second-nearest stop, 15643 across the street, is 283 m away, so the framing holds
- * even if the selection lands on either one. Nothing here is faked: the stop, the
- * distance and the walk time are all computed from the real GTFS stop table by the
- * same code that runs on a real geolocation fix. It is a starting viewpoint, shown
- * only until the rider grants location, and the UI labels it as a default.
+ * WHY THIS CORNER AND NOT THE PREVIOUS ONE (43.645, -79.38736, King at John). That
+ * point produced the right walk but the wrong picture: 504 King is dead straight for
+ * its whole downtown run, so the red route line crossed the frame as a single
+ * unbroken diagonal. The route's shape is the agency's published geometry and must
+ * never be bent to add interest — so the honest lever is WHICH real corner the
+ * default viewpoint stands at, not what shape is drawn (see DESIGN-TARGET §H).
+ *
+ * Measured against the real seeded GTFS (`stops` + `shapes`), from this point:
+ *
+ *   nearest stop 2115  `Dundas St East at Broadview Ave`   226 m  ->  4 min walk
+ *   next three stops   1756 / 3372 / 2127                261-283 m -> also 4 min
+ *   routes at 2115     505 Dundas (317 trips), 305 Dundas night (43)
+ *   both of their representative shapes turn -92 deg  80 m from the frame centre
+ *
+ * So the walk is a genuine 4 minutes however the selection lands, and the 505's
+ * real right-angle turn from Dundas onto Broadview sits inside the frame whichever
+ * of the two routes the board resolves to. Nothing here is faked: the stop, the
+ * distance and the walk time are computed from the real stop table by the same code
+ * that runs on a real geolocation fix, and the turn is in the published shape. It is
+ * a starting viewpoint, shown only until the rider grants location, and the UI
+ * labels it as a default.
  */
-export const DEFAULT_LOCATION = { lat: 43.645, lon: -79.38736 };
+export const DEFAULT_LOCATION = { lat: 43.6618, lon: -79.35456 };
 const NEARBY_RADIUS_M = 800;
 const HEALTH_INTERVAL_MS = 20_000;
 const ARRIVALS_INTERVAL_MS = 30_000;

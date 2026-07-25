@@ -49,12 +49,44 @@ const ROAD_LAYERS = ['road-minor', 'road-med', 'road-major'];
  * 2.5 m/px, i.e. ~25 m across in world terms. Nobody's street tree is 25 m wide.
  * Matching the picture means matching the apparent size, not the botany.)
  */
-/** Target canopy width in CSS pixels. Small enough to stay texture, big enough to
- *  read as green rather than as grit. */
+/**
+ * Target canopy width. UNCHANGED at 7.5 — and the reason is worth writing down,
+ * because a brief for this pass asked for the opposite.
+ *
+ * The brief said "the trees are too small; scale them up until they read at
+ * reference proportion". Measured, they are already the right size, and there are
+ * five times too many of them. The measurement is the same run-length scan applied
+ * to both images — horizontal runs of olive pixels across the desktop map region,
+ * converted to CSS pixels by each panel's own scale (our 960 px pane; the
+ * reference's 744 px pane, x 325..1069):
+ *
+ *                     median run   p75    p90    olive share of the map region
+ *   reference          15.5 px    21.9   29.7        0.98 %
+ *   ours (before)      16.0 px    20.0   24.0        4.91 %
+ *
+ * Canopy width is a match to within half a pixel. What is off by 5x is the COUNT,
+ * which is why the frame reads as a forest and the reference reads as a city with
+ * trees in it. So the levers moved below are SPACING_PX and KEEP, not this.
+ *
+ * (Two earlier notes in this file are also corrected by that scan: the "reference
+ * trees are ~10 px on a phone" estimate, and "ours covered 1.17% against the
+ * reference's 0.53%". Both came from a narrow green-hue filter that threw away the
+ * reference's dark olive SIDE faces and kept only its lit tops.)
+ *
+ * NB on units: `metresPerPixel` below uses the 256-px-tile Web Mercator constant
+ * while MapLibre's world is 512-px tiles, so it returns twice the true value and
+ * every `_PX` constant in this module therefore renders at twice its nominal size.
+ * 7.5 here is ~15 real CSS pixels, which is what the table above measured. Left
+ * alone deliberately: the numbers are tuned against the current behaviour, and
+ * "fixing" the constant would silently double every tree in the app.
+ */
 const CANOPY_PX = 7.5;
 /** Target gap between trees along a street, in CSS pixels — keeps the density of
- *  the set dressing constant on screen instead of exploding as you zoom in. */
-const SPACING_PX = 30;
+ *  the set dressing constant on screen instead of exploding as you zoom in.
+ *  RAISED 30 -> 52: half of closing the 4.9% / 0.98% gap above. The other half is
+ *  KEEP. Spread across both so the verges thin out evenly rather than turning into
+ *  long bare stretches punctuated by a surviving clump. */
+const SPACING_PX = 52;
 /** Metre clamps, so an extreme zoom cannot produce a 2 m shrub or a 60 m monolith
  *  (which would read as a building — §C: never focal). */
 const CANOPY_MIN_M = 5;
@@ -72,9 +104,12 @@ const VERGE_RATIO = 1.4;
 const MAX_TREES = 520;
 /** Fraction of candidate slots that actually get a tree (hash-gated, not random),
  *  so the spacing never reads as a metronome. */
-/** THINNED 0.55 -> 0.3: measured against the reference, our trees covered 1.17%
- *  of the desktop map frame to its 0.53%. Trees are set dressing here. */
-const KEEP = 0.3;
+/** THINNED AGAIN, 0.3 -> 0.18. See the CANOPY_PX note: the run-length scan puts our
+ *  olive coverage at 4.91% of the desktop map region against the reference's 0.98%.
+ *  0.18 with SPACING_PX 52 takes the tree count to ~35% of what it was, which lands
+ *  the coverage near 1.7% before the buildings the lowered height floor puts back
+ *  occlude any of it. Trees are set dressing here; the city is the subject. */
+const KEEP = 0.18;
 export const TREE_MIN_ZOOM = 14.8;
 
 interface TreePalette {

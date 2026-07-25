@@ -213,33 +213,63 @@ export const VOXEL_DIORAMA_ZOOM = 16.6;
  */
 const MIN_HEIGHT_BY_ZOOM: ExpressionSpecification = [
   'step', ['zoom'],
-  22, // wide out: only substantial massing
-  // LOWERED at the diorama zoom, 16 m -> 8 m, reversing an earlier pass.
+  22, // below the diorama entirely: only substantial massing
   //
-  // That pass raised the floor to chase a brief that said our city read "finer
-  // grained and busier" than the reference. Measured, the opposite was true: at a
-  // 16 m floor our largest single connected same-tone face was 7.7% of the map
-  // frame against the reference's 0.4%, and mean local gradient over a
-  // size-normalised region was 2.2 against 3.8 — FEWER, LARGER, FLATTER faces, not
-  // more of them. Raising the floor was making the exact defect worse.
+  // THE STEP BOUNDARY WAS THE BUG, not the value. It sat at 15.2 through three
+  // passes of tuning the number above it, and every one of those passes was tuning a
+  // number the camera never reached.
   //
-  // Lowering it is also the more truthful direction: this is strictly LESS
-  // generalisation. These are genuine OSM buildings that were being omitted; every
-  // one of them is real, and letting the five-storey city back in is what puts the
-  // grid and the modulation back. Nothing is merged and no footprint is ever drawn
-  // that does not exist — merging neighbours into one big "block" would invent
-  // buildings, so it stays off the table however much closer it would look.
-  15.2, 8,
-  16.9, 4,
+  // MapLibre evaluates a `['zoom']` expression inside a FILTER at the integer zoom
+  // only — the comment on MIN_HEIGHT_FILTER below has always said so. `frameCamera`
+  // lands the diorama between z15.4 and z16.0, which floors to 15, and 15 < 15.2, so
+  // the filter took the FIRST branch and applied a 22 m floor to the whole diorama.
+  // Downtown that is survivable (towers clear 22 m); at the Riverdale default it
+  // deleted the neighbourhood, and the frame came back as ground, trees and a road.
+  //
+  // Moving the boundary to VOXEL_DIORAMA's own floor (14.6) is what actually put the
+  // city in. Measured on the §32 statistic — HSV value deciles over the desktop map
+  // region, computed identically on the reference sheet and on our production frame:
+  //
+  //                     v<.1   .1-.2   .2-.3   .3-.4   .4-.5   >.5    meanS  meanV
+  //   reference          0.1    25.2    41.9    15.9    12.4    4.5   0.566  0.284
+  //   boundary 15.2      0.0    64.3    25.4     3.5     4.4    2.4   0.604  0.219
+  //   boundary 14.6      0.0    27.2    32.1    13.3    25.0    2.4   0.559  0.287
+  //
+  // Two thirds of the frame in the darkest band is what "the city is missing" looks
+  // like as a number; 27.2 against 25.2 is what a city looks like. Mean saturation
+  // and mean value both land within 0.01 of the reference.
+  //
+  // 4 m, and it is a cliff rather than a dial: the same sweep at 8 m and 12 m goes
+  // straight back to 59.5% and 62.5% in the darkest band, because Toronto's
+  // two-and-three-storey stock is 4-8 m and there is nothing in between to trade.
+  14.6, 4,
   17.4, 0, // close in, every building is back
 ];
 
-/** Layer filter form of the above. `['zoom']` is legal in a filter — MapLibre
- *  re-evaluates filters per integer zoom, which is exactly the granularity a
- *  generalisation threshold wants. */
+/**
+ * Layer filter form of the above. `['zoom']` is legal in a filter — MapLibre
+ * re-evaluates filters per integer zoom, which is exactly the granularity a
+ * generalisation threshold wants.
+ *
+ * FIXED: the fallback was 0, and it disagreed with the one the HEIGHT expression
+ * uses (`DEFAULT_HEIGHT_M`, see `bodyHeight` below). A great many OSM buildings
+ * carry no height and no levels — most of Toronto's residential stock — so
+ * `render_height` is simply absent on them. The renderer already treats that as an
+ * ordinary 8 m building; the filter was treating it as a 0 m one and deleting it at
+ * every threshold above zero. The two now agree.
+ *
+ * This was invisible while the default viewpoint was downtown, where nearly every
+ * footprint is a tagged tower. At a residential corner it removed the entire
+ * neighbourhood: the frame came back as ground, trees and a road, and lowering the
+ * threshold did nothing at all because the comparison was against zero either way.
+ *
+ * Note what this does NOT do: it does not invent a height. `DEFAULT_HEIGHT_M` is
+ * the height these buildings are already DRAWN at — this only stops the filter
+ * disagreeing with the geometry about what an untagged building is.
+ */
 const MIN_HEIGHT_FILTER: ExpressionSpecification = [
   '>=',
-  ['coalesce', ['get', 'render_height'], 0],
+  ['coalesce', ['get', 'render_height'], DEFAULT_HEIGHT_M],
   MIN_HEIGHT_BY_ZOOM,
 ];
 

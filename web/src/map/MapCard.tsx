@@ -524,6 +524,33 @@ export default function MapCard() {
   // grid disappears.
   const FRAME_START_ZOOM = 16.35;
   /**
+   * THE COMPOSITION RULE, measured off the reference on BOTH of its breakpoints.
+   *
+   * A start zoom alone cannot reproduce the reference, because it is a constant and
+   * the thing the reference actually holds constant is a PROPORTION. Marker centroids
+   * pulled straight out of `ghostbus-design-reference.png`:
+   *
+   *   desktop   You (728.1, 499.3)  stop pin (672.9, 308.7)  ->  198.4 px apart
+   *             map pane x 325..1069 = 744 px               ->  span / pane = 0.267
+   *   mobile    You (328.7, 970.9)  stop pin (297.4, 903.7)  ->   74.1 px apart
+   *             phone screen x 194..482 = 288 px            ->  span / card = 0.257
+   *
+   * Two very different card sizes, one ratio: the walk occupies about a quarter of
+   * the card's width, and the city fills the other three quarters. Measured on our
+   * own production build at FRAME_START_ZOOM the same span was 333 px of 960 (0.347)
+   * on desktop and 206 px of 390 (0.528) on a phone — i.e. 1.3x too close on desktop
+   * and 2.1x too close on a phone, which is why the phone card read as three tree
+   * cubes and a road rather than as a city.
+   *
+   * So the start zoom is now SOLVED for rather than assumed: project the two real
+   * points, measure the span the camera actually produces (which is pitch-aware for
+   * free, unlike any ground-resolution formula), and correct the zoom by its log2
+   * ratio to the target. `FRAME_START_ZOOM` stays the ceiling and `FRAME_MIN_ZOOM`
+   * the floor, so a very short walk cannot zoom into a canyon and a very long one
+   * cannot dissolve the diorama; the existing fit loop below still only zooms out.
+   */
+  const WALK_SPAN_FRAC = 0.26;
+  /**
    * RAISED 14.7 -> 15.4, and this is a floor on the DIORAMA, not on the markers.
    *
    * `VOXEL_MIN_ZOOM` is 14.6 and the city's opacity ramp only reaches 1 at 15.3, so
@@ -612,6 +639,27 @@ export default function MapCard() {
 
     let zoom = FRAME_START_ZOOM;
     place(zoom);
+
+    // 1. Solve for the reference's proportion: the walk spans ~a quarter of the
+    //    card. Two passes are enough — the projection is near-linear in scale, so
+    //    the first correction lands within a few percent and the second cleans up.
+    const cardW = wrapRef.current?.parentElement?.getBoundingClientRect().width ?? 0;
+    const targetPx = cardW * WALK_SPAN_FRAC;
+    if (targetPx > 1) {
+      for (let i = 0; i < 2; i++) {
+        const pa = map.project([g.lon, g.lat]);
+        const pb = map.project([b.lon, b.lat]);
+        const span = Math.hypot(pa.x - pb.x, pa.y - pb.y);
+        if (!(span > 1)) break;
+        const next = Math.min(FRAME_START_ZOOM, Math.max(FRAME_MIN_ZOOM, zoom - Math.log2(span / targetPx)));
+        if (Math.abs(next - zoom) < 0.02) break;
+        zoom = next;
+        place(zoom);
+      }
+    }
+
+    // 2. Then the existing guarantee: nothing may sit outside the card or under the
+    //    chrome. This only ever zooms further OUT, so it can never undo step 1.
     for (let i = 0; i < 8 && zoom > FRAME_MIN_ZOOM; i++) {
       if (markersFramed()) break;
       zoom = Math.max(FRAME_MIN_ZOOM, zoom - 0.35);
