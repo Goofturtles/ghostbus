@@ -122,10 +122,33 @@ The same snapshot re-confirms two other feed facts this project depends on:
 
 The first-generation collector trusted `delay`. Because that field is always zero, its
 output was a database full of rows all saying "this bus was exactly on time," which is
-both false and useless. **304,697 observations were information-free and were purged.**
-That is not a rounding error in a side table — it was the entire historical evidence
-base for the honest-ETA engine, and every percentile computed from it was a percentile
-of zeros.
+both false and useless. That is not a rounding error in a side table — it was the entire
+historical evidence base for the honest-ETA engine, and every percentile computed from it
+was a percentile of zeros.
+
+This was verified directly against the production Neon database on 2026-07-24, and the
+result is unambiguous:
+
+```sql
+SELECT delay_s, COUNT(*) FROM trip_delay_obs GROUP BY delay_s;
+--  delay_s |  count
+-- ---------+---------
+--        0 |  304697      ← the ONLY value present. One group. No others.
+
+SELECT p25, p50, p75, COUNT(*) FROM agg_delay GROUP BY p25, p50, p75;
+--  p25 | p50 | p75 |  count
+-- -----+-----+-----+--------
+--    0 |   0 |   0 |  81182      ← every aggregate bucket, all three percentiles
+```
+
+**304,697 observations, collected over ~7.2 hours across 183 routes, 8,741 stops and 13
+hour-of-week buckets, and every single one carries a delay of exactly zero.** They
+propagated into **81,182 `agg_delay` buckets whose P25, P50 and P75 are all zero**. Many
+of those buckets clear the n ≥ 8 evidence gate (§6.2), so the honest-ETA engine is
+currently returning, with full confidence and genuine sample sizes behind it, the
+estimate *"scheduled + 0, ± 0"*. The gating machinery is working perfectly on an input
+that is unanimously meaningless — which is exactly why measuring your own inputs matters
+more than gating them well.
 
 The correction is to stop asking the agency how late its buses are and measure it
 ourselves:
@@ -140,14 +163,21 @@ prediction of when the vehicle will be at the stop; the right side is the agency
 published promise of when it should be. The difference is the quantity the `delay`
 field was supposed to contain.
 
-**Verification status.** As of the stamp at the top of this file, `server/src/poller.ts`
-had **not yet been rewritten** — its observation path still reads the feed's `delay`
-field and its identity join still reconstructs `scheduled = predicted − delay`. The
-rewrite was in flight in a parallel workstream. Until it lands, the collector's delay
-observations remain information-free for the reason above, and the join's
-reconstruction degenerates to `scheduled ≈ predicted` (§4.3). This is stated plainly
-rather than papered over, because the finding is only valuable if the consequence is
-reported honestly too.
+**Verification status — read this before quoting any delay number.** At the stamp at the
+top of this file:
+
+- `server/src/poller.ts` had **not yet been rewritten**. Its observation path still reads
+  the feed's `delay` field, and its identity join still reconstructs
+  `scheduled = predicted − delay`. The rewrite was in flight in a parallel workstream.
+- The **304,697 information-free rows were still present** in the production database,
+  and `agg_delay` was still derived from them. The purge and recomputation had not yet
+  been run.
+
+So until that work lands: the collector's delay observations remain information-free for
+the reason above, every honest-ETA estimate resolves to the bare schedule with a zero
+band, and the join's reconstruction degenerates to `scheduled ≈ predicted` (§4.3). This
+is stated plainly rather than papered over — the finding is only worth anything if its
+consequence is reported with the same precision.
 
 ### 3.4 Which observations count
 
