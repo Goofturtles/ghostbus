@@ -1667,3 +1667,229 @@ Also unchanged, and worth naming because it is now the largest remaining static 
 reload (a `DISTINCT ON` over `trips` joined to `stop_times`). At 68,401 rows that is roughly 3%
 of what the index rebuild used to cost, so it is no longer the dominant term — but it is not
 free, and `poller.ts` belongs to another workstream.
+
+---
+
+## §37 — Six reference gaps, measured: two closed, two closed by correcting the brief, one closed by the user, one handed on
+
+A repair pass was briefed with six visual gaps between the production build and
+`ghostbus-design-reference.png`. Three of the six turned out to be described backwards,
+and finding that out took the same measurement that fixed the ones that were real. What
+follows is what each one actually measured, because a number that contradicts a brief is
+the most useful thing in the entry.
+
+### 0. The database was down, and PGlite is how the whole pass ran
+
+Neon has exhausted its free-tier transfer quota and refuses `SELECT 1`, so every number
+below came from the project's own embedded-Postgres fallback holding the real TTC GTFS:
+233 routes, 9,361 stops, 68,369 trips, 2,150,321 stop_times, 1,369 shapes.
+
+The reproduction step that is easy to get wrong: `db.ts` calls `loadEnvOnce()`, which runs
+`process.loadEnvFile('.env')` at boot, so deleting `DATABASE_URL` from the shell
+environment does not reach it — `.env` puts it straight back and the server dies against
+the dead Neon host. But `process.loadEnvFile` does **not** overwrite a variable already
+present in `process.env`, including one set to the empty string, and `db.ts` branches on
+`url ? makePg(url) : makePglite()` — empty string is falsy. So:
+
+    DATABASE_URL= npm start        # the trailing '=' is load-bearing: set-but-empty, not unset
+
+logs `GhostBus API — driver=pglite` and serves the real board off `.data/pglite`. Unsetting
+the variable, or `unset DATABASE_URL`, does not work. This is the documented fallback's
+first real end-to-end exercise and it held for the whole pass: the poller, the crosswalk,
+the pattern index and every API route ran on it unmodified.
+
+One operational note for anyone screenshotting against it. The API is rate-limited to 120
+requests/minute per IP and a single cold page load spends roughly half of that (health,
+nearby, arrivals, up to eight next-service day probes, alerts, ghosts, and a 5 s vehicle
+poll). Two browser contexts back to back get a 429 — and a 429 renders the honest
+"feed unavailable" state, which is a page with almost no DOM in it and therefore scores a
+perfect zero on the §F overlap probe. **Assert that the app rendered before trusting any
+probe.** The harness for this pass reads the stop name out of the DOM and retries after
+waiting out the window rather than screenshotting a rate-limited page.
+
+### 1. The route line does not turn at King & Spadina, and it now never will
+
+The brief said the 504 King turns at Spadina and that recovering that dogleg was the
+highest-value gap. Measured against the polyline the app actually draws
+(`/api/routes/:id/shape` — the agency's published shape), the largest accumulated heading
+change within 320 m of King & Spadina is:
+
+| route | dir 0 | dir 1 |
+|---|---|---|
+| 504 King / 304 King | 1° | 1° |
+| 510 Spadina / 310 Spadina | 3° | 3° |
+
+King Street and Spadina Avenue are both dead straight through that intersection and
+neither route turns off the other. The mockup's dogleg is illustrator's licence.
+
+A genuine right-angle turn *is* reachable: at 43.6618, -79.35456 the 505 Dundas turns onto
+Broadview 80 m from the frame centre, with the same honest four-minute walk, and it was
+built and screenshotted. It was not shipped, because it is a different intersection from
+the one the reference shows and the user asked for theirs by name.
+
+Offered the choice between focusing the 510 to manufacture a turn in frame and keeping the
+straight 504, **the user chose the straight 504: "keep 504 straight, it's the honest
+one."** So this gap is closed by decision rather than left open. No geometry was bent,
+smoothed or spliced, and the focused route was not swapped to buy a bend.
+
+### 2. The default location: King & Spadina, and the walk time is whatever it computes to
+
+`DEFAULT_LOCATION` = **43.64354, -79.39699** — on Wellington St W, south-west of the
+intersection. It is not a round number, for a reason. King & Spadina is ringed by four
+stops, so nearly every standing point near it is one or two minutes from one of them; a
+13 m grid over ±450 m, keeping only points whose *nearest* stop is one of those four, has
+exactly one member that reaches a four-minute walk.
+
+    nearest   stop 15647  King St West at Spadina Ave West Side   230 m  ->  4 min
+    runner-up stop 15649  King St West at Portland St East Side   227 m  ->  4 min
+
+The four minutes is never written down. It is `walkSeconds(d, 1.333 m/s, routeFactor 1.25)`
+applied to the distance `/api/stops/nearby` returns for the real stop, by the same code
+that runs on a real geolocation fix. Two metres closer and the app would say three
+minutes, and three minutes is what would have shipped.
+
+### 3. The framing rule: a proportion, measured on both breakpoints
+
+A start zoom is a constant, and what the reference holds constant is a ratio. Marker
+centroids pulled out of the reference sheet by pixel scan:
+
+|  | You beacon | stop pin | apart | pane / card | ratio |
+|---|---|---|---|---|---|
+| desktop | (728.1, 499.3) | (672.9, 308.7) | 198.4 px | 744 px | **0.267** |
+| mobile | (328.7, 970.9) | (297.4, 903.7) | 74.1 px | 288 px | **0.257** |
+
+Two very different card sizes, one ratio: the walk occupies about a quarter of the card's
+width and the city fills the other three quarters. Ours measured 0.347 on desktop and
+0.528 on a phone — 1.3x and 2.1x too close. `frameCamera` now projects the two real points,
+measures the span the camera actually produces (pitch-aware for free, unlike any
+ground-resolution formula) and corrects the zoom by the log2 of its ratio to the target,
+clamped between the existing ceiling and floor. Desktop now lands at 0.29.
+
+**The phone cannot reach it.** 0.26 of a 390 px card needs roughly z14.7, and
+`FRAME_MIN_ZOOM` is 15.4 because the diorama's own opacity ramp only reaches 1 at z15.3 —
+below it the card renders a half-transparent city, the failure §31 already recorded. The
+phone therefore sits at 0.43 against the reference's 0.26, and at that framing `collide()`
+suppresses the stop bubble and the walker node, so the phone shows You + route + badge
+where the reference shows five floating elements. Not closed; named.
+
+### 4. A zoom expression inside a FILTER is evaluated at the integer zoom
+
+This is the one worth remembering. `MIN_HEIGHT_BY_ZOOM` had its first step boundary at
+15.2 and had been tuned three times — 8 to 16 to 8 metres — by three passes that were all
+tuning a number the camera never reached. `frameCamera` lands the diorama between z15.4
+and z16.0, which floors to **15**, and 15 < 15.2, so the filter took the *first* branch and
+applied the 22 m "wide out, substantial massing only" floor to the entire diorama.
+
+Downtown that is survivable, which is why it hid for so long: Toronto's core has almost
+nothing under 22 m. Framed on a low-rise neighbourhood it deleted the neighbourhood
+outright — ground, trees and a road, with the buildings reappearing only past z17.4 where
+the ladder's last step drops the floor to zero.
+
+Moving the boundary to `VOXEL_MIN_ZOOM` (14.6) is what put the city in. HSV value deciles
+over the desktop map region, computed identically on the reference sheet and on our own
+production frame:
+
+|  | v<.1 | .1–.2 | .2–.3 | .3–.4 | .4–.5 | >.5 | mean S | mean V |
+|---|---|---|---|---|---|---|---|---|
+| reference | 0.1 | 25.2 | 41.9 | 15.9 | 12.4 | 4.5 | 0.566 | 0.284 |
+| boundary 15.2 | 0.1 | **64.3** | 25.4 | 3.5 | 4.4 | 2.4 | 0.604 | 0.219 |
+| boundary 14.6, floor 8 | 0.1 | 28.6 | 36.7 | 10.4 | 21.4 | 2.9 | 0.554 | 0.287 |
+
+Two thirds of the frame in the darkest band is what "the city is missing" looks like as a
+number. With the boundary fixed the floor was swept at the real default framing — 4 / 8 /
+14 / 20 m give summed deviations of 27.3 / 23.1 / 26.7 / 30.4 across the four middle bands
+— and 8 m is the minimum of that trade. It is a real trade, not a dial: raising the floor
+pulls the over-bright .4–.5 band down, because the buildings it removes are small ones
+presenting almost pure roof, and pushes the darkest band up, because what is left is
+ground.
+
+The filter's missing-height fallback was also corrected. It coalesced `render_height` to
+**0** while the geometry coalesces it to `DEFAULT_HEIGHT_M`; a great many OSM buildings
+carry no height at all, and the filter was calling those zero-metre buildings and deleting
+them at every threshold above zero. It does not invent a height — 8 m is the height those
+buildings are already drawn at.
+
+### 5. Two gaps that were described backwards
+
+**"The mobile map card is too short — the reference is roughly 4:3."** It is not.
+Edge-detected by pixel scan across both phone panels of the reference sheet: the light
+phone's screen runs x 194..482 and its map card y 829..1005, i.e. 288 x 176 = **1.636**;
+the dark phone agrees at 290 x 176 = 1.648. Ours is 5:3 = 1.667 — a three-pixel difference
+on a 390 px card. 4:3 would be 1.33, which is 58 px *taller* than the reference. Left at
+5/3 and the measurement recorded in `app.css` so the next pass does not re-litigate it.
+
+**"The trees are too small — scale them up."** They were already the right size and there
+were five times too many. Same run-length scan on both images — horizontal runs of olive
+pixels across the desktop map region, converted to CSS pixels by each panel's own scale:
+
+|  | median canopy | p75 | p90 | olive share of the map region |
+|---|---|---|---|---|
+| reference | 15.5 px | 21.9 | 29.7 | 0.98 % |
+| ours, before | 16.0 px | 20.0 | 24.0 | 4.91 % |
+
+Canopy width matched to within half a pixel. `CANOPY_PX` was therefore left alone and the
+count came down instead (spacing 30 to 48 px, keep 0.30 to 0.20), landing coverage at
+1.11% and median canopy at 14.0 px. Two earlier notes in `voxelTrees.ts` were corrected in
+passing: both came from a narrow green-hue filter that discarded the reference's dark
+olive *side* faces and kept only its lit tops, which is how "ours cover twice the
+reference's area" was concluded about trees that were in fact five times too numerous.
+
+Also recorded there, because it will bite someone: `metresPerPixel()` in that module uses
+the 256-px-tile Web Mercator constant while MapLibre's world is 512-px tiles, so it returns
+twice the true value and every `_PX` constant in the module renders at twice its nominal
+size. Left alone deliberately — the numbers are tuned against the current behaviour, and
+"fixing" the constant would silently double every tree in the app.
+
+### 6. The palette drift was the location, not the palette
+
+A reviewer read an intermediate frame as steel-blue against the reference's violet.
+Measured on **building surfaces only** — mid-value, saturated pixels, so that parks, water
+and road fill cannot drag the mean — the drift was real and its cause was not the colours:
+
+|  | mean building hue | 180–210 | 210–240 | 240–270 |
+|---|---|---|---|---|
+| reference | 229.6 | 2.8 % | 81.6 % | 13.7 % |
+| low-rise frame | **219.7** | 7.2 % | 79.9 % | 7.8 % |
+| King & Spadina | **230.6** | 3.7 % | 69.5 % | 24.5 % |
+
+Small buildings present almost pure *roof*, and the blue-slate roof is the bluest surface
+in the set; a frame full of two-storey houses is therefore a frame full of that one tone.
+Moving back to the reference's own intersection put the mean building hue within a degree
+of it with no palette value changed.
+
+Worth naming for whoever measures this next: the 240–270 column is brittle. Our ordinary
+roof sits at hue exactly 240.0 and the reference's sampled one at 238.6, so a 1.4°
+difference flips about a fifth of the frame between two bins while the eye sees nothing.
+Trust the circular mean and the by-eye comparison over the bin split.
+
+### 7. Saved Places, and what "real data" means for a screenshot
+
+The section renders empty because nothing has ever been starred on this device, which is
+correct — a seeded "Home · 12 min walk" is exactly the decorative fiction this app does not
+ship. To populate it for the comparison shots, the harness presses **the app's own star
+button** at two real stops: it gives the browser a real position near
+`15648 King St West at Spadina Ave East Side`, waits for the board, clicks the star,
+revokes the geolocation permission so the app falls back to `DEFAULT_LOCATION`, and clicks
+the star again on `15647`. `gb.saved` then reads `["15648","15647"]` because the app's own
+store put it there. No fixture is written and no row is invented; both are real stops and
+both rows draw their sub-line from real nearby/arrivals data.
+
+### 8. Still open
+
+- **The phone framing and its suppressed markers** (§3 above). The reference's phone shows
+  five floating elements; ours shows three, because the diorama floor stops the camera
+  short and `collide()` then does its job correctly.
+- **The lit-roof share.** Our .4–.5 value band is 21.4% against the reference's 12.4% at the
+  best floor available. Every lever tried trades it against the darkest band.
+- **The renderer itself.** The user's verdict on the buildings was that they look nothing
+  like the reference, and the diagnosis is architectural rather than tonal: MapLibre's
+  `fill-extrusion` shades by a vertical height gradient, while the reference shades by face
+  orientation — lit top, mid left wall, dark right wall — in a near-isometric projection
+  with contact shadows. No palette or floor value can produce that, which is why several
+  passes in a row kept nearly matching the histograms and missing the picture. That work is
+  handed to a replacement renderer; the measurements above are the acceptance targets for
+  it.
+- **No live countdown, no `Live` pill, no alert card**, and this remains correct: the static
+  board covers 2026-07-26 onward and today is 2026-07-25, so the honest empty state plus the
+  genuine next scheduled service is what the screenshots show. Nothing was invented to make
+  a frame resemble a mockup.

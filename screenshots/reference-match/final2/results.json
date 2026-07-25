@@ -1,0 +1,386 @@
+{
+  "desktop-dark-en": {
+    "state": {
+      "stopHeader": "King St West at Spadina Ave West Side",
+      "stopMeta": "WestboundStop 15647230 m4 min walk",
+      "bodyTextLen": 977,
+      "errorBanner": false,
+      "mapCard": {
+        "w": 960,
+        "h": 740,
+        "ratio": 1.297
+      },
+      "markers": {
+        "you": true,
+        "stop": true,
+        "walkNode": true,
+        "badge": false,
+        "all": 4
+      },
+      "walkSpanPx": 277,
+      "canvas": {
+        "w": 960,
+        "h": 740
+      }
+    },
+    "errors": [],
+    "overlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "clip": {
+      "clipHits": 0,
+      "hits": []
+    },
+    "map": {
+      "mapOverlaps": 0,
+      "top": [],
+      "visible": [
+        ".you-beacon:114x45",
+        ".stop-marker:196x93",
+        ".walk-node:30x30",
+        ".map-controls:42x178",
+        ".maplibregl-ctrl-attrib:228x19",
+        ".maplibregl-marker:114x45",
+        ".maplibregl-marker:196x93",
+        ".maplibregl-marker:30x30"
+      ]
+    }
+  },
+  "desktop-light-en": {
+    "state": {
+      "stopHeader": "King St West at Spadina Ave West Side",
+      "stopMeta": "WestboundStop 15647230 m4 min walk",
+      "bodyTextLen": 977,
+      "errorBanner": false,
+      "mapCard": {
+        "w": 960,
+        "h": 740,
+        "ratio": 1.297
+      },
+      "markers": {
+        "you": true,
+        "stop": true,
+        "walkNode": true,
+        "badge": false,
+        "all": 4
+      },
+      "walkSpanPx": 277,
+      "canvas": {
+        "w": 960,
+        "h": 740
+      }
+    },
+    "errors": [],
+    "overlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "clip": {
+      "clipHits": 0,
+      "hits": []
+    },
+    "map": {
+      "mapOverlaps": 0,
+      "top": [],
+      "visible": [
+        ".you-beacon:114x45",
+        ".stop-marker:196x93",
+        ".walk-node:30x30",
+        ".map-controls:42x178",
+        ".maplibregl-ctrl-attrib:228x19",
+        ".maplibregl-marker:114x45",
+        ".maplibregl-marker:196x93",
+        ".maplibregl-marker:30x30"
+      ]
+    }
+  },
+  "desktop-dark-frCA": {
+    "state": {
+      "stopHeader": "King St West at Spadina Ave West Side",
+      "stopMeta": "Vers l’ouestArrêt 15647230 m4 min à pied",
+      "bodyTextLen": 1126,
+      "errorBanner": false,
+      "mapCard": {
+        "w": 960,
+        "h": 740,
+        "ratio": 1.297
+      },
+      "markers": {
+        "you": true,
+        "stop": true,
+        "walkNode": true,
+        "badge": false,
+        "all": 4
+      },
+      "walkSpanPx": 277,
+      "canvas": {
+        "w": 960,
+        "h": 740
+      }
+    },
+    "errors": [],
+    "overlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "clip": {
+      "clipHits": 0,
+      "hits": []
+    },
+    "map": {
+      "mapOverlaps": 0,
+      "top": [],
+      "visible": [
+        ".you-beacon:123x45",
+        ".stop-marker:196x93",
+        ".walk-node:30x30",
+        ".map-controls:42x178",
+        ".maplibregl-ctrl-attrib:228x19",
+        ".maplibregl-marker:123x45",
+        ".maplibregl-marker:196x93",
+        ".maplibregl-marker:30x30"
+      ]
+    }
+  },
+  "desktop-light-frCA": {
+    "state": {
+      "stopHeader": "King St West at Spadina Ave West Side",
+      "stopMeta": "Vers l’ouestArrêt 15647230 m4 min à pied",
+      "bodyTextLen": 1126,
+      "errorBanner": false,
+      "mapCard": {
+        "w": 960,
+        "h": 740,
+        "ratio": 1.297
+      },
+      "markers": {
+        "you": true,
+        "stop": true,
+        "walkNode": true,
+        "badge": false,
+        "all": 4
+      },
+      "walkSpanPx": 277,
+      "canvas": {
+        "w": 960,
+        "h": 740
+      }
+    },
+    "errors": [],
+    "overlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "clip": {
+      "clipHits": 0,
+      "hits": []
+    },
+    "map": {
+      "mapOverlaps": 0,
+      "top": [],
+      "visible": [
+        ".you-beacon:123x45",
+        ".stop-marker:196x93",
+        ".walk-node:30x30",
+        ".map-controls:42x178",
+        ".maplibregl-ctrl-attrib:228x19",
+        ".maplibregl-marker:123x45",
+        ".maplibregl-marker:196x93",
+        ".maplibregl-marker:30x30"
+      ]
+    }
+  },
+  "mobile-dark-en": {
+    "state": {
+      "stopHeader": "King St West at Spadina Ave West Side",
+      "stopMeta": "WestboundStop 15647230 m4 min walk",
+      "bodyTextLen": 912,
+      "errorBanner": false,
+      "mapCard": {
+        "w": 390,
+        "h": 234,
+        "ratio": 1.667
+      },
+      "markers": {
+        "you": true,
+        "stop": false,
+        "walkNode": false,
+        "badge": true,
+        "all": 4
+      },
+      "walkSpanPx": null,
+      "canvas": {
+        "w": 390,
+        "h": 234
+      }
+    },
+    "errors": [],
+    "overlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "clip": {
+      "clipHits": 0,
+      "hits": []
+    },
+    "map": {
+      "mapOverlaps": 0,
+      "top": [],
+      "visible": [
+        ".you-beacon:106x40",
+        ".map-badge:38x21",
+        ".map-controls:36x151",
+        ".maplibregl-ctrl-attrib:202x17",
+        ".maplibregl-marker:106x40",
+        ".maplibregl-marker:38x21"
+      ]
+    }
+  },
+  "mobile-light-en": {
+    "state": {
+      "stopHeader": "King St West at Spadina Ave West Side",
+      "stopMeta": "WestboundStop 15647230 m4 min walk",
+      "bodyTextLen": 912,
+      "errorBanner": false,
+      "mapCard": {
+        "w": 390,
+        "h": 234,
+        "ratio": 1.667
+      },
+      "markers": {
+        "you": true,
+        "stop": false,
+        "walkNode": false,
+        "badge": true,
+        "all": 4
+      },
+      "walkSpanPx": null,
+      "canvas": {
+        "w": 390,
+        "h": 234
+      }
+    },
+    "errors": [],
+    "overlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "clip": {
+      "clipHits": 0,
+      "hits": []
+    },
+    "map": {
+      "mapOverlaps": 0,
+      "top": [],
+      "visible": [
+        ".you-beacon:106x40",
+        ".map-badge:38x21",
+        ".map-controls:36x151",
+        ".maplibregl-ctrl-attrib:202x17",
+        ".maplibregl-marker:106x40",
+        ".maplibregl-marker:38x21"
+      ]
+    }
+  },
+  "mobile-dark-frCA": {
+    "state": {
+      "stopHeader": "King St West at Spadina Ave West Side",
+      "stopMeta": "Vers l’ouestArrêt 15647230 m4 min à pied",
+      "bodyTextLen": 1059,
+      "errorBanner": false,
+      "mapCard": {
+        "w": 390,
+        "h": 234,
+        "ratio": 1.667
+      },
+      "markers": {
+        "you": true,
+        "stop": false,
+        "walkNode": false,
+        "badge": true,
+        "all": 4
+      },
+      "walkSpanPx": null,
+      "canvas": {
+        "w": 390,
+        "h": 234
+      }
+    },
+    "errors": [],
+    "overlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "clip": {
+      "clipHits": 0,
+      "hits": []
+    },
+    "map": {
+      "mapOverlaps": 0,
+      "top": [],
+      "visible": [
+        ".you-beacon:113x40",
+        ".map-badge:38x21",
+        ".map-controls:36x151",
+        ".maplibregl-ctrl-attrib:202x17",
+        ".maplibregl-marker:113x40",
+        ".maplibregl-marker:38x21"
+      ]
+    }
+  },
+  "mobile-light-frCA": {
+    "state": {
+      "stopHeader": "King St West at Spadina Ave West Side",
+      "stopMeta": "Vers l’ouestArrêt 15647230 m4 min à pied",
+      "bodyTextLen": 1060,
+      "errorBanner": false,
+      "mapCard": {
+        "w": 390,
+        "h": 234,
+        "ratio": 1.667
+      },
+      "markers": {
+        "you": true,
+        "stop": false,
+        "walkNode": false,
+        "badge": true,
+        "all": 4
+      },
+      "walkSpanPx": null,
+      "canvas": {
+        "w": 390,
+        "h": 234
+      }
+    },
+    "errors": [],
+    "overlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "clip": {
+      "clipHits": 0,
+      "hits": []
+    },
+    "map": {
+      "mapOverlaps": 0,
+      "top": [],
+      "visible": [
+        ".you-beacon:113x40",
+        ".map-badge:38x21",
+        ".map-controls:36x151",
+        ".maplibregl-ctrl-attrib:202x17",
+        ".maplibregl-marker:113x40",
+        ".maplibregl-marker:38x21"
+      ]
+    }
+  }
+}
