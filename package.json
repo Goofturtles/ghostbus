@@ -5,7 +5,8 @@
   "type": "module",
   "description": "GhostBus — an accountability engine with a transit app attached. Live voxel transit that tells riders the truth.",
   "scripts": {
-    "dev": "tsx watch server/src/server.ts",
+    "dev": "concurrently -n api,web -c cyan,magenta \"tsx watch server/src/server.ts\" \"vite\"",
+    "dev:api": "tsx watch server/src/server.ts",
     "dev:web": "vite",
     "build": "tsc -p tsconfig.node.json && vite build",
     "preview": "vite preview",
@@ -13,7 +14,7 @@
     "seed:toronto": "tsx server/src/seed_toronto.ts",
     "collect": "tsx server/src/collect.ts",
     "aggregate": "tsx server/src/aggregate.ts",
-    "test": "node --import tsx --test server/src/tz.test.ts server/src/gtfs.test.ts server/src/join.test.ts server/src/eta.test.ts server/src/bbox.test.ts",
+    "test": "node --import tsx --test \"server/src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit"
   },
   "engines": {
