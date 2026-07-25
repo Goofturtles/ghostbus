@@ -1893,3 +1893,220 @@ both rows draw their sub-line from real nearby/arrivals data.
   board covers 2026-07-26 onward and today is 2026-07-25, so the honest empty state plus the
   genuine next scheduled service is what the screenshots show. Nothing was invented to make
   a frame resemble a mockup.
+
+---
+
+## §38 — The city is a Three.js custom layer now, and the diagnosis that sent it there was half wrong
+
+The user's instruction was blunt: *"the buildings and shading looks nothing like what the
+reference … use 3d models to make this like real shading and textures using voxel art … it
+just has to look 1:1 with this."* Four side-by-side comparisons had already agreed that the
+buildings were the last gap. This section replaces the renderer and, first, corrects the
+reasoning that justified replacing it.
+
+### The commissioning diagnosis was two-thirds wrong, and saying so is the useful part
+
+The pass was commissioned on three claims about `fill-extrusion`. Two do not survive contact
+with MapLibre's source.
+
+1. **"It shades by a vertical height gradient, not by face orientation."** False. The
+   fill-extrusion vertex shader in `maplibre-gl@6.0.0` reads, verbatim:
+
+   ```glsl
+   float directional = clamp(dot(normalForLighting, u_lightpos), 0.0, 1.0);
+   directional = mix((1.0 - u_lightintensity),
+                     max((1.0 - colorvalue + u_lightintensity), 1.0), directional);
+   ```
+
+   That is per-face directional shading off the face normal. It can even be driven to the
+   exact ratio measured below. With light intensity `i` the factor spans `[1-i, ~1]`; solving
+   for the measured 1 : 0.641 : 0.491 gives `i ~= 0.51`, a light at polar 48.5 deg and the lit
+   wall 75 deg off the light azimuth. So face shading was never the blocker.
+2. **"The reference is near-isometric; MapLibre renders in perspective."** True but not a
+   blocker: MapLibre v6 ships `map.setVerticalFieldOfView()`. `cameraToCenterDistance` is
+   `0.5 * height / tan(fov/2)`, so narrowing the FOV pushes the camera back while holding the
+   scale at the map centre — the perspective gradient flattens and nothing about pan, zoom,
+   pitch or rotate changes. That lever works just as well under `fill-extrusion`.
+3. **"It has no ambient occlusion / contact darkening."** This one is correct, and it is one
+   of four real limits.
+
+The four things `fill-extrusion` genuinely cannot do, which are why `voxelMesh.ts` exists:
+
+- **No footprint inset.** The entire paint spec is opacity / color / translate / pattern /
+  height / base / vertical-gradient. Two abutting OSM footprints cannot be pulled apart, so
+  the reference's dark gap between blocks — its strongest "separate solid cubes" cue — is
+  unreachable. §31 item 2 already recorded this; the sub-tier roof offset it substituted buys
+  a step in the skyline, not a gap on the ground.
+- **No AO.** `fill-extrusion-vertical-gradient` ramps over the *whole* wall, floors at
+  `mix(0.7, 0.98, 1-intensity)` so it can darken by at most ~16%, and is scaled by
+  `pow(height/150, 0.5)` so short buildings get almost none. It is also what makes blocks read
+  as smooth prisms, which is why it was switched off.
+- **No per-face texture.** The reference is a *voxel* render: blocks are visibly built from
+  stacked cubes. `fill-extrusion-pattern` tiles in tile space, not per-face UV space.
+- **No independent roof and wall colour.** One `fill-extrusion-color` per layer. The old
+  two-layer "cap band" is a coplanar-wall z-fighting hazard dodged by tiling heights exactly.
+
+### The measurement: how the face ratios were actually derived
+
+Sampling at guessed coordinates produced inconsistent garbage on an earlier attempt, and
+connected-component segmentation was no better — the reference's faces carry soft AO, so they
+are not regions of constant colour and a component labeller fragments them.
+
+What works is the geometry. The reference is an orthographic render, so **every block presents
+a near-vertical edge where its two visible walls meet**, and that edge pins all three faces at
+once: left wall immediately left of it, right wall immediately right, roof directly above its
+top endpoint. Finding the edge needs no segmentation — it is a run of consecutive rows at one
+column where the horizontal colour step exceeds a threshold.
+
+37 such edges in the desktop map region (x 360-1069, y 88-689) after masking the route, trees,
+marker cards and labels. 24 have the roof brightest, which is the sanity condition for a
+lit-from-above render; the other 13 are edges whose "roof" sample landed on ground behind the
+building, and are discarded. Over those 24, Rec.709 relative luminance:
+
+|              | TOP   | LEFT  | RIGHT | notes |
+|--------------|-------|-------|-------|-------|
+| medians      | 1.000 | 0.641 | 0.491 | IQR L/T 0.568-0.739, R/T 0.454-0.590 |
+| trimmed mean | 1.000 | 0.646 | 0.513 | LEFT is the brighter wall in 73% of all 37 edges |
+
+Two top-face families split out of the same samples: indigo `#21294b` (lum 42, n=12) and
+lavender `#484a72` (lum 76, n=12), top-face hue centred 232 deg.
+
+The daylight panel, measured identically on the light phone card (280x166, upscaled 4x Lanczos
+so the run-length thresholds still bite), yields 3 edges agreeing to within 0.008:
+**1.000 : 0.808 : 0.983**, top `#f3f1ec`. The **handedness flips** — confirmed by eye at 8x on
+single blocks before it was believed. The night render is lit from screen-left; the daylight
+render from screen-right, so its left wall is the shaded one and its right wall is within 2% of
+the roof. That is why daylight leans on ground contact shadows for block separation where night
+leans on wall tone.
+
+**Camera pitch is now derived rather than judged**, which settles three passes of 58 -> 50 -> 52
+argument. Under orthographic projection a horizontal direction at plan-angle phi from
+screen-right projects to screen slope `tan(phi) * sin(e)`, e being elevation above the horizon.
+A gradient-orientation histogram over the reference's map region peaks at **+/-0.675 and is
+symmetric**, which forces phi = 45 deg and `sin(e) = 0.675`, e = 42.5 deg. MapLibre measures
+pitch from straight down, so **pitch = 48**. FOV drops 36.87 deg -> **16 deg**.
+
+### Three bugs, each of which produced a *completely* black map
+
+Worth recording because two of them are invisible in code review and only a rendered frame
+shows them.
+
+1. **Merging a feature's rings into one oriented box.** The first version grouped every ring of
+   a feature — on the theory that a building straddling a tile boundary arrives as one clipped
+   piece per tile. Measured: of ~700 building features loaded at the default framing, **112 have
+   a per-feature bounding box wider than 300 m and the worst is 1825 m**, which is exactly a z14
+   tile at Toronto's latitude. OpenFreeMap's `building` layer stops at z14, so the diorama's
+   z16.4 is an overscaled z14 tile, and at z14 OpenMapTiles emits multipolygons whose parts are
+   scattered across the tile. Unioned, each became one near-black cube the size of a
+   neighbourhood. **One box per polygon ring, never merged**, is both the fix and the more
+   honest reading — merging was the thing inventing geometry.
+2. **three's ColorManagement.** Since r152 `new THREE.Color('#21294b')` stores the *linear*-sRGB
+   value (0.0144), not 0.129, expecting the renderer's output pass to encode it back. A raw
+   `gl_FragColor` shader with no `<colorspace_fragment>` chunk never encodes it back, so every
+   measured tone rendered about **nine times too dark**. The palette values were sampled off a
+   finished PNG — they are already sRGB — so the correct handling is no conversion at all, and
+   `srgb()` parses the hex directly.
+3. **`transparent: true` on the contact-shadow material.** Three sorts transparent objects into
+   a second list drawn *after* all opaque objects, so hundreds of overlapping shadow quads were
+   painted over the blocks themselves and compounded into a black wash. Declaring the material
+   opaque with explicit `CustomBlending` keeps it in the first list where `renderOrder` decides,
+   so shadows land on the ground and blocks draw on top of them.
+
+### "Reads steel blue, not violet" — the mean was right and the shape was wrong
+
+A reviewer called the result blue against a violet reference. Measured on *building surfaces
+only* (luminance 34-150, saturation > 0.15, route and trees masked), using the **circular** mean
+for hue:
+
+|               | circular mean hue | mean sat | hue distribution, 10 deg bins over 210-280 |
+|---------------|-------------------|----------|--------------------------------------------|
+| reference     | 233.5             | 0.490    | 3 / 5 / 31 / 35 / 19 / 6 / 2 |
+| ours (before) | 230.0             | 0.543    | 0 / 1 / 77 / 17 / 1 / 3 / 1 |
+| ours (after)  | 235.3             | 0.503    | 0 / 1 / 25 / 52 / 18 / 4 / 1 |
+
+The mean was 3.5 deg out — i.e. the mean was never the problem. The **shape** was: a single
+spike of 77% in one bin, against a reference that spreads 60% of its building pixels at hue
+>= 240. A narrow spike centred on 230 is what "steel blue" looks like as a number even when the
+average says violet. Fixed by moving the family hues up and adding a deterministic +/-11 deg
+per-block hue jitter so the population spreads instead of stacking.
+
+Luminance-band deviation from the reference over the same region fell **44.9 -> 27.8** (summed
+absolute difference across six 16-level bands).
+
+### "Faces look meshy / subdivided"
+
+That was the voxel lattice, and the reviewer was right. The reference's cube seams sit on blocks
+the size of a city block; drawing the same fixed-metre lattice on a 20 m infill shophouse puts a
+full cross through a face two cells wide, which reads as wireframe panelling. The lattice now
+fades in only once a block is a few cells across (`smoothstep(1.9*cell, 3.4*cell, min(width,
+depth))`), cell size went 14 -> 17 m and strength 0.16 -> 0.085. The reference's small blocks are
+flat single tones too, so this matches it rather than compromising with it.
+
+### What is drawn, and what is not invented
+
+Every block is one real OSM footprint from the same OpenFreeMap tiles the basemap already loads.
+Nothing is hand-modelled, AI-generated or merged. Three decorative transforms, all the same
+class as the height quantisation this project has always used and all documented in the module:
+each footprint is drawn as its **PCA-oriented bounding box** (one block per real building, real
+position, real orientation, real extent); that box is **inset 1.2 m** so abutting buildings show
+the reference's gap; heights are **quantised** onto a shared lattice. A sanity guard drops any
+ring whose half-extent exceeds 300 m — no Toronto building is 600 m across, so such a ring is a
+tile-generalisation artifact, and the count is exposed in `stats()` (currently **0**).
+
+### Verification (production build, `npx vite build` + `npm start`, real Chrome)
+
+Running the app needs a note, because the Neon database is over its free-tier transfer quota and
+`server/src/db.ts` calls `loadEnvOnce()`, which reads `.env` at *runtime* — so unsetting
+`DATABASE_URL` in the shell does not work. **Setting it to the empty string does**, because
+Node's `process.loadEnvFile()` does not override a variable already present in `process.env`,
+and `''` is falsy where `getDb()` chooses its driver:
+
+    DATABASE_URL= PGLITE_DIR=<abs path> node --import tsx server/src/server.ts
+
+The pre-existing `.data/pglite` was left unreadable by a hard kill (`PANIC: could not locate a
+valid checkpoint record`; PGlite ships no `pg_resetwal`), so a fresh directory was seeded from
+the already-downloaded GTFS extract — 41 s, 9,361 stops, 68,369 trips, 2,150,321 stop_times,
+1,369 shapes. **PGlite must be shut down cleanly or `postmaster.pid` removed before restarting.**
+
+All 8 combinations — 390x844 and 1280x800, light and dark, `en-CA` and `fr-CA`:
+
+- §F overlap probe **`trueOverlaps: 0`, `hScroll: false`** everywhere.
+- Map-marker pairwise check (not covered by §F): **0 collisions, 0 spill, attribution visible.**
+- Clipping audit: **0 hits.**
+- **0 console and page errors.**
+- **2,059 blocks, 0 dropped, from 494 tile features**, in one `InstancedMesh` draw call plus one
+  for the shadows. Zero per-frame allocation; geometry rebuilds on `idle` only, because the
+  blocks live in world space and panning needs no rebuild.
+- Frame timings with `triggerRepaint()` every frame for 4.5 s: **p50 4.2 ms** at every
+  combination, **p95 4.8-5.9 ms**, worst 12.3-20.1 ms — unchanged from the fill-extrusion build's
+  p50 4.2 / p95 5.0-6.5.
+- 3D confirmed **absent at Reduced and Lite** (`voxel-city-3d` and `voxel-tree-body` missing,
+  pitch and bearing 0, FOV restored to 36.87, layers button `disabled`), and
+  `prefers-reduced-motion` cuts to final state with no drift.
+- `npm test`: **208 passing, 0 failing.**
+
+**Bundle cost of `three@0.185.1`:** the map chunk goes 988.5 kB -> 1,504.8 kB raw and
+**263.0 kB -> 395.2 kB gzipped, a delta of +132.2 kB gzipped.** That is the honest price of
+`WebGLRenderer`; it is lazily loaded with the map chunk, not on the initial route.
+
+### What still differs from the reference — updated
+
+11. **The city is still finer-grained than the reference** (§32 item 8, unchanged and now
+    quantified). The reference reads as one chunky cube per city block because it is an
+    illustration; Toronto's real footprints are several per block, and merging them stays off the
+    table. The generalisation floor was re-swept at the new renderer — 8 / 16 / 24 m gave
+    luminance-band deviations of 22.7 / 24.1 / 32.1 — so raising it makes the match *worse*, not
+    better: what it removes are lit roofs and what it leaves behind is ground. **8 m stands.**
+12. **Our luminance ramp is still lumpy.** After tuning we sit at 0.5 / 37.4 / 34.3 / 20.4 / 4.3 /
+    3.2 against a reference of 3.2 / 38.1 / 27.6 / 13.2 / 12.3 / 5.6: we spike where the reference
+    spreads. Root cause is item 11 — with smaller blocks, less of the frame is lit roof, so
+    matching the frame statistic exactly would need face colours brighter than the ones actually
+    measured off the reference. The palette deliberately stops at the measured hues and family
+    structure and accepts the residue rather than over-brightening to chase a histogram.
+13. **Trees are close but sparse.** Measured over the same region: reference hue 113 deg, sat
+    0.214, mean RGB (65, 77, 63), covering 0.68% of the frame; ours hue 106 deg, sat 0.174, RGB
+    (60, 69, 57), covering 0.25%. Colour is within 7 deg of hue and 7 luminance levels — the
+    density is the real difference, at roughly a third of the reference's. `voxelTrees.ts` was
+    deliberately tuned in §31 against its own measurement, so this pass reports the number rather
+    than churning it.
+14. **The route still does not turn** (§31 item 1, §H) — server-side shape geometry, untouched.
