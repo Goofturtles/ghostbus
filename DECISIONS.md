@@ -776,3 +776,145 @@ breaks *between* facts and "1 min walk" can never wrap as "1 min" / "walk".
 - **`--accent`.** `--brand` (`#8944ab`) is a fill colour; as 12–13px text on the near-black
   background it only reaches ~4:1, and the reference's accent reads visibly brighter than the
   wordmark fill. `--accent` (`#b168e0` dark / `#7b2f9e` light) is the one used for words.
+
+## §31 — The voxel map, rebuilt against the reference image (and what still differs)
+
+The reference mockup existed only as prose (`DESIGN-TARGET.md`) for the first half of this
+work; then the image itself landed on disk. Everything below is measured off the image.
+Where the prose and the image disagreed, the image won — twice materially. (Example: §A4 says
+"a SEPARATE locate button, then a SEPARATE layers button"; the image plainly groups them into
+a second pill with a hairline between, exactly like the `+`/`−` pair. The image is what shipped.)
+
+### The finding that mattered most
+`voxelCity.ts` was complete, tested and **imported by nothing except the dev lab**. Production
+shipped the flat 2D map. Every "voxel map" screenshot in the repo came from `web/voxel-lab.html`.
+Wiring it into `MapCard.tsx` is the single biggest change here.
+
+Alongside it, `MapCard` stopped carrying its own copy of `maplibregl.setWorkerUrl()` and now
+imports `./mapWorker`. Two copies of the §28 fix would drift, and drift there means a blank grey
+box in production and a perfect map in dev — the worst possible failure shape.
+
+### Colour: the light source was eating the palette
+MapLibre's fill-extrusion fragment shader ends with
+`v_color.rgb += clamp(color.rgb * directional * u_lightcolor, …)` — the style's light colour
+**multiplies** every authored channel. The old light was `#cdc6ff`, i.e. `(0.80, 0.78, 1.00)`,
+so every block rendered with red and green scaled down ~20% and blue untouched. That is the
+entire explanation for "too light and too blue": the palette was never the problem, the lamp
+was. The light is now white and the authored values are the measured ones.
+
+Measured from the reference (hue x value histogram of the map region, both themes agreeing):
+
+- dark: wall `#1b203f` (28% of all pixels), roof `#454670`, blue-slate `#14213c` / `#384d6f`,
+  violet accent `#382e56` / `#574687`, teal accent `#23383d`, ground `#0e142b`
+- light: `#f3f0ea` (30%), walls `#d7d3cd` / `#c4c0bb`, and the trees carrying nearly all the chroma
+- trees: dark `#363f34` sides / `#555a42` tops; light `#8da48a` / `#b2c69d` — olive-sage in both,
+  which is what "muted, never saturated" means in practice
+
+The streets went the other way and needed reverting mid-pass. §C's "streets one step lighter
+than the ground" was read literally, the roads were dropped to `#1A2340` on a `#0C1229` ground,
+and the grid vanished — the render came back as one continuous mass of rooftops. In the image
+the ground is the *darkest* surface in the frame and the streets are a clearly readable lattice
+several steps above it. "One step lighter" is about hue family, not contrast.
+
+### Camera: a fixed zoom is the wrong shape of answer
+Two fixed zooms failed review in a row — 17.0 read as "a canyon of towers", 16.6 still cropped
+the stop card off a 390px card. No constant can be right, because the correct framing depends
+on the walk distance (a 2-minute walk and a 12-minute walk are different pictures) and on the
+card size (a full-bleed desktop pane vs a 4:3 phone card). `frameCamera` now centres on the
+walk and **measures**: it steps the zoom out until every marker's real DOM box is inside the
+card and clear of the control stack and the attribution. The loop uses `jumpTo`, which moves
+markers synchronously but defers rendering, so the intermediate steps never paint.
+
+Consequence: the zoom is an output, not an input (~15.4 on a phone, ~16.1 on desktop). That is
+why `ZOOM_HEIGHT_GAIN` and the screen-space tree sizing exist — both hold apparent proportions
+constant as the framing moves, which is what a diorama does when you step back from it.
+
+### Trees are extrusions, and that is not an implementation detail
+A symbol or circle layer would have been one line, but symbols do not depth-test against
+`fill-extrusion`: every tree behind a tower would draw through it. Real boxes share the depth
+buffer. They are **decorative set dressing** — OpenMapTiles carries no `natural=tree` — placed
+deterministically (hashed on the quantised coordinate, so they never crawl between tiles) on the
+verge of real road geometry, and documented as such in the module header. Nothing in GhostBus
+derives a datum from them.
+
+### Two production-only bugs, both invisible in dev
+1. **The You beacon was hidden by its own stylesheet.** MapLibre positions a marker root with
+   `.maplibregl-marker { position: absolute }` (one class). `app.css`'s `.you-beacon` also
+   declared `position: relative` and lost the tie only because maplibre-gl.css is imported
+   later. The new `map.css` is later *and* two-class, so it won — the marker became a static
+   block stretching the full card width, and the collision pass correctly hid a 960px-wide
+   "marker". Fixed by not declaring `position` at all.
+2. **The beaded walk path was written empty and never rewritten.** `applyWalk` closed over
+   `geo`. Its effect fires before `map.on('load')`, finds no source and returns; then
+   `installLayers` calls it from the load handler holding the *first* render's closure, where
+   `geo` was null, and writes an empty FeatureCollection. The deps never change again, so the
+   beads were absent forever. Both callers now read refs.
+
+### Zero-overlap, where it actually had to be earned
+The §F DOM probe excludes everything inside `.map-card`, so the map's own overlaps are invisible
+to it. Implemented there instead:
+
+- Priority chain You > stop > badge > walker node, with **degrade-before-hide**: the stop marker
+  gives up its text bubble and keeps its pin before it disappears entirely.
+- The You card flips to the other side of its disc before anything is hidden.
+- At phone width, at most three floating labels at once (§D).
+- **`marker-blockers`**: an invisible symbol layer publishing one transparent icon per visible
+  marker, sized to that marker's measured box and anchored at the ground point under its centre.
+  The DOM cannot join MapLibre's collision index, so this is the only way street names can be
+  kept off the cards. It must be the last symbol layer — `PauseablePlacement.continuePlacement`
+  walks the style order from the end downward, so the last layer is placed first and wins every
+  collision. An early `liftBasemapLabels` used a name blocklist and silently relocated it; it now
+  selects basemap layers by their source instead.
+- `label-place` is capped at z14.5. "Fashion District" and "Queen West" were landing on the stop
+  pin, and the reference's map carries no place labels at all — only street names.
+- The attribution is `compact: false` (the compact control renders a 29px info button beside the
+  text; the pair wrapped to three lines and covered a corner of the city) and is allowed to wrap
+  rather than `nowrap`. `nowrap` stopped the wrapping but then ran off the right edge, where the
+  card's `overflow: clip` ate "…OpenStreetMa" — text that wraps is readable, text that is clipped
+  is a licence breach.
+
+### MapLibre constraint worth writing down
+A `['zoom']` expression may only be the **outermost** function of a property value. Multiplying
+a stepped height by a nested `['interpolate', …, ['zoom'], …]` is rejected, `addLayer` throws,
+and the entire city vanishes silently — `queryRenderedFeatures({layers:['voxel-body']})` returns
+0 while every other layer keeps rendering perfectly. `withZoomGain` keeps the interpolation
+outermost and puts the data-driven expression in each stop output, which is the legal
+"zoom-and-property function" form.
+
+### Verified against a production build, never dev
+`npx vite build` + `npm start`, real Chrome driven by Playwright. Frame timings at the final
+camera (pitch 58, `map.triggerRepaint()` every frame for 4s):
+
+- desktop 1280x800, 177 blocks + 215 trees in frame: **p50 4.2 ms, p95 6.5 ms, worst 15.4 ms**
+- phone 390x844, 83 blocks + 103 trees: **p50 4.2 ms, p95 5.0 ms, worst 12.1 ms**
+
+Extrusions confirmed absent at Reduced and Lite (`voxel-body`, `voxel-cap`, `voxel-tree-body`
+all missing, pitch and bearing 0, layers button `disabled`). `trueOverlaps: 0`, zero
+map-internal collisions and zero marker spill at both viewports, both themes, `en` and `fr-CA`.
+No console or page errors. Map chunk 985.9 kB / **262.1 kB gzipped** (was ~256 kB).
+
+### What still differs from the reference — honestly
+1. **The route does not turn.** `/api/routes/:id/shape` returns 36 points over 9.6 km for 504
+   King: p90 segment length 994 m, max 1437 m. At the diorama zoom that is a straight slash that
+   cuts corners rather than a line following the street. The endpoint's own `simplify` runs at
+   ~1.7 m, so the coarseness is upstream of it, in the seeded `shapes` rows. Server-owned; not
+   touched here. Until it is fixed, §C's "follows the streets with real turns" cannot be met —
+   the King St W stretch in frame happens to be genuinely straight, which hides it.
+2. **Blocks cannot have true dark gaps between them.** `fill-extrusion` has no inset or
+   footprint-shrink property — the entire paint spec is opacity, color, translate, pattern,
+   height, base, vertical-gradient. Two abutting OSM footprints at the same tier cannot be
+   pulled apart. The substitute is `SEPARATION_M`: five sub-tiers inside each 22 m step, so
+   neighbours land on different roof heights and their lit cap bands step against each other.
+3. **The camera is not north-up.** `VOXEL_BEARING = -18` reproduces the reference's diagonal
+   grid and gives every block a second visible wall. There is no compass rose on the map.
+4. **The map's expand/fullscreen button is gone.** The reference's third control slot is the
+   layers button, and it groups locate+layers into one pill. `mapExpanded` still works if
+   anything sets it (the Escape handler and the resize effect are untouched), but nothing in the
+   map sets it now, so `map.expand` / `map.collapse` are unused strings and `.map-expanded` is
+   unused CSS. The layers button toggles the 3D city instead.
+5. **The stop bubble's small blue accessibility chip is omitted.** The reference shows one; we
+   have no data behind it, so drawing it would be decoration pretending to be information.
+6. **Trees have no trunk.** A trunk is sub-pixel at every framing the app uses.
+7. **Street-name density is close but not equal.** The reference shows two names in a 715px
+   frame; we show four to six, thinned with `symbol-spacing: 900` and `text-padding: 34`.
+   Pushing further starts dropping the name of the street the rider is actually standing on.
