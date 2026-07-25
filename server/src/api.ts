@@ -813,10 +813,12 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     await app.register(fastifyStatic, { root: webDist });
   }
   app.setNotFoundHandler((req, reply) => {
-    if (req.url.startsWith('/api/')) return reply.code(404).send({ error: 'not found' });
+    const path = req.url.split(/[?#]/, 1)[0];
+    // `/api` bare, not just `/api/…`: it has no extension, so without this it would
+    // have fallen through and answered an API client with the SPA shell at 200.
+    if (path === '/api' || path.startsWith('/api/')) return reply.code(404).send({ error: 'not found' });
     if (!webDist) return reply.code(404).send({ error: 'not found' });
 
-    const path = req.url.split(/[?#]/, 1)[0];
     // A missing asset is a missing asset, whatever the client claims to Accept —
     // this branch is checked first precisely so a browser navigating straight to a
     // dead bundle URL still sees the 404 instead of a reassuring HTML page.

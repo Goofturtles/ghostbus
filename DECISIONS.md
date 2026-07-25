@@ -491,6 +491,12 @@ have cached an HTML document under an immutable hashed `.js` URL permanently. `w
 untouched — the §26 regression (stale startup enumeration) does not come back, and real assets still serve
 with correct content types.
 
+Review also caught that the guard was `req.url.startsWith('/api/')`, so a bare `GET /api` — no trailing
+slash, no extension — read as a navigation and answered an API client with the SPA shell at 200. Fixed.
+Four regression tests now cover the whole handler in `server/src/api.test.ts` (missing asset 404s, the 404
+survives `Accept: text/html`, bare `/api` stays JSON, a client-side route still gets the shell). This bug
+class is invisible to every existing test and to a casual curl, which is exactly why it needs assertions.
+
 **Fix 3 — the error storm was a real race, not just fallout.** It survived Fix 1. The 5s poll and the first
 geo recenter (`easeTo` → `moveend` → `scheduleFetch`) both reach `ingest()` well before `load` installs the
 `vehicles` source, and a theme swap drops that source mid-animation. Because the rAF loop writes

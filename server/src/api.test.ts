@@ -16,6 +16,9 @@ import {
 import type { Db, Params, Result } from './db.ts';
 import type { PollerHandle } from './poller.ts';
 import type { AlertsResponse, GhostFeedResponse } from '../../shared/types.ts';
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // =====================================================================================
 // trust grades
@@ -482,6 +485,82 @@ test('unknown /api/ routes still answer JSON, not the SPA shell', async () => {
     const res = await app.inject({ method: 'GET', url: '/api/ghosts/nope' });
     assert.equal(res.statusCode, 404);
     assert.deepEqual(res.json(), { error: 'not found' });
+  } finally {
+    await app.close();
+  }
+});
+
+// =====================================================================================
+// static / SPA fallback (DECISIONS §28)
+// =====================================================================================
+//
+// The handler used to answer every non-/api/ miss with index.html at HTTP 200. That is
+// how a missing maplibre worker chunk masqueraded as a healthy response for several
+// phases, and it is what would let the service worker cache an HTML document under an
+// immutable hashed .js URL. These assertions are cheap; the bug they guard was not.
+//
+// Whether the SPA shell can be served at all depends on a built bundle being present,
+// so the navigation cases are asserted against that fact rather than assuming a build.
+const HAS_BUNDLE = existsSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'dist', 'index.html'));
+
+test('a missing asset 404s instead of being answered with the SPA shell', async () => {
+  const app = await buildApi({ db: fakeDb([]), poller: fakePoller });
+  try {
+    for (const url of [
+      '/assets/nonexistent-abc123.js',
+      '/assets/maplibre-gl-worker.mjs',   // the exact URL maplibre used to guess
+      '/assets/index-DEADBEEF.css',
+      '/missing.mjs',
+      '/missing.webmanifest',
+      '/nope.png',
+    ]) {
+      const res = await app.inject({ method: 'GET', url });
+      assert.equal(res.statusCode, 404, `${url} must 404`);
+      assert.ok(!/text\/html/.test(res.headers['content-type'] as string), `${url} must not return HTML`);
+    }
+  } finally {
+    await app.close();
+  }
+});
+
+test('an asset 404 survives a browser-style Accept: text/html', async () => {
+  // A human pasting a dead bundle URL into the address bar must still see the failure,
+  // so asset-ness is judged before Accept.
+  const app = await buildApi({ db: fakeDb([]), poller: fakePoller });
+  try {
+    const res = await app.inject({
+      method: 'GET', url: '/assets/nonexistent-abc123.js',
+      headers: { accept: 'text/html,application/xhtml+xml' },
+    });
+    assert.equal(res.statusCode, 404);
+  } finally {
+    await app.close();
+  }
+});
+
+test('bare /api answers JSON, not the SPA shell', async () => {
+  // It carries no file extension, so it would otherwise read as a navigation.
+  const app = await buildApi({ db: fakeDb([]), poller: fakePoller });
+  try {
+    const res = await app.inject({ method: 'GET', url: '/api' });
+    assert.equal(res.statusCode, 404);
+    assert.deepEqual(res.json(), { error: 'not found' });
+  } finally {
+    await app.close();
+  }
+});
+
+test('a client-side route is still served the SPA shell', async () => {
+  const app = await buildApi({ db: fakeDb([]), poller: fakePoller });
+  try {
+    const res = await app.inject({ method: 'GET', url: '/nearby', headers: { accept: 'text/html' } });
+    if (HAS_BUNDLE) {
+      assert.equal(res.statusCode, 200);
+      assert.match(res.headers['content-type'] as string, /text\/html/);
+    } else {
+      // No bundle on disk: there is no shell to serve, and inventing one would be a lie.
+      assert.equal(res.statusCode, 404);
+    }
   } finally {
     await app.close();
   }

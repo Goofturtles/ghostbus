@@ -308,6 +308,10 @@ export default function MapCard() {
     applyWalk(map);
     vehSource(map)?.setData(vehFCRef.current);
     restoreFeatureStates(map);
+    // The rAF loop stops itself when a setStyle swap drops the source out from under it.
+    // The source is back now, so in-flight tweens resume instead of freezing until the
+    // next poll (up to 5s) and then snapping to their destination.
+    if (animsRef.current.size > 0) startRaf();
   }
 
   function restoreFeatureStates(map: maplibregl.Map) {
