@@ -30,10 +30,14 @@ import {
   resetVoxelCamera,
   voxelCityAllowed,
   voxelInsertionPoint,
+  syncVoxelCity,
   VOXEL_DIORAMA_ZOOM,
   VOXEL_PITCH,
   VOXEL_BEARING,
   VOXEL_MAX_PITCH,
+  VOXEL_FOV_DEG,
+  DEFAULT_FOV_DEG,
+  setVoxelFov,
 } from './voxelCity';
 import {
   addVoxelTreeLayers,
@@ -267,7 +271,14 @@ export default function MapCard() {
     // Trees are re-planted from whatever roads are on screen, so they can only be
     // recomputed when the camera SETTLES. `idle` is the exact "nothing is moving
     // and every tile has landed" signal; doing this per frame would be absurd.
-    map.on('idle', () => { if (voxelOnRef.current) syncVoxelTrees(map); });
+    map.on('idle', () => {
+      if (!voxelOnRef.current) return;
+      syncVoxelTrees(map);
+      // The 3D city reads its geometry straight out of the vector tiles, so it has
+      // the same "only when new tiles have landed" trigger as the trees. Panning and
+      // zooming need no rebuild at all — the blocks live in world space.
+      syncVoxelCity(map);
+    });
 
     map.on('load', () => {
       styleOkRef.current = true;
@@ -606,6 +617,12 @@ export default function MapCard() {
     const pitch = voxelOnRef.current ? VOXEL_PITCH : 0;
     const bearing = voxelOnRef.current ? VOXEL_BEARING : 0;
     if (map.getMaxPitch() < pitch) map.setMaxPitch(VOXEL_MAX_PITCH);
+    // The narrow diorama FOV has to be applied BEFORE the fitting loop below, not
+    // after: it changes `cameraToCenterDistance`, so it changes where every marker
+    // projects to, and a loop that measured at 36.87 deg and then rendered at 16
+    // would be fitting the wrong picture. `applyVoxelCamera` sets it too, but this is
+    // the path the default view actually takes.
+    setVoxelFov(map, voxelOnRef.current ? VOXEL_FOV_DEG : DEFAULT_FOV_DEG);
 
     // Bias the composition AWAY from the control stack instead of only zooming out
     // to escape it. `offset` moves the target centre relative to the container
@@ -707,6 +724,7 @@ export default function MapCard() {
       if (centeredOnGeo.current && !userMoved.current) frameCamera(false);
       else applyVoxelCamera(map, { animate: false });
       syncVoxelTrees(map);
+      syncVoxelCity(map);
     } else {
       removeVoxelTreeLayers(map);
       removeVoxelCityLayers(map);
