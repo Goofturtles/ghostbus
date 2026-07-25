@@ -212,6 +212,16 @@ is a new table, **`agg_delay_route`** (migration `003_phase2.sql`).
   departures show real evidence. `liveEtaMs` is only attached when `at` is within 10 min of now
   (a live prediction is meaningless against a different-time scheduled slot).
 
+- **Phase 4 amendment — "Next scheduled service" probe now walks day-by-day (honesty fix):**
+  The Nearby view's "next scheduled service" probe (`web/src/hooks/useLive.ts`) previously fired a
+  single `at = now + 7d` query, so with today = 2026-07-24 it surfaced **Fri Jul 31** — a real
+  scheduled day, but *not* the true next one. The board actually activates **Sun Jul 26**. The probe
+  now walks forward day-by-day from tomorrow (offsets d = 1…8, each a 24h `windowMin` window) and
+  uses the **first** day that returns departures, so the section header's date stamp
+  (`fmtServiceDate`) is the genuine next service day. Verified live: the header now reads
+  **"SUN, JUL 26"** and shows real departures (e.g. `310 Spadina 5:12 AM`). Sequential, aborts if the
+  rider switches stops mid-walk. The server `at=` demonstration technique above is unchanged.
+
 ## 16. Aggregation computed in JS (percentiles), verified on the driver
 
 `server/src/aggregate.ts` recomputes `agg_delay` and `agg_delay_route` over a trailing 14-day
@@ -288,3 +298,91 @@ few routes would slip past a global-only breaker; the per-route breaker catches 
   over.
 - **CANCELED identification + 304 behavior** — see BLOCKERS.md (measured: 0 standard-CANCELED entities;
   feed never sends 304).
+
+---
+
+# Phase 4 — the real map (MapLibre voxel-sprite map + marker system)
+
+## 23. Tier 0 map: flat stylized MapLibre, voxel sprites, no 3D
+
+The Phase 3 placeholder map-card is replaced by a real, hand-styled 2D MapLibre map. **No 3D buildings
+and no three.js** — that's a deliberately deferred, highest-risk/lowest-function later tier. The
+reference's isometric diorama is translated to a flat 2D look: deep violet-charcoal ground, muted
+purple-slate quiet streets, minimal labels, and the active route line as the only loud (red) stroke.
+
+- **Package:** `maplibre-gl` (verified `npm view` latest stable = **6.0.0**). **Code-split**: the map
+  lives in `web/src/map/MapCard.tsx`, lazy-loaded via `React.lazy` behind `<Suspense>` (fallback = the
+  styled placeholder), so maplibre stays out of the initial bundle. Measured after build: **initial JS
+  79.6 KB gzip** (Phase 3 was 78 KB), **lazy MapCard chunk 256.6 KB JS + 10.0 KB CSS gzip**.
+- **Tiles (zero-key, license-clean):** **OpenFreeMap** vector tiles (OpenMapTiles schema). Verified
+  reachable at build time — style `…/styles/liberty` 200, TileJSON `…/planet` 200, fonts
+  `…/fonts/Noto Sans Regular|Bold` 200 (Medium 404, so unused). We do **not** ship OpenFreeMap's default
+  style; two styles are hand-built in `web/src/map/mapStyle.ts` painting every vector layer to our tokens
+  (dark = indigo night; light = Daylight with real navigational contrast — gray ground, lighter road
+  ribbons). The MapLibre `AttributionControl` is always enabled, forced expanded, and themed
+  ("OpenFreeMap · OpenMapTiles · © OpenStreetMap") — never hidden (license requirement). CARTO
+  dark-matter/positron was the documented fallback if OpenFreeMap were unreachable; it was reachable, so
+  OpenFreeMap is used. **Runtime tile failure** (map `error` event on the vector source) flips a clean
+  "Map tiles unavailable — showing list only" overlay; the card background is the ground color so a slow
+  tile never flashes a checkerboard.
+- **Palette in JS, not read from CSS vars:** the two style palettes mirror `tokens.css` but are kept as
+  literals in `mapStyle.ts` so the style builds instantly (no CSS-var resolution timing) and MapLibre gets
+  concrete colors. Theme switch calls `map.setStyle(buildStyle(theme))` and re-installs custom
+  sources/layers/images on the next `styledata` — verified instant (data-theme flip → restyled map, no
+  reload, ~50 ms).
+
+## 24. Voxel vehicle sprites — one symbol layer, ~1,500 vehicles at 60fps
+
+- Sprites are drawn **procedurally on an offscreen canvas** (`web/src/map/sprites.ts`): a chunky
+  isometric-voxel body (route-colored roof + darker extruded side, dark window band, yellow headlight
+  pixels, soft contact shadow), bus vs streetcar by `route_type`, pointing north so the symbol layer's
+  `icon-rotate = heading` aims the front down the direction of travel. One sprite per **(kind, color)**,
+  cached and registered as MapLibre images — the live TTC feed has only **4 distinct colors** (ED1C24
+  red, 3C4A5B slate fallback, 00A651 green, E472AC pink), so ≤ 8 images total. Vehicles render as **one
+  data-driven symbol layer** (`icon-image`/`icon-rotate` from feature props), never DOM markers.
+- **Selection scale is a data-driven feature *property* (`sel`), not feature-state** — feature-state is
+  paint-only and silently rejects a symbol `icon-size` layout expression (this cost a debugging cycle; the
+  whole vehicles layer failed to add until moved to a property). Opacity fades stay in paint via
+  feature-state `op`.
+- **Animation:** each poll eases vehicles old→new over ~1.2 s with `requestAnimationFrame` mutating a
+  **single reused GeoJSON FeatureCollection** in place (no per-frame allocation) and one `setData`/frame;
+  the rAF stops when no animation is active. A jump **> 500 m** snaps to the destination and fades back in
+  via feature-state opacity — never a visible slide across the city. Heading from the feed, else bearing
+  of movement. `prefers-reduced-motion` → position animations become instant + fade, camera flights become
+  cuts.
+- **Live polling is self-contained in the map** (Phase 3's `useLive` deliberately had none): every 5 s it
+  polls `/api/vehicles?bbox=<current viewport>` (debounced on `moveend`), **paused when `document.hidden`**
+  and on unmount. Proven: over 11 s hidden, **0** vehicle fetches (+ log lines), **1** fetch on resume.
+
+## 25. Marker system + the active route line (new server endpoint)
+
+- **You beacon / boarding pin / selected-vehicle badge are DOM `maplibregl.Marker`s** (few, need rich
+  styling + pulse); the walk path, route line, and route stop dots are GL layers.
+- **Label discipline (max 3 on mobile):** You pill, boarding stop card, selected-vehicle badge. A simple
+  rect-overlap collision hides the lower-priority label on overlap, and also hides any label that would sit
+  under the map controls (app chrome). The **walk time lives on the You pill** ("You · X min walk", exactly
+  as the reference) rather than as a separate inline chip, to stay within the 3-label budget.
+- **Walk path is a straight-line beaded (dotted) path** from You to the boarding stop, accent-purple — Tier
+  0 has no routing engine, so it is an honest as-the-crow-flies indicator, not a real walking route.
+- **Active route line (the only loud stroke):** when a vehicle is selected (or, absent a selection, the top
+  departure at the boarding stop is focused) the route's **real** shape is drawn in red following the
+  streets, with real intermediate **stop dots** at desktop zoom. This required a new server endpoint
+  **`GET /api/routes/:routeId/shape?dir=`** (`server/src/api.ts`, typed `RouteShapeResponse` in
+  `shared/types.ts`): it picks the most representative shape (the `shape_id` used by the most trips for that
+  route/direction), returns it Douglas–Peucker-simplified (~1.7 m tolerance) as `[lon,lat]` GeoJSON
+  coordinates plus the ordered real stops of a representative trip on that shape. Parameterized SQL; `dir`
+  validated to `0|1`. Note: `applyRoute`/`applyWalk` call only `source.setData` and are **not** gated on
+  `isStyleLoaded()` (which flips false transiently while tiles reload — that gate had swallowed the route
+  line until removed).
+
+## 26. Vite dev fix required by maplibre (config touch)
+
+Adding maplibre-gl surfaced a Vite dev-server incompatibility: its web worker (`maplibre-gl-worker.mjs`)
+404s under the dep optimizer, so tiles never load in `npm run dev:web`. Fix (in `vite.config.ts`):
+`optimizeDeps: { exclude: ['maplibre-gl'] }` — the documented remedy; production build is unaffected. This
+is the only change to a Phase-3 config file, and it is a direct consequence of this phase's dependency.
+
+**Pre-existing issue flagged (not fixed — out of scope):** `vite.config.ts` builds to `ghostbus/dist`
+while `server/src/api.ts` serves `ghostbus/web/dist`, so the Fastify "one deployable service" can't serve
+the built SPA today (root `/` 404s in production). This mismatch predates Phase 4; left for a follow-up so
+this phase stays isolated to the map.

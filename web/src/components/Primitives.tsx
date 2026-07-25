@@ -23,7 +23,7 @@ function relLum(r: number, g: number, b: number): number {
 function contrast(l1: number, l2: number): number {
   return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
 }
-function readableOn(hex: string): string {
+export function readableOn(hex: string): string {
   const h = hex.replace('#', '');
   if (h.length < 6) return '#ffffff';
   const bg = relLum(parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16));

@@ -2,8 +2,11 @@
 // Every response shape is imported from the server's contract so the UI cannot
 // drift from what the API actually returns.
 import type {
-  HealthResponse, StopsResponse, ArrivalsResponse,
+  HealthResponse, StopsResponse, ArrivalsResponse, VehiclesResponse, RouteShapeResponse,
 } from '@shared/types';
+
+/** A viewport box in [minLon, minLat, maxLon, maxLat] order (what the API expects). */
+export type Bbox = [number, number, number, number];
 
 /** A fetch that rejects on non-2xx and surfaces the API's JSON error message. */
 async function j<T>(url: string, signal?: AbortSignal): Promise<T> {
@@ -29,4 +32,11 @@ export const api = {
     const qs = p.toString();
     return j<ArrivalsResponse>(`/api/stops/${encodeURIComponent(stopId)}/arrivals${qs ? `?${qs}` : ''}`, signal);
   },
+
+  vehicles: (bbox: Bbox, signal?: AbortSignal) =>
+    j<VehiclesResponse>(`/api/vehicles?bbox=${bbox.join(',')}`, signal),
+
+  routeShape: (routeId: string, dir: number | null, signal?: AbortSignal) =>
+    j<RouteShapeResponse>(
+      `/api/routes/${encodeURIComponent(routeId)}/shape${dir == null ? '' : `?dir=${dir}`}`, signal),
 };

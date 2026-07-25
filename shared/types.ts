@@ -138,6 +138,31 @@ export interface ArrivalsResponse {
   departures: DepartureDto[];
 }
 
+// ---------- /api/routes/:routeId/shape ----------
+
+/** One stop along the representative trip of a route/direction (real GTFS stops,
+ *  never sampled points). Used for the intermediate stop dots on the route line. */
+export interface RouteStopDto {
+  stopId: string;
+  name: string | null;
+  lat: number;
+  lon: number;
+}
+
+/** The simplified shape polyline for a route/direction, plus its real stops.
+ *  Coordinates are GeoJSON order [lon, lat] so the client can drop them straight
+ *  into a LineString. The most representative shape (most trips) is chosen. */
+export interface RouteShapeResponse {
+  routeId: string;
+  directionId: number | null;
+  shapeId: string;
+  /** hex, no leading '#'. */
+  color: string;
+  /** [lon, lat] pairs, Douglas–Peucker simplified. */
+  coordinates: [number, number][];
+  stops: RouteStopDto[];
+}
+
 // ---------- /api/stats ----------
 
 export interface StatsResponse {

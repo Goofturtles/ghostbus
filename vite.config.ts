@@ -14,6 +14,12 @@ export default defineConfig({
       '@shared': fileURLToPath(new URL('./shared', import.meta.url)),
     },
   },
+  // maplibre-gl ships a web worker the Vite dep optimizer can't pre-bundle
+  // (it 404s the worker in dev). Excluding it lets Vite serve it as an ESM
+  // module worker; production build is unaffected. See DECISIONS §23.
+  optimizeDeps: {
+    exclude: ['maplibre-gl'],
+  },
   server: {
     port: 3499,
     strictPort: true,

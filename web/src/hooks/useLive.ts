@@ -14,9 +14,11 @@ export const DEFAULT_LOCATION = { lat: 43.6455, lon: -79.3954 };
 const NEARBY_RADIUS_M = 800;
 const HEALTH_INTERVAL_MS = 20_000;
 const ARRIVALS_INTERVAL_MS = 30_000;
-/** When "now" has no departures, probe one week ahead (same hour-of-week, richest
- *  evidence per DECISIONS §15) to surface this stop's real scheduled service. */
-const NEXT_SERVICE_PROBE_MS = 7 * 86_400_000;
+/** When "now" has no departures, walk forward day-by-day from tomorrow (up to 8
+ *  days) and surface the FIRST day that actually has scheduled service, so the
+ *  section header's date is the genuine next service day. See DECISIONS §15. */
+const NEXT_SERVICE_MAX_DAYS = 8;
+const NEXT_SERVICE_WINDOW_MIN = 24 * 60;
 
 export type GeoStatus = 'pending' | 'granted' | 'default';
 
@@ -117,9 +119,7 @@ export const useLive = create<LiveState>((set, get) => ({
         set({ arrivals, arrivalsError: false, arrivalsLoading: false, skewMs: arrivals.serverNowMs - Date.now() });
         // No live departures right now → surface the next real scheduled service.
         if (arrivals.departures.length === 0) {
-          api.arrivals(stopId, { atMs: liveNow() + NEXT_SERVICE_PROBE_MS })
-            .then((nextService) => { if (current()) set({ nextService }); })
-            .catch(() => { /* probe is best-effort */ });
+          void probeNextService(stopId, current, set);
         } else {
           set({ nextService: null });
         }
@@ -127,6 +127,32 @@ export const useLive = create<LiveState>((set, get) => ({
       .catch(() => { if (current()) set({ arrivalsError: true, arrivalsLoading: false }); });
   },
 }));
+
+/** Walk forward day-by-day from tomorrow and set `nextService` to the first day
+ *  with real scheduled departures (each probe is a 24h window). Sequential so the
+ *  first hit wins; aborts if the rider switches stops mid-walk. */
+async function probeNextService(
+  stopId: string,
+  current: () => boolean,
+  set: (p: Partial<LiveState>) => void,
+): Promise<void> {
+  // Anchor each 24h probe to the START of a local day beginning tomorrow (not now+Nd),
+  // so a day whose service ends before the current wall-clock time is never skipped and
+  // the header's date stamp is the genuine next service day. Rider is in Toronto → local
+  // midnight ≈ agency midnight; the server still resolves service days in America/Toronto.
+  const start = new Date(liveNow());
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() + 1); // tomorrow, local
+  const base = start.getTime();
+  for (let d = 0; d < NEXT_SERVICE_MAX_DAYS; d++) {
+    if (!current()) return;
+    try {
+      const res = await api.arrivals(stopId, { atMs: base + d * 86_400_000, windowMin: NEXT_SERVICE_WINDOW_MIN });
+      if (!current()) return;
+      if (res.departures.length > 0) { set({ nextService: res }); return; }
+    } catch { /* best-effort; try the next day */ }
+  }
+}
 
 /** Load nearby stops and, if the current selection isn't among them, select the
  *  nearest so the board reflects where the rider actually is. */

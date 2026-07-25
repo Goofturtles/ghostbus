@@ -146,7 +146,7 @@
   box-shadow: var(--inner-top);
 }
 
-/* ============================ map placeholder ============================ */
+/* ============================ map ============================ */
 .map-card {
   position: relative;
   aspect-ratio: 5 / 4;
@@ -155,6 +155,141 @@
   background: linear-gradient(160deg, var(--map-sky-top), var(--map-sky-bot));
   box-shadow: var(--shadow-card), var(--inner-top);
   margin-bottom: var(--s4);
+}
+
+/* live map fills the card; ground color underneath so a slow tile never flashes checkerboard */
+.map-card.map-live { background: var(--map-ground); }
+/* Two-class specificity so this beats maplibre-gl.css's `.maplibregl-map{position:relative}`
+   (equal-specificity + later in cascade would otherwise collapse the container to 0 height). */
+.map-card .map-canvas { position: absolute; inset: 0; }
+.map-card .maplibregl-canvas { outline: none; }
+
+/* MapLibre attribution — themed, small, always visible (license) */
+.maplibregl-ctrl-attrib {
+  background: var(--glass-strong) !important;
+  color: var(--text-2) !important;
+  font: 500 10px/1.4 var(--font);
+  padding: 2px 7px !important;
+  border-radius: 8px 0 var(--r-lg) 0 !important;
+  max-width: 78%;
+}
+.maplibregl-ctrl-attrib a { color: var(--text) !important; }
+.maplibregl-ctrl-attrib-button { filter: invert(0); }
+:root[data-theme="dark"] .maplibregl-ctrl-attrib-button { filter: invert(1) brightness(1.4); }
+
+/* control stack (top-right per the reference) */
+.map-controls {
+  position: absolute; top: var(--s3); right: var(--s3); z-index: 5;
+  display: flex; flex-direction: column; gap: var(--s2); align-items: flex-end;
+}
+.map-zoom {
+  display: flex; flex-direction: column;
+  border-radius: 14px; overflow: hidden;
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: blur(20px) saturate(150%); backdrop-filter: blur(20px) saturate(150%);
+  box-shadow: var(--shadow-card), var(--inner-top);
+}
+.map-zoom-sep { height: 1px; background: var(--hairline-2); margin: 0 8px; }
+.map-ctrl {
+  width: 44px; height: 44px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--text); background: transparent;
+  transition: transform var(--dur-micro) var(--ease-spring), color var(--dur-micro) var(--ease-standard);
+}
+.map-ctrl:active { transform: scale(0.9); }
+.map-ctrl:hover { color: var(--brand); }
+.map-ctrl-solo {
+  border-radius: 14px;
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: blur(20px) saturate(150%); backdrop-filter: blur(20px) saturate(150%);
+  box-shadow: var(--shadow-card), var(--inner-top);
+}
+
+/* tiles-unavailable honest fallback (never a checkerboard) */
+.map-fallback {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  display: inline-flex; align-items: center; gap: var(--s2);
+  padding: 10px var(--s4); border-radius: var(--r-pill);
+  background: var(--glass-strong); color: var(--text-2);
+  font-size: 13px; font-weight: 600; box-shadow: var(--shadow-card);
+  max-width: 84%; text-align: center;
+}
+.map-fallback-glyph { display: inline-flex; color: var(--warn); }
+
+/* You beacon */
+.you-beacon { position: relative; display: flex; align-items: center; }
+.you-bloom {
+  position: absolute; left: 14px; top: 50%; width: 54px; height: 54px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(10, 132, 255, 0.42), transparent 68%);
+  animation: you-pulse 2.4s var(--ease-standard) infinite;
+}
+.you-disc {
+  position: relative; z-index: 1;
+  width: 30px; height: 30px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--you);
+  box-shadow: 0 0 0 3px #fff, 0 6px 16px -4px rgba(10, 132, 255, 0.8);
+}
+.you-pill {
+  position: relative; z-index: 1;
+  margin-left: -4px; padding: 5px 11px 5px 14px;
+  border-radius: 0 var(--r-pill) var(--r-pill) 0;
+  /* darker than the beacon disc so white 12px/700 text clears AA (≈5:1) */
+  background: #0060df; color: #fff;
+  font-size: 12px; font-weight: 700; white-space: nowrap;
+  box-shadow: 0 6px 18px -6px rgba(10, 132, 255, 0.7);
+}
+@keyframes you-pulse {
+  0% { opacity: 0.9; transform: translate(-50%, -50%) scale(0.7); }
+  70% { opacity: 0; transform: translate(-50%, -50%) scale(1.25); }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(1.25); }
+}
+
+/* boarding stop pin + two-line card */
+.stop-marker { display: flex; align-items: flex-end; gap: 6px; }
+.stop-pin-dot {
+  width: 28px; height: 28px; border-radius: 50% 50% 50% 2px;
+  transform: rotate(-45deg);
+  display: inline-flex; align-items: center; justify-content: center;
+  background: linear-gradient(150deg, var(--brand-strong), var(--brand));
+  box-shadow: 0 8px 18px -6px rgba(0, 0, 0, 0.6);
+}
+.stop-pin-dot svg { transform: rotate(45deg); }
+.stop-card {
+  display: flex; flex-direction: column; gap: 1px;
+  padding: 6px 10px; margin-bottom: 4px;
+  border-radius: 12px;
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: blur(18px) saturate(150%); backdrop-filter: blur(18px) saturate(150%);
+  box-shadow: var(--shadow-card), var(--inner-top);
+  max-width: 168px;
+}
+.stop-card b { font-size: 12.5px; font-weight: 700; color: var(--text); line-height: 1.2;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stop-card i { font-size: 11px; font-style: normal; color: var(--text-2); line-height: 1.2; }
+
+/* selected vehicle route badge */
+.map-badge {
+  padding: 4px 11px; border-radius: var(--r-pill);
+  background: var(--badge, #ed1c24); /* text color set inline via readableOn() for AA */
+  font-size: 14px; font-weight: 800; letter-spacing: 0.01em; white-space: nowrap;
+  box-shadow: 0 8px 18px -6px rgba(0, 0, 0, 0.65);
+}
+
+/* fullscreen expand: card grows to viewport, sheet collapses to a bottom strip */
+.map-card.map-expanded {
+  position: fixed; left: 0; right: 0; top: 0; bottom: 76px; z-index: 60;
+  aspect-ratio: auto; border-radius: 0; margin: 0; box-shadow: none;
+}
+.map-is-expanded .app-main { overflow: hidden; }
+.map-is-expanded .tabbar { display: none; }
+.map-is-expanded .sheet {
+  position: fixed; left: 0; right: 0; bottom: 0; height: 76px; z-index: 61;
+  overflow: hidden; padding: var(--s3) var(--s4);
+  background: var(--bg);
+  box-shadow: 0 -12px 34px -22px rgba(0, 0, 0, 0.7);
 }
 .map-grid {
   position: absolute; inset: 0;

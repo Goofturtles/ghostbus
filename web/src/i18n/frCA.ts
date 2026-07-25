@@ -234,7 +234,16 @@ const frCA: Dict = {
   },
   map: {
     placeholder: 'La carte arrive dans la prochaine version',
-    placeholderAlt: 'Espace carte — arrive dans une version ultérieure',
+    placeholderAlt: 'Carte — chargement',
+    loading: 'Chargement de la carte…',
+    controls: 'Commandes de la carte',
+    expand: 'Agrandir la carte en plein écran',
+    collapse: 'Quitter le plein écran',
+    you: 'Vous',
+    youWalk: 'Vous · {{min}} min à pied',
+    srAlt: 'Carte en direct du transport à proximité et de l’arrêt d’embarquement {{stop}}. Véhicules visibles : {{count}}.',
+    tilesUnavailable: 'Tuiles de carte indisponibles — affichage en liste seulement.',
+    selectedVehicle: 'Ligne {{route}} sélectionnée.',
   },
   plan: {
     title: 'Planifier un trajet',

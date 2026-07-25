@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, lazy, Suspense } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useStore } from './store';
 import { useLive } from './hooks/useLive';
@@ -8,15 +8,19 @@ import { NearbyPanel } from './components/NearbyPanel';
 import { SettingsSheet } from './components/SettingsSheet';
 import { RouteIcon, BookmarkIcon, BellIcon, LayersIcon } from './components/icons';
 
-/** Honest map placeholder — Phase 4 fills this slot. Calm, not apologetic. */
-function MapCard() {
+// The real map (maplibre-gl) is code-split so it never lands in the initial JS
+// budget — it loads after first paint. The styled placeholder is the fallback.
+const MapCard = lazy(() => import('./map/MapCard'));
+
+/** Styled placeholder shown while the map chunk loads (and if it fails to). */
+function MapPlaceholder() {
   const { t } = useTranslation();
   return (
     <div className="map-card" role="img" aria-label={t('map.placeholderAlt')}>
       <div className="map-grid" aria-hidden />
       <div className="map-placeholder">
         <span className="map-glyph" aria-hidden><LayersIcon width={22} height={22} /></span>
-        <span className="map-note">{t('map.placeholder')}</span>
+        <span className="map-note">{t('map.loading')}</span>
       </div>
     </div>
   );
@@ -39,6 +43,7 @@ export default function App() {
   const { t } = useTranslation();
   const tab = useStore((s) => s.tab);
   const setTab = useStore((s) => s.setTab);
+  const mapExpanded = useStore((s) => s.mapExpanded);
   const start = useLive((s) => s.start);
 
   useEffect(() => start(), [start]);
@@ -46,7 +51,7 @@ export default function App() {
   const openRoute = () => setTab('plan');
 
   return (
-    <div className="app">
+    <div className={`app ${mapExpanded ? 'map-is-expanded' : ''}`}>
       <h1 className="sr-only">{t('brand.ghost')}{t('brand.bus')} — {t('tagline')}</h1>
       <div className="only-desktop"><TopBar /></div>
       <div className="only-mobile"><MobileTopStrip /></div>
@@ -55,7 +60,9 @@ export default function App() {
         <div className="app-col">
           {tab === 'nearby' && (
             <div className="reveal">
-              <MapCard />
+              <Suspense fallback={<MapPlaceholder />}>
+                <MapCard />
+              </Suspense>
               <div className="sheet">
                 <NearbyPanel onOpen={openRoute} />
               </div>

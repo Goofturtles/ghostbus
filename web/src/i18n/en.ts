@@ -232,7 +232,16 @@ const en = {
   },
   map: {
     placeholder: 'Map arrives in the next build',
-    placeholderAlt: 'Map placeholder — arrives in a later build',
+    placeholderAlt: 'Map — loading',
+    loading: 'Loading map…',
+    controls: 'Map controls',
+    expand: 'Expand map to full screen',
+    collapse: 'Exit full screen',
+    you: 'You',
+    youWalk: 'You · {{min}} min walk',
+    srAlt: 'Live map of nearby transit and the boarding stop {{stop}}. Vehicles in view: {{count}}.',
+    tilesUnavailable: 'Map tiles unavailable — showing list only.',
+    selectedVehicle: 'Selected route {{route}}.',
   },
   plan: {
     title: 'Plan a trip',

@@ -234,7 +234,16 @@ const es: Dict = {
   },
   map: {
     placeholder: 'El mapa llega en la próxima versión',
-    placeholderAlt: 'Espacio para el mapa — llega en una versión posterior',
+    placeholderAlt: 'Mapa — cargando',
+    loading: 'Cargando el mapa…',
+    controls: 'Controles del mapa',
+    expand: 'Ampliar el mapa a pantalla completa',
+    collapse: 'Salir de pantalla completa',
+    you: 'Tú',
+    youWalk: 'Tú · {{min}} min a pie',
+    srAlt: 'Mapa en vivo del tránsito cercano y la parada de embarque {{stop}}. Vehículos a la vista: {{count}}.',
+    tilesUnavailable: 'Teselas del mapa no disponibles — mostrando solo la lista.',
+    selectedVehicle: 'Ruta {{route}} seleccionada.',
   },
   plan: {
     title: 'Planificar un viaje',

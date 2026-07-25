@@ -24,6 +24,7 @@ import { torontoDay, torontoMidnightEpoch, hourOfWeek } from './tz.ts';
 import type {
   HealthResponse, VehiclesResponse, VehicleDto, StopsResponse, StopDto,
   ArrivalsResponse, DepartureDto, StatsResponse, FeedId,
+  RouteShapeResponse, RouteStopDto,
 } from '../../shared/types.ts';
 
 const AGENCY = 'ttc';
@@ -62,6 +63,30 @@ function haversineM(lat1: number, lon1: number, lat2: number, lon2: number): num
   const dLon = (lon2 - lon1) * Math.PI / 180;
   const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
   return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+
+/** Douglas–Peucker on [lon, lat] points. epsilon in degrees (~1e-4 ≈ 11 m).
+ *  Keeps the route line faithful to the streets while shrinking the payload. */
+function simplify(pts: [number, number][], epsilon: number): [number, number][] {
+  if (pts.length <= 2) return pts;
+  let maxD = 0, idx = 0;
+  const [ax, ay] = pts[0];
+  const [bx, by] = pts[pts.length - 1];
+  const dx = bx - ax, dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const [px, py] = pts[i];
+    // perpendicular distance of p from segment a→b (planar; fine at city scale)
+    const t = len2 === 0 ? 0 : ((px - ax) * dx + (py - ay) * dy) / len2;
+    const cx = ax + Math.max(0, Math.min(1, t)) * dx;
+    const cy = ay + Math.max(0, Math.min(1, t)) * dy;
+    const d = Math.hypot(px - cx, py - cy);
+    if (d > maxD) { maxD = d; idx = i; }
+  }
+  if (maxD <= epsilon) return [pts[0], pts[pts.length - 1]];
+  const left = simplify(pts.slice(0, idx + 1), epsilon);
+  const right = simplify(pts.slice(idx), epsilon);
+  return left.slice(0, -1).concat(right);
 }
 
 export interface BuildApiOptions { db: Db; poller: PollerHandle }
@@ -295,6 +320,62 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       lat: stopRow.lat == null ? null : Number(stopRow.lat), lon: stopRow.lon == null ? null : Number(stopRow.lon),
       wheelchairBoarding: stopRow.wheelchair_boarding == null ? null : Number(stopRow.wheelchair_boarding),
       serverNowMs: now, atMs, windowMinutes: windowMin, departures,
+    };
+    return reply.send(body);
+  });
+
+  // ---------- /api/routes/:routeId/shape?dir= ----------
+  // The route's most representative shape (the shape_id used by the most trips for
+  // that route/direction) as a simplified polyline, plus the real ordered stops of a
+  // representative trip on it. Powers the red active-route line + intermediate dots.
+  app.get<{ Params: { routeId: string } }>('/api/routes/:routeId/shape', async (req, reply) => {
+    const routeId = req.params.routeId;
+    if (!routeId || routeId.length > Q_MAX_LEN) return bad(reply, 'invalid route id');
+    const q = req.query as Record<string, string | undefined>;
+    let dir: number | null = null;
+    if (q.dir != null && q.dir.trim() !== '') {
+      if (q.dir !== '0' && q.dir !== '1') return bad(reply, 'dir must be 0 or 1');
+      dir = Number(q.dir);
+    }
+
+    // Most representative (shape_id, direction) for this route: parameterized, dir optional.
+    const repParams: unknown[] = [AGENCY, routeId];
+    let dirClause = '';
+    if (dir != null) { dirClause = ' AND direction_id = $3'; repParams.push(dir); }
+    const rep = (await db.query<{ shape_id: string; direction_id: number | null; n: number }>(
+      `SELECT shape_id, direction_id, COUNT(*)::int AS n FROM trips
+       WHERE agency=$1 AND route_id=$2 AND shape_id IS NOT NULL${dirClause}
+       GROUP BY shape_id, direction_id ORDER BY n DESC LIMIT 1`, repParams)).rows[0];
+    if (!rep) return reply.code(404).send({ error: 'no shape for route' });
+
+    const shapeRow = (await db.query<{ points: unknown }>(
+      'SELECT points FROM shapes WHERE agency=$1 AND shape_id=$2', [AGENCY, rep.shape_id])).rows[0];
+    if (!shapeRow) return reply.code(404).send({ error: 'shape not found' });
+    // points stored as [lat, lon][] (JSONB); pg returns it parsed, PGlite may return text.
+    const raw = (typeof shapeRow.points === 'string' ? JSON.parse(shapeRow.points) : shapeRow.points) as [number, number][];
+    const lonLat: [number, number][] = raw.map(([lat, lon]) => [lon, lat]);
+    const coordinates = simplify(lonLat, 1.5e-5); // ~1.7 m — trims collinear runs, keeps every curve
+
+    // A representative trip on that exact shape → its real ordered stops.
+    const repDir = rep.direction_id;
+    const tripRow = (await db.query<{ trip_id: string }>(
+      `SELECT trip_id FROM trips WHERE agency=$1 AND route_id=$2 AND shape_id=$3
+       ${repDir == null ? 'AND direction_id IS NULL' : 'AND direction_id=$4'} LIMIT 1`,
+      repDir == null ? [AGENCY, routeId, rep.shape_id] : [AGENCY, routeId, rep.shape_id, repDir])).rows[0];
+    const stops: RouteStopDto[] = [];
+    if (tripRow) {
+      for (const s of (await db.query<{ stop_id: string; name: string | null; lat: number | null; lon: number | null }>(
+        `SELECT s.stop_id, s.name, s.lat, s.lon FROM stop_times st
+         JOIN stops s ON s.agency=st.agency AND s.stop_id=st.stop_id
+         WHERE st.agency=$1 AND st.trip_id=$2 ORDER BY st.stop_sequence`, [AGENCY, tripRow.trip_id])).rows) {
+        if (s.lat == null || s.lon == null) continue;
+        stops.push({ stopId: s.stop_id, name: s.name, lat: Number(s.lat), lon: Number(s.lon) });
+      }
+    }
+
+    const body: RouteShapeResponse = {
+      routeId, directionId: rep.direction_id == null ? null : Number(rep.direction_id),
+      shapeId: rep.shape_id, color: colorFor(routeMeta.get(routeId)), coordinates, stops,
     };
     return reply.send(body);
   });
