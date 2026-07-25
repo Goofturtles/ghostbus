@@ -1,0 +1,163 @@
+{
+  "mobile-dark": {
+    "appOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "mapOverlap": {
+      "markers": [
+        ".you-beacon",
+        ".stop-marker",
+        ".map-controls",
+        ".maplibregl-ctrl-attrib"
+      ],
+      "collisions": [],
+      "spill": [],
+      "attributionVisible": true
+    },
+    "clipped": [],
+    "diag": {
+      "pitch": 58,
+      "bearing": -18,
+      "zoom": 15.4,
+      "voxel": true,
+      "trees": true,
+      "treeCount": 103,
+      "blockCount": 83,
+      "routePts": 3,
+      "roadLabels": [
+        "Adelaide Street West",
+        "Spadina Avenue",
+        "Beverley Street"
+      ],
+      "blockers": true,
+      "order": "bg,landcover,park,water,waterway,building,rail,road-casing,road-minor,road-med,road-major,boundary,voxel-tree-body,voxel-tree-cap,voxel-body,voxel-cap,label-road,label-place,label-water,walk-line,route-casing,route-line,route-stops,vehicles,marker-blockers"
+    },
+    "consoleErrors": []
+  },
+  "mobile-light": {
+    "appOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "mapOverlap": {
+      "markers": [
+        ".you-beacon",
+        ".stop-marker",
+        ".map-controls",
+        ".maplibregl-ctrl-attrib"
+      ],
+      "collisions": [],
+      "spill": [],
+      "attributionVisible": true
+    },
+    "clipped": [],
+    "diag": {
+      "pitch": 58,
+      "bearing": -18,
+      "zoom": 15.4,
+      "voxel": true,
+      "trees": true,
+      "treeCount": 103,
+      "blockCount": 83,
+      "routePts": 3,
+      "roadLabels": [
+        "Adelaide Street West",
+        "Spadina Avenue",
+        "Beverley Street"
+      ],
+      "blockers": true,
+      "order": "bg,landcover,park,water,waterway,building,rail,road-casing,road-minor,road-med,road-major,boundary,voxel-tree-body,voxel-tree-cap,voxel-body,voxel-cap,label-road,label-place,label-water,walk-line,route-casing,route-line,route-stops,vehicles,marker-blockers"
+    },
+    "consoleErrors": []
+  },
+  "desktop-dark": {
+    "appOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "mapOverlap": {
+      "markers": [
+        ".you-beacon",
+        ".stop-marker",
+        ".walk-node",
+        ".map-controls",
+        ".maplibregl-ctrl-attrib"
+      ],
+      "collisions": [],
+      "spill": [],
+      "attributionVisible": true
+    },
+    "clipped": [],
+    "diag": {
+      "pitch": 58,
+      "bearing": -18,
+      "zoom": 16.1,
+      "voxel": true,
+      "trees": true,
+      "treeCount": 215,
+      "blockCount": 177,
+      "routePts": 4,
+      "roadLabels": [
+        "College Street",
+        "Bathurst Street",
+        "King Street West",
+        "Queen Street West",
+        "Adelaide Street West",
+        "Dundas Street West",
+        "Spadina Avenue",
+        "McCaul Street",
+        "Peter Street",
+        "Beverley Street",
+        "Front Street West"
+      ],
+      "blockers": true,
+      "order": "bg,landcover,park,water,waterway,building,rail,road-casing,road-minor,road-med,road-major,boundary,voxel-tree-body,voxel-tree-cap,voxel-body,voxel-cap,label-road,label-place,label-water,walk-line,route-casing,route-line,route-stops,vehicles,marker-blockers"
+    },
+    "consoleErrors": []
+  },
+  "desktop-light": {
+    "appOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "mapOverlap": {
+      "markers": [
+        ".you-beacon",
+        ".map-controls",
+        ".maplibregl-ctrl-attrib"
+      ],
+      "collisions": [],
+      "spill": [],
+      "attributionVisible": true
+    },
+    "clipped": [],
+    "diag": {
+      "pitch": 0,
+      "bearing": 0,
+      "zoom": 16.6,
+      "voxel": false,
+      "trees": false,
+      "treeCount": 0,
+      "blockCount": 0,
+      "routePts": 0,
+      "roadLabels": [],
+      "blockers": false,
+      "order": "bg,landcover,park,water,waterway,building,rail,road-casing,road-minor,road-med,road-major,boundary,label-road,label-place,label-water"
+    },
+    "consoleErrors": [
+      "Failed to load resource: the server responded with a status of 429 (Too Many Requests)",
+      "Failed to load resource: the server responded with a status of 429 (Too Many Requests)",
+      "Failed to load resource: the server responded with a status of 429 (Too Many Requests)",
+      "Failed to load resource: the server responded with a status of 429 (Too Many Requests)",
+      "Failed to load resource: the server responded with a status of 429 (Too Many Requests)",
+      "Failed to load resource: the server responded with a status of 429 (Too Many Requests)",
+      "Error: The layer 'voxel-tree-body' does not exist in the map's style and cannot be queried for features.\n    at Jp.queryRenderedFeatures (http://localhost:8811/assets/MapCard-B_1iRTTu.js:806:96311)\n    at ID.queryRendere",
+      "Error: The layer 'voxel-body' does not exist in the map's style and cannot be queried for features.\n    at Jp.queryRenderedFeatures (http://localhost:8811/assets/MapCard-B_1iRTTu.js:806:96311)\n    at ID.queryRenderedFeat"
+    ]
+  }
+}

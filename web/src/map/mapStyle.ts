@@ -34,42 +34,65 @@ interface Palette {
   label: string;
   labelHalo: string;
   waterLabel: string;
+  /** Street names painted along the roads — brighter than a place label, because
+   *  the reference makes them a primary read of the map. */
+  roadLabel: string;
+  roadLabelHalo: string;
 }
 
+// MEASURED off ghostbus-design-reference.png. Two passes were needed here, and the
+// second one reversed the first:
+//   pass 1 read "streets one step lighter than the ground" (§C) literally, dropped
+//     the roads to #1A2340 on a #0C1229 ground, and the grid vanished — the render
+//     came back as one continuous mass of rooftops with no sense of place.
+//   pass 2 (this one) is what the reference actually does: its GROUND is the darkest
+//     surface in the frame (#0b142b, and darker still in the shadows between blocks)
+//     and its streets are a clearly readable lavender-slate lattice a good three
+//     steps above it. The street grid is a primary read of the picture, not a
+//     whisper — the "one step lighter" phrasing is about hue family, not contrast.
 const DARK: Palette = {
-  ground: '#0B0E1A',
+  ground: '#090E22',
   water: '#0A1330',
   waterway: '#122046',
-  park: '#121C22',
-  grass: '#131A26',
-  building: '#191A30',
-  roadMinor: '#2A2A48',
-  roadMed: '#343357',
-  roadMajor: '#403D64',
-  roadCasing: '#141628',
-  rail: '#242440',
+  park: '#14211C',
+  grass: '#16231C',
+  building: '#1B203F',
+  roadMinor: '#232C4C',
+  roadMed: '#2C3760',
+  roadMajor: '#3A4570',
+  roadCasing: '#0B1024',
+  rail: '#1E2440',
   boundary: 'rgba(180,184,220,0.12)',
   label: '#AAB0C4',
-  labelHalo: '#0B0E1A',
+  labelHalo: '#0A1024',
   waterLabel: '#6E7BAE',
+  roadLabel: '#F2F0FA',
+  roadLabelHalo: 'rgba(9,11,24,0.92)',
 };
 
+// The daylight reference is a warm near-white city, not a blue-grey one: its
+// dominant surface is #f3f0ea (roofs AND roads at 30% of all pixels), its walls
+// #d7d3cd/#c4c0bb, and the only saturated things in frame are the trees and the
+// red route. Ground is set one step BELOW the roofs so blocks still separate from
+// the plaza they stand on, and roads one step above it so they read as ribbons.
 const LIGHT: Palette = {
-  ground: '#C9CEDE',
-  water: '#AEC1E6',
-  waterway: '#9DB2DB',
-  park: '#C4D3BE',
-  grass: '#CBD6C6',
-  building: '#D3CFE2',
-  roadMinor: '#ECEDF5',
-  roadMed: '#F6F6FB',
+  ground: '#E3DED7',
+  water: '#BCD0EA',
+  waterway: '#A8BEDD',
+  park: '#CFDCC4',
+  grass: '#D9E0CC',
+  building: '#E7E4DE',
+  roadMinor: '#F1EFEB',
+  roadMed: '#F8F6F3',
   roadMajor: '#FFFFFF',
-  roadCasing: '#B4BAD0',
-  rail: '#BFC3D6',
+  roadCasing: '#CDC7BF',
+  rail: '#C8C3BB',
   boundary: 'rgba(70,74,110,0.24)',
   label: '#3A3F52',
-  labelHalo: '#EEF0F5',
+  labelHalo: '#F5F2EC',
   waterLabel: '#5F73A6',
+  roadLabel: '#242838',
+  roadLabelHalo: 'rgba(255,255,255,0.94)',
 };
 
 const MAJOR = ['motorway', 'trunk', 'primary'];
@@ -162,17 +185,53 @@ export function buildStyle(theme: MapTheme): StyleSpecification {
       },
 
       // --- labels (minimal) ---
+      // Street names lie ALONG the road, rotated to the road angle, exactly as the
+      // reference shows "King St West" / "Wellington St W" running down their
+      // streets. `symbol-placement: line` defaults both rotation- and
+      // pitch-alignment to `map`, so the type is painted onto the ground plane and
+      // tips with the diorama camera instead of floating flat over it.
+      //
+      // Density is held DOWN on purpose (§D: "at phone size keep at most ~3
+      // floating labels visible at once"): major/secondary roads only, a wide
+      // `symbol-spacing` so one street gets one name rather than a repeating
+      // ribbon, and generous `text-padding` so MapLibre's own collision index
+      // keeps names off each other and off the marker blockers MapCard registers.
       {
-        id: 'label-road', type: 'symbol', source: 'omt', 'source-layer': 'transportation_name', minzoom: 15,
+        id: 'label-road', type: 'symbol', source: 'omt', 'source-layer': 'transportation_name', minzoom: 14.5,
         filter: ['in', ['get', 'class'], ['literal', [...MAJOR, ...MED]]],
         layout: {
           'text-field': ['coalesce', ['get', 'name:en'], ['get', 'name']],
-          'text-font': ['Noto Sans Regular'], 'text-size': 11, 'symbol-placement': 'line',
+          'text-font': ['Noto Sans Bold'],
+          'text-size': ['interpolate', ['linear'], ['zoom'], 14.5, 11, 17, 13.5],
+          'text-letter-spacing': 0.02,
+          'symbol-placement': 'line',
+          // The reference shows TWO street names in a 715px frame. `symbol-spacing`
+          // only dedupes repeats along one feature — separate OSM ways with the same
+          // name are separate features, so a wide `text-padding` is what actually
+          // thins them: it inflates each label's collision box until neighbours (and
+          // the marker blockers MapCard publishes) suppress each other.
+          'symbol-spacing': 900,
+          'text-padding': 34,
+          'text-max-angle': 30,
         },
-        paint: { 'text-color': p.label, 'text-halo-color': p.labelHalo, 'text-halo-width': 1.2, 'text-opacity': 0.72 },
+        paint: {
+          // Near-white on dark (the reference), near-black on the light map — a
+          // street name is navigational, so it gets real contrast, not a whisper.
+          'text-color': p.roadLabel,
+          'text-halo-color': p.roadLabelHalo,
+          'text-halo-width': 1.6,
+          'text-halo-blur': 0.4,
+          'text-opacity': 0.95,
+        },
       },
+      // Neighbourhood/place names are an OVERVIEW label class, and the reference's
+      // map has none of them — its only type is the street names running along the
+      // roads. Left on, "Fashion District" and "Queen West" landed on top of the
+      // stop pin and the route at the diorama zoom, which is exactly the overlap the
+      // user complained about. Capped so they do their job when the map is zoomed
+      // out and get out of the way when it is not.
       {
-        id: 'label-place', type: 'symbol', source: 'omt', 'source-layer': 'place',
+        id: 'label-place', type: 'symbol', source: 'omt', 'source-layer': 'place', maxzoom: 14.5,
         filter: ['in', ['get', 'class'], ['literal', ['city', 'town', 'suburb', 'neighbourhood', 'village']]],
         layout: {
           'text-field': ['coalesce', ['get', 'name:en'], ['get', 'name']],

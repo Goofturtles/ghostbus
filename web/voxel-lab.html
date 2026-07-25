@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>GhostBus — voxel city lab</title>
+    <!--
+      DEV-ONLY prototype harness for web/src/map/voxelCity.ts.
+
+      It is NOT a Vite build entry (Vite only builds web/index.html), so it adds
+      exactly 0 bytes to the shipped bundle. It exists so the voxel city can be
+      iterated on and screenshotted WITHOUT touching MapCard.tsx.
+
+      It deliberately re-creates MapCard's overlay layer set with the SAME layer
+      ids (walk-line / route-line / route-stops / vehicles) so the extrusion
+      insertion order is exercised exactly as it will be in production.
+
+      Query params: ?theme=dark|light  ?focus=1  ?bare=1
+                    ?pitch=  ?bearing=  ?zoom=  ?lat=  ?lon=  ?novoxel=1
+    -->
+    <link rel="stylesheet" href="/src/styles/tokens.css" />
+    <link rel="stylesheet" href="/src/styles/global.css" />
+    <link rel="stylesheet" href="/src/styles/app.css" />
+    <style>
+      html, body { height: 100%; margin: 0; background: var(--bg); }
+      #lab { position: fixed; inset: 0; }
+      #map { position: absolute; inset: 0; }
+
+      /* ?card=1 — frame the map exactly as .map-card does in the shipped app
+         (5:4 on mobile, 16:9 from 900px up), so a screenshot is a true
+         apples-to-apples comparison against the reference render. */
+      #lab.card { display: grid; place-items: center; padding: 16px; }
+      #lab.card #map {
+        position: relative; inset: auto; width: 100%; aspect-ratio: 5 / 4;
+        border-radius: var(--r-lg); overflow: hidden; background: var(--map-ground);
+        box-shadow: var(--shadow-card);
+      }
+      @media (min-width: 900px) { #lab.card #map { aspect-ratio: 16 / 9; } }
+
+      /* Mirrors the shipped map card's chrome closely enough to judge the look. */
+      #panel {
+        position: absolute; left: 10px; top: 10px; z-index: 5;
+        display: grid; gap: 6px; padding: 10px 12px;
+        font: 12px/1.4 var(--font); color: var(--text);
+        background: var(--glass-strong); border-radius: var(--r-md);
+        box-shadow: var(--shadow-card); backdrop-filter: blur(18px);
+        max-width: 232px;
+      }
+      #panel.hidden { display: none; }
+      #panel row, #panel .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+      #panel button {
+        font: 600 11px/1 var(--font); color: var(--text);
+        background: var(--surface-2); border: 0; border-radius: 999px;
+        padding: 6px 10px; cursor: pointer;
+      }
+      #panel button[data-on="1"] { background: var(--brand); color: #fff; }
+      #panel input[type="range"] { width: 100%; }
+      #fps { font-variant-numeric: tabular-nums; color: var(--text-2); }
+      #fps b { color: var(--text); }
+    </style>
+  </head>
+  <body>
+    <div id="lab">
+      <div id="map"></div>
+      <div id="panel">
+        <div class="row">
+          <button id="b-theme">theme: dark</button>
+          <button id="b-voxel" data-on="1">voxel</button>
+        </div>
+        <div class="row">
+          <button id="b-focus">route focus</button>
+          <button id="b-quality">quality: full</button>
+        </div>
+        <label>pitch <span id="v-pitch"></span><input id="r-pitch" type="range" min="0" max="70" step="1" /></label>
+        <label>bearing <span id="v-bearing"></span><input id="r-bearing" type="range" min="-90" max="90" step="1" /></label>
+        <label>zoom <span id="v-zoom"></span><input id="r-zoom" type="range" min="13" max="18" step="0.1" /></label>
+        <div id="fps">fps —</div>
+      </div>
+    </div>
+    <script type="module" src="/src/map/voxelLab.ts"></script>
+  </body>
+</html>

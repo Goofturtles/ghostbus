@@ -1,0 +1,48 @@
+{
+  "desktop-light": {
+    "appOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "mapOverlap": {
+      "markers": [
+        ".you-beacon",
+        ".stop-marker",
+        ".walk-node",
+        ".map-controls",
+        ".maplibregl-ctrl-attrib"
+      ],
+      "collisions": [],
+      "spill": [],
+      "attributionVisible": true
+    },
+    "clipped": [],
+    "diag": {
+      "pitch": 58,
+      "bearing": -18,
+      "zoom": 16.1,
+      "voxel": true,
+      "trees": true,
+      "treeCount": 215,
+      "blockCount": 177,
+      "routePts": 4,
+      "roadLabels": [
+        "College Street",
+        "Bathurst Street",
+        "King Street West",
+        "Queen Street West",
+        "Adelaide Street West",
+        "Dundas Street West",
+        "Spadina Avenue",
+        "McCaul Street",
+        "Peter Street",
+        "Beverley Street",
+        "Front Street West"
+      ],
+      "blockers": true,
+      "order": "bg,landcover,park,water,waterway,building,rail,road-casing,road-minor,road-med,road-major,boundary,voxel-tree-body,voxel-tree-cap,voxel-body,voxel-cap,label-road,label-place,label-water,walk-line,route-casing,route-line,route-stops,vehicles,marker-blockers"
+    },
+    "consoleErrors": []
+  }
+}
