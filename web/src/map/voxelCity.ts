@@ -64,11 +64,10 @@ const LABEL_ABOVE_LAYER_IDS = ['vehicles', 'marker-blockers'];
 
 // ---------------------------------------------------------------- geometry
 
-/** Metre step every roof snaps to. ~3 storeys — chunky enough to read as stacked
- *  blocks at z16 without turning a row of houses into a wall. */
 /**
- * RAISED 22 -> 31, and this is the geometry half of the "blocks stop reading as
- * cubes" fix. The arithmetic, because it is worth writing down once:
+ * Metre step every roof snaps to. RAISED 22 -> 24, which is the geometry half of
+ * the "blocks stop reading as cubes" fix. The arithmetic, because it is worth
+ * writing down once:
  *
  * At pitch p, a footprint of side s projects to a roof of area s²·cos(p) and two
  * visible walls of area 2·s·h·sin(p). So
@@ -78,21 +77,27 @@ const LABEL_ABOVE_LAYER_IDS = ['vehicles', 'marker-blockers'];
  * Downtown Toronto's OSM footprints are whole-block developments — s ≈ 100 m — and
  * at 22 m with the zoom gain that is h/s ≈ 0.28, which at pitch 50 predicts a
  * wall:roof of 0.67. Measured on the shipped build: 18% wall against 30% roof, a
- * ratio of 0.6. The model is right, so it can be inverted: the reference reads
- * around 1.2-1.4, and 31 m at pitch 56 gives 2 · 0.40 · 1.48 = 1.19.
+ * ratio of 0.6, against a reference that reads around 1.2. The model is right, so
+ * it can be inverted.
+ *
+ * A first attempt inverted it too hard — 31 m at pitch 56 — and the render came
+ * back a canyon of towers, which is the failure the HEIGHT_SQRT_K note below has
+ * warned about twice. 24 m at pitch 52 is where the top faces still dominate.
+ * The rest of the ratio is bought from `MIN_HEIGHT_BY_ZOOM` instead, by letting
+ * the smaller real buildings back into frame so `s` falls.
  *
  * Note what this does NOT do: it does not add, subdivide or merge a single
  * footprint. Every block is still one real OSM building; it is the documented
  * decorative height distortion (see HEIGHT_SQRT_K) turned up, and it converts
- * GROUND pixels into WALL pixels, which is precisely the band the reference has
- * 27.7% of its frame in and we had 12.3%.
+ * GROUND pixels into WALL pixels, which is the band the reference has 27.7% of
+ * its frame in and we had 12.3%.
  */
-export const HEIGHT_STEP_M = 31;
+export const HEIGHT_STEP_M = 24;
 /** Thickness of the brighter cap band at the top of each block. Constant, so with
  *  quantized roofs every cap in the city sits on one shared horizontal lattice —
  *  ~20% of a one-course block, so the lit top course reads at a glance. Scaled
  *  with HEIGHT_STEP_M so that fraction is unchanged. */
-export const CAP_BAND_M = 6.2;
+export const CAP_BAND_M = 4.8;
 /** Buildings with no OSM height at all. */
 export const DEFAULT_HEIGHT_M = 8;
 /**
@@ -110,25 +115,24 @@ export const DEFAULT_HEIGHT_M = 8;
  * towers" instead of a diorama, because at pitch 58 a foreground block's wall grows
  * much faster on screen than its roof does. The reference's cubes show a top face
  * roughly twice the height of their visible walls, and these values reproduce that:
- * most of the city is one 22 m course, with a scattering of two.
+ * most of the city is one course, with a scattering of two.
+ *
+ * NUDGED UP with HEIGHT_STEP_M (3.0 -> 3.6, base 4 -> 5). Against the real
+ * render_height values in these tiles (4, 5, 8, 11, 30, 55, 132, 174 m) and a 24 m
+ * step that quantizes to 1 / 1 / 1 / 1 / 1 / 2 / 2 / 2 courses. Leaving k at 3.0
+ * under the taller step would have collapsed the city onto a single course and
+ * lost the stepped skyline the reference shows.
  *
  * This is a deliberate, documented distortion of building height — a decorative
  * layer. No transit datum anywhere in the app is styled this way.
  */
-/**
- * RAISED with HEIGHT_STEP_M. Against the real render_height values in these tiles
- * (4, 5, 8, 11, 30, 55, 132, 174 m) and a 31 m step, base 5 / k 4.6 quantizes to
- * 1 / 1 / 1 / 1 / 1 / 2 / 2 / 3 courses. Keeping k at 3.0 under the taller step
- * would have collapsed the whole city onto a single course and lost the stepped
- * skyline the reference shows.
- */
 export const HEIGHT_BASE_M = 5;
-export const HEIGHT_SQRT_K = 4.6;
+export const HEIGHT_SQRT_K = 3.6;
 /** Per-block sub-step offset that separates abutting footprints. See the long note
- *  in `quantizedHeight`, which is where this earns its keep. Raised with the step
- *  so it stays ~20% of a course: it is the only tool MapLibre gives for stopping
+ *  in `quantizedHeight`, which is where this earns its keep. Scaled with the step
+ *  so it stays ~5% of a course: it is the only tool MapLibre gives for stopping
  *  two abutting whole-block footprints fusing into one unmodulated mass. */
-export const SEPARATION_M = 1.6;
+export const SEPARATION_M = 1.3;
 /** Below this the city is a texture, not architecture: not worth the draw calls. */
 export const VOXEL_MIN_ZOOM = 14.6;
 /**
@@ -154,20 +158,18 @@ export const VOXEL_MIN_ZOOM = 14.6;
  * (the thing that makes the reference read as separate chunky blocks rather than
  * one continuous mass) are visible everywhere instead of only near the horizon.
  *
- * RAISED AGAIN, 50 -> 56, and this one is arithmetic rather than judgement. At
- * pitch p a block's wall:roof area ratio is 2·(h/s)·tan(p) (see HEIGHT_STEP_M).
- * Measured on the shipped 50-degree build the frame was 30% roof against 18%
- * wall — inverted against the reference, which shows mostly WALL, and the reason
- * the blocks stopped reading as cubes and started reading as flat plates. tan
- * climbs 1.19 -> 1.48 between 50 and 56, and cos falls 0.643 -> 0.559, so the
- * same city gains a fifth more wall and loses a seventh of its roof for free.
+ * RAISED, 50 -> 52, and this one is arithmetic rather than judgement. At pitch p a
+ * block's wall:roof area ratio is 2·(h/s)·tan(p) (see HEIGHT_STEP_M). Measured on
+ * the shipped 50-degree build the frame was 30% roof against 18% wall — inverted
+ * against the reference, which shows mostly WALL, and the reason the blocks
+ * stopped reading as cubes and started reading as flat plates.
  *
- * 56, not the 58 this comment previously rejected: the objection to 58 was the
- * severity of the perspective gradient across the frame, and that objection was
- * correct. 56 is the far edge of where the top faces still dominate and the grid
- * still reads as a lattice.
+ * 56 was tried first and rendered as the canyon this comment has twice warned
+ * about; 52 is a small, safe step that leaves the near-isometric read intact, and
+ * most of the ratio is bought from block height and the generalisation floor
+ * instead. Everything the paragraphs above say about 58 still stands.
  */
-export const VOXEL_PITCH = 56;
+export const VOXEL_PITCH = 52;
 /**
  * MapLibre's default `maxPitch` is 60 — any larger value passed to `setPitch` is
  * silently clamped, which makes a "steeper camera" change look like it did nothing.
@@ -212,23 +214,23 @@ export const VOXEL_DIORAMA_ZOOM = 16.6;
 const MIN_HEIGHT_BY_ZOOM: ExpressionSpecification = [
   'step', ['zoom'],
   22, // wide out: only substantial massing
-  // RAISED at the diorama zoom (was 8 m), and this is the single biggest lever on
-  // "chunkiness". Measured, not guessed: sweeping the floor over 8 / 12 / 16 / 20 /
-  // 26 / 34 m at the default framing and histogramming the rendered canvas against
-  // the reference's map region, the fraction of the frame occupied by lit roof
-  // faces falls 43% -> 39 -> 32 -> 29 -> 27, against a reference value of ~30%, and
-  // the dark ground/street fraction climbs 13% -> 26 -> 30 toward the reference's
-  // 22%. 16 m — about five storeys — is where both land closest while the block
-  // count stays high enough that the grid still reads as a city.
+  // LOWERED at the diorama zoom, 16 m -> 8 m, reversing an earlier pass.
   //
-  // What it removes is real, and is removed honestly: these are genuine OSM
-  // buildings, omitted at wide zoom the way every vector basemap omits its own
-  // small features, and every one of them is back by z17.4. Nothing is merged;
-  // no footprint is ever drawn that does not exist. The alternative lever — merging
-  // neighbouring footprints into one big "block" — would invent buildings, so it is
-  // not on the table however much closer to the reference it would look.
-  15.2, 16,
-  16.9, 10,
+  // That pass raised the floor to chase a brief that said our city read "finer
+  // grained and busier" than the reference. Measured, the opposite was true: at a
+  // 16 m floor our largest single connected same-tone face was 7.7% of the map
+  // frame against the reference's 0.4%, and mean local gradient over a
+  // size-normalised region was 2.2 against 3.8 — FEWER, LARGER, FLATTER faces, not
+  // more of them. Raising the floor was making the exact defect worse.
+  //
+  // Lowering it is also the more truthful direction: this is strictly LESS
+  // generalisation. These are genuine OSM buildings that were being omitted; every
+  // one of them is real, and letting the five-storey city back in is what puts the
+  // grid and the modulation back. Nothing is merged and no footprint is ever drawn
+  // that does not exist — merging neighbours into one big "block" would invent
+  // buildings, so it stays off the table however much closer it would look.
+  15.2, 8,
+  16.9, 4,
   17.4, 0, // close in, every building is back
 ];
 
@@ -333,23 +335,33 @@ const DARK: VoxelPalette = {
   // wall — the ratio a separate judge confirmed is already correct and must not be
   // churned. The 64-80 band comes down by making blocks TALLER (see HEIGHT_STEP_M)
   // so more of each one is wall, not by dimming the roofs.
-  wall: '#1b203f',
-  roof: '#454670',
-  // The blue-slate family (hue ~212) — roughly a third of the massing.
-  wallAlt: '#14213c',
-  roofAlt: '#384d6f',
+  // A SECOND correction, from measuring the render rather than the source values.
+  // Authoring the header's sampled faces literally (#1b203f / #454670) put 30.8% of
+  // the frame above luminance 80 against a reference 6.1%, and left a hole at 48-64
+  // (3.9% against 13.1%). The reason is the shader: MapLibre multiplies every
+  // authored colour by a per-face light factor that peaks above 1 on a roof, so a
+  // #454670 top renders as #484878 — brighter than the face that was sampled OFF a
+  // finished picture. The sampled values are the OUTPUT; these are the input that
+  // produces it. The 2.2x roof:wall ratio is preserved exactly.
+  wall: '#13162f',
+  roof: '#2e2e5e',
+  // The blue-slate family (hue ~212) — roughly a third of the massing, and the one
+  // that keeps the brightest roof, so the reference's scattering of pale tops lives
+  // here rather than across every block in the city.
+  wallAlt: '#0d1930',
+  roofAlt: '#29405c',
   // The violet accent (hue ~262). This is the "clear mauve accent blocks" the
   // reference reads with; brighter than the ordinary wall on purpose.
-  wallAlt2: '#332b52',
-  roofAlt2: '#574687',
+  wallAlt2: '#221a44',
+  roofAlt2: '#3a2c66',
   // DARK teal, not cyan. The reference's teal face measures #23383d: a shadow with
   // a hint of green in it, nothing more.
-  tealWall: '#20343a',
-  tealRoof: '#3d5f66',
-  roseWall: '#382340',
-  roseRoof: '#674669',
-  mutedWall: '#141a33',
-  mutedRoof: '#232a4a',
+  tealWall: '#12262a',
+  tealRoof: '#234249',
+  roseWall: '#2a1733',
+  roseRoof: '#4a2f52',
+  mutedWall: '#0f1329',
+  mutedRoof: '#1b2040',
   // Screen-anchored so the lit side never swings as the user pans — a diorama,
   // not a sun. Kept LOW on purpose: the cap layer already supplies the roof/wall
   // value split, and a strong light would blow the sunward wall brighter than the

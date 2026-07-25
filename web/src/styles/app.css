@@ -481,7 +481,13 @@
    fact's own nowrap box and can never be left dangling at the end of a line. */
 .stop-fact { white-space: nowrap; }
 .stop-fact + .stop-fact::before {
+  /* The separator is decorative — the markup it replaced carried `aria-hidden`, and
+     Chrome does expose generated content to the accessibility tree. The second
+     declaration gives it empty ALT text so a screen reader reads "Eastbound, Stop
+     4197" rather than "Eastbound middle dot Stop 4197"; browsers without the
+     `content / alt` syntax keep the first and lose nothing visually. */
   content: '·';
+  content: '·' / '';
   margin: 0 6px;
   color: var(--text-3);
 }
@@ -1298,7 +1304,11 @@
      What changes is that the column stops being SIZED by it: tighter type, tighter
      padding, and a hard cap. The ellipsis is a last-resort guard for the longest
      locale — it can only ever clip a button's own label, never a fact. */
-  .dep-action { max-width: 108px; min-width: 0; }
+  /* 122px, not 108: at 108 the honest "View route" label actually hit the ellipsis
+     and rendered "View ro…", and a clipped label is exactly the class of defect
+     this pass exists to remove. 122px still leaves the identity column the largest
+     of the three, which was the point. */
+  .dep-action { max-width: 122px; min-width: 0; }
   .dep-track {
     max-width: 100%;
     min-width: 0;
