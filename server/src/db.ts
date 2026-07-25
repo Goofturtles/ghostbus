@@ -104,8 +104,8 @@ function makePg(connectionString: string): Db {
   };
 }
 
-async function makePglite(): Promise<Db> {
-  const dataDir = process.env.PGLITE_DIR ?? join(ROOT, '.data', 'pglite');
+async function makePglite(dir?: string): Promise<Db> {
+  const dataDir = dir ?? process.env.PGLITE_DIR ?? join(ROOT, '.data', 'pglite');
   await mkdir(dataDir, { recursive: true });
   const client = new PGlite(dataDir);
   await client.waitReady;
@@ -175,6 +175,19 @@ async function runMigrations(db: Db): Promise<void> {
     });
     console.log(`[migrate] applied ${file} (${statements.length} statements)`);
   }
+}
+
+/**
+ * A standalone migrated PGlite database in `dir`.
+ *
+ * Deliberately does NOT consult DATABASE_URL or the shared singleton, so a test can
+ * never reach the production database however the environment is configured, and two
+ * fixtures in one process stay independent. Real Postgres, real migrations, no quota.
+ */
+export async function createPgliteDb(dir: string): Promise<Db> {
+  const db = await makePglite(dir);
+  await runMigrations(db);
+  return db;
 }
 
 let dbPromise: Promise<Db> | null = null;

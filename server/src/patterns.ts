@@ -661,9 +661,11 @@ export function unpackIndex(sealed: Buffer, expect: CacheExpectation): PatternIn
 // row is not even downloaded to be rejected.
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const CACHE_DIR = process.env.PATTERN_CACHE_DIR ?? join(__dirname, '..', '..', '.data', 'pattern-cache');
+/** Read per call rather than captured at import, so a test can point it at a temp dir. */
+const cacheDir = (): string =>
+  process.env.PATTERN_CACHE_DIR ?? join(__dirname, '..', '..', '.data', 'pattern-cache');
 const cacheFileFor = (agency: string, fingerprint: string): string =>
-  join(CACHE_DIR, `${agency}-${fingerprint}.gbpx`);
+  join(cacheDir(), `${agency}-${fingerprint}.gbpx`);
 
 async function readFileCache(agency: string, expect: CacheExpectation): Promise<PatternIndex | null> {
   try {
@@ -679,16 +681,16 @@ async function readFileCache(agency: string, expect: CacheExpectation): Promise<
 async function writeFileCache(agency: string, fingerprint: string, sealed: Buffer): Promise<void> {
   const target = cacheFileFor(agency, fingerprint);
   const tmp = `${target}.${process.pid}.tmp`;
-  await mkdir(CACHE_DIR, { recursive: true });
+  await mkdir(cacheDir(), { recursive: true });
   // Write-then-rename: a crash mid-write leaves a .tmp nobody looks for, never a truncated
   // file under the name a boot would trust.
   await writeFile(tmp, sealed);
   await rename(tmp, target);
   // One board is live at a time; older fingerprints for this agency are dead weight.
   try {
-    for (const f of await readdir(CACHE_DIR)) {
+    for (const f of await readdir(cacheDir())) {
       if (f.startsWith(`${agency}-`) && f.endsWith('.gbpx') && f !== `${agency}-${fingerprint}.gbpx`) {
-        await unlink(join(CACHE_DIR, f)).catch(() => {});
+        await unlink(join(cacheDir(), f)).catch(() => {});
       }
     }
   } catch { /* housekeeping only */ }
