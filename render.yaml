@@ -30,17 +30,28 @@ services:
     buildCommand: npm ci --include=dev && npm run build
     startCommand: npm start
 
-    # Fastify serves /api/health from the in-process poller — it answers as soon as
-    # the process is listening, so it is a real readiness signal rather than a stub.
+    # Do NOT set NPM_CONFIG_PRODUCTION=true or add a prune step: `npm start` is
+    # `node --import tsx ...`, so tsx must still be on disk at runtime even though it
+    # is declared as a devDependency. Pruning it produces "Cannot find module tsx".
+
+    # Liveness, deliberately NOT readiness. /api/health always returns HTTP 200 and
+    # reports upstream feed status in the body (`ok`, `feeds`, `dbDriver`,
+    # `boardCoverage`); it does not query Postgres. That is the right trade for a
+    # deploy gate — a TTC feed outage is not a reason to roll back our deploy — but it
+    # does mean a green health check is NOT proof the database is reachable or seeded.
+    # Check the body, not just the status code.
     healthCheckPath: /api/health
 
     envVars:
       # ---- secret: set in the Render dashboard, never committed ----
       # Neon connection string, e.g.
       #   postgresql://USER:PASSWORD@ep-xxxx.us-east-2.aws.neon.tech/ghostbus?sslmode=require
-      # With this UNSET the app silently falls back to embedded PGlite on the
-      # container's ephemeral disk, which is wiped on every deploy — so on Render
-      # this variable is effectively required.
+      #
+      # WARNING — `sync: false` prompts for a value, it does not enforce one. If you
+      # skip the prompt, server/src/db.ts falls back to embedded PGlite on the
+      # container's ephemeral disk: the service boots, migrations run against an empty
+      # file, the health check goes green, and every deploy silently wipes the data.
+      # After deploying, confirm `dbDriver` is "pg" (not "pglite") in /api/health.
       - key: DATABASE_URL
         sync: false
 
