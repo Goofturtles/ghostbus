@@ -86,3 +86,40 @@ export function torontoDay(epochMs: number): { ymd: number; dow: number } {
   const p = torontoParts(epochMs);
   return { ymd: p.year * 10000 + p.month * 100 + p.day, dow: p.dow };
 }
+
+// ---------- GTFS service-day anchoring ----------
+//
+// GTFS defines its times against NOON MINUS 12 HOURS on the service day, not against
+// local midnight. The distinction is invisible for 363 days a year and worth exactly
+// one hour on the other two: anchoring at midnight renders a 9h GTFS time as 08:00 wall
+// clock on 2026-11-01 (fall back) and 10:00 on 2027-03-14 (spring forward), instead of
+// 09:00 both times. That is 3,600 s of fabricated delay on every observation, all day.
+
+/** Epoch (ms) of local noon on a calendar date, DST-exact (two-pass, same as midnight). */
+export function torontoNoonEpoch(year: number, month: number, day: number): number {
+  const wallAsUtc = Date.UTC(year, month - 1, day, 12, 0, 0);
+  let noon = wallAsUtc - offsetSeconds(wallAsUtc) * 1000;
+  noon = wallAsUtc - offsetSeconds(noon) * 1000;
+  return noon;
+}
+
+/**
+ * Epoch SECONDS for a GTFS seconds-past-service-midnight value on service date `ymd`.
+ * Anchored at noon-minus-12h per the GTFS spec, so it is correct across DST transitions
+ * and for values >= 86400 (the real maximum in our loaded board is 110,861 = 30:47:41).
+ */
+export function serviceEpochSeconds(ymd: number, gtfsSeconds: number): number {
+  const y = Math.floor(ymd / 10000);
+  const m = Math.floor(ymd / 100) % 100;
+  const d = ymd % 100;
+  return Math.round(torontoNoonEpoch(y, m, d) / 1000) - 12 * 3600 + gtfsSeconds;
+}
+
+/**
+ * The service date an instant belongs to: the Toronto calendar date of (now - 4h), so a
+ * trip running at 01:30 attaches to the service day that started it rather than to the
+ * calendar day it happens to be crossing.
+ */
+export function serviceYmd(epochMs: number): number {
+  return torontoYmd(epochMs - 4 * 3600_000);
+}
