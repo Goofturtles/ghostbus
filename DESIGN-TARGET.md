@@ -108,7 +108,7 @@ Order, top to bottom:
    in the reference.)
 2. **Search row:** a full-width rounded search field with magnifier and `Where to?`, and to
    its right a small square filter/settings button. Both on the same line, not overlapping.
-3. **Map card:** rounded (~16px), roughly 4:3, containing the same voxel city and the same
+3. **Map card:** rounded (~16px), aspect ratio **1.636** (measured: 288x176 on the light phone, 290x176 on the dark - NOT 4:3, which would be 58px taller), containing the same voxel city and the same
    marker set as desktop (stop card, purple pin, beaded walk path, You card, 504A badge),
    plus the control stack on its right edge (+/−, locate, layers) inset from the card edge.
 4. **Stop header:** `King St W at Spadina Ave` bold; second line `Eastbound · Stop 4197`
