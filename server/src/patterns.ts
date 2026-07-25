@@ -23,7 +23,7 @@
 // all is made by a single-row fingerprint query rather than by reading the board.
 
 import { createHash } from 'node:crypto';
-import { gzipSync, gunzipSync } from 'node:zlib';
+import { brotliCompressSync, brotliDecompressSync, constants as zlibConstants } from 'node:zlib';
 import { mkdir, readFile, writeFile, rename, readdir, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -300,10 +300,14 @@ export function emptyPatternIndex(boardTag = '?..?'): PatternIndex {
 // ===========================================================================================
 
 /**
- * Bumped whenever the serialised layout or the index shape changes. It is part of the
- * cache key, so an old blob written by an older build is not found rather than mis-read.
+ * Bumped whenever the serialised layout or the index shape changes. It is part of the cache
+ * key, so an old blob written by an older build is not found rather than mis-read.
+ *
+ * 2: times and arrivals became per-trip deltas, and the body moved from gzip to brotli. The
+ *    checksum of a v1 blob verifies fine, so nothing but this number stands between an old
+ *    blob and a silent decode into plausible, wrong times.
  */
-export const PATTERN_CACHE_FORMAT = 1;
+export const PATTERN_CACHE_FORMAT = 2;
 
 /** `('x'||md5)::bit(32)::int` — the portable order-independent text hash, summable exactly. */
 const H = (col: string): string => `sum(('x'||substr(md5(${col}),1,8))::bit(32)::int::bigint)`;
@@ -397,7 +401,7 @@ export async function boardFingerprint(db: Db, agency: string): Promise<string |
 // build uses, which keeps the payload small AND makes a restored index identical to a
 // built one by construction.
 //
-//   sealed blob := 'GBPX' | u32 format | sha256(body_gz) | body_gz
+//   sealed blob := 'GBPX' | u32 format | sha256(body_z) | body_z          [body_z = brotli]
 //   body        := u32 metaLen | meta(JSON utf8)
 //                | u32 nStrings   | (u32 len | utf8)*
 //                | u32 nPatterns  | (u32 routeIdx | u8 hasDir | i32 dir | u32 len | u32 stop*)*
@@ -493,8 +497,16 @@ export function packIndex(idx: PatternIndex, agency: string): Buffer {
     o = body.writeUInt32LE(strIdx.get(slot.tripId)!, o);
     o = body.writeUInt32LE(strIdx.get(slot.serviceId)!, o);
     o = body.writeUInt32LE(patternOrd.get(slot.patternId)!, o);
-    for (let i = 0; i < slot.times.length; i++) o = body.writeInt32LE(slot.times[i], o);
-    for (let i = 0; i < slot.arrivals.length; i++) o = body.writeInt32LE(slot.arrivals[i], o);
+    // DELTA-CODED, and this is the single biggest thing about the payload size. Measured on
+    // the real board: the time section is 16.99 MiB of a 19.17 MiB body, and it compresses to
+    // 5.74 MiB as absolute seconds-since-midnight but to 0.56 MiB as per-trip gaps — a 10x
+    // difference, because a gap between stops is two or three minutes and its top two bytes
+    // are zero. Deltas are exact (a plain running sum inverts them, including the -1 "no
+    // time" sentinel) and both compress and inflate FASTER than the absolute form.
+    let prev = 0;
+    for (let i = 0; i < slot.times.length; i++) { o = body.writeInt32LE(slot.times[i] - prev, o); prev = slot.times[i]; }
+    prev = 0;
+    for (let i = 0; i < slot.arrivals.length; i++) { o = body.writeInt32LE(slot.arrivals[i] - prev, o); prev = slot.arrivals[i]; }
   }
 
   o = body.writeUInt32LE(idx.routeStops.size, o);
@@ -509,8 +521,17 @@ export function packIndex(idx: PatternIndex, agency: string): Buffer {
   }
   if (o !== body.length) throw new Error(`packIndex: wrote ${o} of ${body.length} bytes`);
 
-  // Level 6 (the default) over level 1 was measured on the real board: see DECISIONS.
-  const gz = gzipSync(body);
+  // BROTLI q5, MEASURED ON THE REAL BOARD, not chosen by reputation. On the same 19.17 MiB
+  // body: gzip level 1 = 1.44 MiB, gzip 6 = 1.31, gzip 9 = 1.31, brotli q5 = 0.90, brotli
+  // q11 = 0.78. q5 is 31% smaller than the best gzip for the same 96 ms to compress and the
+  // same ~19 ms to decompress, so it is strictly better on every axis; q11 costs 27.6 s to
+  // compress for a further 0.12 MiB, which is not a trade worth making on a boot path.
+  const gz = brotliCompressSync(body, {
+    params: {
+      [zlibConstants.BROTLI_PARAM_QUALITY]: 5,
+      [zlibConstants.BROTLI_PARAM_SIZE_HINT]: body.length,
+    },
+  });
   const sealed = Buffer.allocUnsafe(HEAD_BYTES + gz.length);
   sealed.write(MAGIC, 0, 'ascii');
   sealed.writeUInt32LE(PATTERN_CACHE_FORMAT, 4);
@@ -538,10 +559,10 @@ export function unpackIndex(sealed: Buffer, expect: CacheExpectation): PatternIn
     if (sealed.toString('ascii', 0, 4) !== MAGIC) return null;
     if (sealed.readUInt32LE(4) !== PATTERN_CACHE_FORMAT) return null;
     const gz = sealed.subarray(HEAD_BYTES);
-    // The checksum is what catches a truncated payload that still gunzips, and it runs
+    // The checksum is what catches a truncated payload that still decompresses, and it runs
     // before the inflate so a corrupt blob never becomes an allocation.
     if (!createHash('sha256').update(gz).digest().equals(sealed.subarray(8, 40))) return null;
-    const body = gunzipSync(gz);
+    const body = brotliDecompressSync(gz);
 
     let o = 0;
     const need = (n: number): void => {
@@ -608,8 +629,10 @@ export function unpackIndex(sealed: Buffer, expect: CacheExpectation): PatternIn
       const len = patStops[p].length;
       const times = new Int32Array(len);
       const arrivals = new Int32Array(len);
-      for (let i = 0; i < len; i++) times[i] = i32();
-      for (let i = 0; i < len; i++) arrivals[i] = i32();
+      let prev = 0;
+      for (let i = 0; i < len; i++) { prev += i32(); times[i] = prev; }
+      prev = 0;
+      for (let i = 0; i < len; i++) { prev += i32(); arrivals[i] = prev; }
       insertTrip(idx, patRoute[p], patDir[p], patStops[p], tripId, serviceId, times, arrivals);
     }
 
@@ -696,7 +719,12 @@ async function writeFileCache(agency: string, fingerprint: string, sealed: Buffe
   } catch { /* housekeeping only */ }
 }
 
-async function readDbCache(db: Db, agency: string, expect: CacheExpectation): Promise<PatternIndex | null> {
+async function readDbCache(
+  db: Db, agency: string, expect: CacheExpectation,
+): Promise<{ idx: PatternIndex; sealed: Buffer } | null> {
+  // board_tag and fingerprint are in the WHERE clause, not compared in JS afterwards. That
+  // is the whole economics of this table: a row that no longer describes the current board
+  // is filtered server-side, so a stale cache costs a round trip rather than a download.
   const res = await db.query<{ payload_b64: string; sha256: string; bytes: number | string }>(
     `SELECT payload_b64, sha256, bytes FROM pattern_index_cache
       WHERE agency=$1 AND board_tag=$2 AND fingerprint=$3 AND format=$4`,
@@ -709,9 +737,14 @@ async function readDbCache(db: Db, agency: string, expect: CacheExpectation): Pr
     console.warn('[patterns] cached index is the wrong length; rebuilding');
     return null;
   }
+  if (createHash('sha256').update(sealed).digest('hex') !== row.sha256) {
+    console.warn('[patterns] cached index fails its stored checksum; rebuilding');
+    return null;
+  }
   const idx = unpackIndex(sealed, expect);
-  if (idx) idx.source = 'cache-db';
-  return idx;
+  if (!idx) return null;
+  idx.source = 'cache-db';
+  return { idx, sealed };
 }
 
 async function writeDbCache(db: Db, agency: string, idx: PatternIndex, sealed: Buffer): Promise<void> {
@@ -752,13 +785,15 @@ export async function loadOrBuildPatternIndex(
     try {
       const fromDb = await readDbCache(db, agency, expect);
       if (fromDb) {
-        console.log(`[patterns] restored index from the database in ${fromDb.elapsedMs} ms ` +
-          `(${fromDb.patterns.size} patterns, ${fromDb.slotsByTrip.size} trips, ` +
-          `board ${boardTag}) — stop_times not read`);
-        // Land it on disk so the next restart on this container is free.
-        try { await writeFileCache(agency, fingerprint, packIndex(fromDb, agency)); }
+        const { idx, sealed } = fromDb;
+        console.log(`[patterns] restored index from the database in ${idx.elapsedMs} ms ` +
+          `(${idx.patterns.size} patterns, ${idx.slotsByTrip.size} trips, ` +
+          `${(sealed.length / 1048576).toFixed(2)} MiB, board ${boardTag}) — stop_times not read`);
+        // Land the bytes we already hold on disk, so the next restart on this container is
+        // free. Re-packing the restored index would cost a needless second serialise.
+        try { await writeFileCache(agency, fingerprint, sealed); }
         catch (e) { console.warn('[patterns] could not write the disk cache:', e instanceof Error ? e.message : e); }
-        return fromDb;
+        return idx;
       }
     } catch (e) {
       if (isDbClosed(e)) throw e;
