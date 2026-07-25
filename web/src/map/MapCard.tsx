@@ -8,6 +8,15 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import * as maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
+// maplibre-gl v6 resolves its worker at RUNTIME with
+// `new URL('./maplibre-gl-worker.mjs', import.meta.url)`. No bundler can see that,
+// so `vite build` never emitted the worker and the built chunk asked the server for
+// a sibling that did not exist — the SPA fallback answered with index.html, the module
+// worker refused the text/html MIME type, and the whole map died in production while
+// dev (which serves maplibre from source, next to its real worker) kept working.
+// `?worker&url` makes Rollup bundle the worker (plus maplibre-gl-shared.mjs, which it
+// imports) into a real hashed chunk and hands us its URL. See DECISIONS §29.
+import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import type { VehicleDto, RouteShapeResponse } from '@shared/types';
 import { api, type Bbox } from '@/lib/api';
 import { useLive, selectedNearbyStop, DEFAULT_LOCATION } from '@/hooks/useLive';
@@ -25,6 +34,11 @@ const JUMP_M = 500;            // beyond this a vehicle fades in place, never sl
 const KNOWN_COLORS = ['ED1C24', '3C4A5B', '00A651', 'E472AC']; // the live TTC palette
 const ICON_BASE = 0.82;
 const ICON_SEL = 1.14;
+
+// Point maplibre at the worker chunk Vite actually emitted, instead of the sibling
+// path it would guess from import.meta.url. Module-scope so it runs exactly once,
+// before any Map is constructed.
+maplibregl.setWorkerUrl(maplibreWorkerUrl);
 
 type LngLat = [number, number];
 
