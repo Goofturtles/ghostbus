@@ -264,3 +264,39 @@ The complaint was real; the mechanism was not DOM overlap. The genuine issues:
 3. **Map label collisions — NOT covered by the probe.** A street label was measured behind
    a building, and the attribution box sits over map content. These are real and must be
    fixed with genuine collision avoidance plus by-eye verification.
+
+---
+
+## H. MEASURED NOTE FOR THE REPAIR PASS — the route line
+
+A visual judge reported the red route as *"hairline, no casing, and it runs dead straight."*
+Those are two findings and only one of them is a defect. Measured by the orchestrator
+against the real shape geometry in Postgres:
+
+| route | points | total heading change | net bearing |
+|---|---|---|---|
+| 310 Spadina | 133 | 847° | 351° (due north) |
+| 510 Spadina | 145 | 1350° | 171° |
+| 504 King | 177 | 741° | 179° |
+
+**The straightness is honest.** The map currently focuses a Spadina route (it picks the
+selected vehicle's route, else the top live departure, else the next real scheduled service
+— and with today's empty board that resolves to Spadina). Spadina Avenue *is* a straight
+north–south street: its 847° of accumulated heading change is road-following jitter across
+132 segments (~6° each), not turns. The reference image shows **504 King**, which has a
+genuine dogleg. So the compositions differ because the focused route differs, not because
+the line is being simplified.
+
+**Do NOT add curvature, smoothing, or a decorative dogleg to make the line resemble the
+reference.** The geometry is the agency's published shape; bending it would be fabricating
+map data in an app whose entire argument is that it does not fabricate. Route geometry was
+already densified this session (504: 36 → 177 points, p90 segment 994 m → ~160 m), so the
+line is consuming real detail.
+
+**The casing and weight ARE a real gap.** The reference's route is a thick red stroke with a
+visible darker casing beneath it; ours renders thin and flat. `route-casing` and `route-line`
+layers already exist in `MapCard.tsx` (~lines 358 and 368) — the fix is their paint
+properties (width, colour, and width interpolation by zoom), not the data.
+
+If a reviewer wants the reference's dogleg specifically, the honest lever is which route is
+focused, not what shape is drawn.
