@@ -309,56 +309,67 @@ export function emptyPatternIndex(boardTag = '?..?'): PatternIndex {
  */
 export const PATTERN_CACHE_FORMAT = 2;
 
-/** `('x'||md5)::bit(32)::int` — the portable order-independent text hash, summable exactly. */
-const H = (col: string): string => `sum(('x'||substr(md5(${col}),1,8))::bit(32)::int::bigint)`;
+/**
+ * A table's content digest: count, plus two independent 32-bit projections of a per-row
+ * md5, summed.
+ *
+ * PER-ROW, and that is the whole point. An earlier version of this hashed each COLUMN
+ * independently — `sum(H(stop_id))`, `sum(arrival_s)`, `sum(stop_sequence)` — which is
+ * blind to any permutation that moves values between rows. Swap two stops within a trip
+ * and every one of those column sums is unchanged while `patternIdFor` returns a different
+ * pattern: a genuinely different board with an identical fingerprint, which is exactly the
+ * "realtime trips bound to a superseded schedule" failure this is supposed to prevent.
+ * Digesting the whole row first correlates the columns, so only a real set-of-rows change
+ * can leave the total alone.
+ *
+ * Summing digests (rather than, say, string_agg + md5) keeps it order-independent and
+ * constant-memory, so no plan choice or index order can make it flap. md5 is computed ONCE
+ * per row in the inner select and two disjoint 8-hex-digit slices are summed, which costs
+ * one hash but gives ~64 bits of collision resistance instead of 32.
+ *
+ * Every sum is integer-typed. A float8 sum would depend on the aggregation order a parallel
+ * plan happened to pick, and a fingerprint that flapped would rebuild every six hours
+ * forever — silently undoing this entire mechanism.
+ */
+const digestOf = (table: string, row: string): string => `
+  (SELECT count(*)||'/'||coalesce(sum(('x'||substr(m,1,8))::bit(32)::int::bigint),0)
+                 ||'/'||coalesce(sum(('x'||substr(m,9,8))::bit(32)::int::bigint),0)
+     FROM (SELECT md5(${row}) AS m FROM ${table} WHERE agency=$1) s)`;
 
 /**
  * ONE ROW that describes the whole static board.
  *
  * The point of this query is that it is the ONLY thing a boot has to read before it can
- * decide whether the cached index is still true. Every sub-select is a scalar aggregate,
- * so the result is a handful of bytes however large the board is — the check can never
- * itself become the cost it exists to avoid.
+ * decide whether the cached index is still true. Every sub-select is a scalar aggregate, so
+ * the result is a few hundred bytes however large the board is — the check can never itself
+ * become the cost it exists to avoid.
  *
  * It covers every column buildPatternIndex reads: trips (route/direction/service),
  * stop_times (sequence, stop, arrival, departure) and stops (the lat/lon that become
  * routeStops). It also covers `calendar` and `calendar_dates`, which the index does NOT
  * read — deliberately. The board tag is only min(start_date)..max(end_date), so a calendar
- * edit that leaves those two dates alone (a service withdrawn, an exception added) changes
- * which trips are active on a date while leaving the tag identical. Folding the calendar
- * into the fingerprint means such an edit invalidates the cache instead of hiding behind
- * an unchanged tag.
+ * edit that leaves those two dates alone (a service withdrawn from Wednesdays, an exception
+ * added for one date) changes which trips are active on a date while leaving the tag
+ * character-for-character identical. Folding the calendar in means such an edit invalidates
+ * the cache instead of hiding behind an unchanged tag.
  *
- * Sums are integer-typed throughout. A float8 sum would be at the mercy of the aggregation
- * order a parallel plan happens to pick, which would make the fingerprint flap.
+ * lat/lon are scaled to integer microdegrees (~0.11 m) rather than rendered as float text,
+ * so the digest cannot depend on the session's `extra_float_digits`.
  */
 const FINGERPRINT_SQL = `
 SELECT
-  (SELECT count(*)||'/'||coalesce(min(start_date),0)||'/'||coalesce(max(end_date),0)
-       ||'/'||coalesce(sum(start_date::bigint*100000+end_date::bigint),0)
-       ||'/'||coalesce(sum((mon::int)+(tue::int)*2+(wed::int)*4+(thu::int)*8
-                          +(fri::int)*16+(sat::int)*32+(sun::int)*64),0)
-       ||'/'||coalesce(${H('service_id')},0)
-     FROM calendar WHERE agency=$1) AS calendar,
-  (SELECT count(*)||'/'||coalesce(sum(date::bigint*10+exception_type),0)
-       ||'/'||coalesce(${H('service_id')},0)
-     FROM calendar_dates WHERE agency=$1) AS calendar_dates,
-  (SELECT count(*)||'/'||coalesce(min(trip_id),'')||'/'||coalesce(max(trip_id),'')
-       ||'/'||coalesce(${H('trip_id')},0)
-       ||'/'||coalesce(${H("coalesce(route_id,'')")},0)
-       ||'/'||coalesce(${H("coalesce(service_id,'')")},0)
-       ||'/'||coalesce(sum(coalesce(direction_id,-1)::bigint),0)
-     FROM trips WHERE agency=$1) AS trips,
-  (SELECT count(*)||'/'||coalesce(min(trip_id),'')||'/'||coalesce(max(trip_id),'')
-       ||'/'||coalesce(sum(stop_sequence::bigint),0)
-       ||'/'||coalesce(sum(coalesce(arrival_s,-1)::bigint),0)
-       ||'/'||coalesce(sum(coalesce(departure_s,-1)::bigint),0)
-       ||'/'||coalesce(${H('stop_id')},0)
-     FROM stop_times WHERE agency=$1) AS stop_times,
-  (SELECT count(*)||'/'||coalesce(${H('stop_id')},0)
-       ||'/'||coalesce(sum((coalesce(lat,0)*1000000)::bigint),0)
-       ||'/'||coalesce(sum((coalesce(lon,0)*1000000)::bigint),0)
-     FROM stops WHERE agency=$1) AS stops`;
+  ${digestOf('calendar',
+    `service_id||'|'||mon::int||tue::int||wed::int||thu::int||fri::int||sat::int||sun::int
+              ||'|'||start_date||'|'||end_date`)} AS calendar,
+  ${digestOf('calendar_dates', `service_id||'|'||date||'|'||exception_type`)} AS calendar_dates,
+  ${digestOf('trips',
+    `trip_id||'|'||coalesce(route_id,'')||'|'||coalesce(service_id,'')
+            ||'|'||coalesce(direction_id,-1)`)} AS trips,
+  ${digestOf('stop_times',
+    `trip_id||'|'||stop_sequence||'|'||stop_id
+            ||'|'||coalesce(arrival_s,-1)||'|'||coalesce(departure_s,-1)`)} AS stop_times,
+  ${digestOf('stops',
+    `stop_id||'|'||(coalesce(lat,0)*1000000)::bigint||'|'||(coalesce(lon,0)*1000000)::bigint`)} AS stops`;
 
 /**
  * A content fingerprint of the static board, or `null` if it could not be taken.
@@ -369,20 +380,29 @@ SELECT
  */
 export async function boardFingerprint(db: Db, agency: string): Promise<string | null> {
   if (db.closed) throw new DbClosedError();
-  try {
-    const r = await db.query<Record<string, string | null>>(FINGERPRINT_SQL, [agency]);
-    const row = r.rows[0];
-    if (!row) return null;
-    const parts = ['calendar', 'calendar_dates', 'trips', 'stop_times', 'stops']
-      .map((k) => (row[k] == null ? null : String(row[k])));
-    if (parts.some((p) => p == null)) return null;
-    return createHash('sha256').update(`${agency}\n${parts.join('\n')}`).digest('hex').slice(0, 32);
-  } catch (e) {
-    if (isDbClosed(e)) throw e;
-    console.error('[patterns] board fingerprint failed, forcing a rebuild:',
-      e instanceof Error ? e.message : e);
-    return null;
+  // RETRIED ONCE, because of what failing costs. Returning null is safe but it means a full
+  // 2.15M-row rebuild — 143 MiB of transfer — so a single flaky connection on the 6-hourly
+  // path would re-incur the exact cost this function exists to avoid. One row is a cheap
+  // second try; anything more and a genuinely broken database would stall the boot.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (db.closed) throw new DbClosedError();
+    try {
+      const r = await db.query<Record<string, string | null>>(FINGERPRINT_SQL, [agency]);
+      const row = r.rows[0];
+      if (!row) return null;
+      const parts = ['calendar', 'calendar_dates', 'trips', 'stop_times', 'stops']
+        .map((k) => (row[k] == null ? null : String(row[k])));
+      if (parts.some((p) => p == null)) return null;
+      return createHash('sha256').update(`${agency}\n${parts.join('\n')}`).digest('hex').slice(0, 32);
+    } catch (e) {
+      if (isDbClosed(e)) throw e;
+      const last = attempt === 1;
+      console.error(`[patterns] board fingerprint failed${last ? ', forcing a rebuild' : ', retrying once'}:`,
+        e instanceof Error ? e.message : e);
+      if (last) return null;
+    }
   }
+  return null;
 }
 
 // ===========================================================================================
@@ -452,6 +472,15 @@ export function packIndex(idx: PatternIndex, agency: string): Buffer {
   for (const slot of idx.slotsByTrip.values()) {
     intern(slot.tripId); intern(slot.serviceId);
     slotBytes += 4 + 4 + 4 + slot.times.length * 4 + slot.arrivals.length * 4;
+  }
+  // The walk above is over slotsByTrip, while the engine matches against slotsByPattern.
+  // They hold the same slots only because trip ids are unique (the stop_times primary key
+  // makes them so). Assert it rather than assume it: if they ever diverged, the blob would
+  // silently omit whatever slotsByTrip had lost, and the restore would look healthy.
+  let slotsInPatterns = 0;
+  for (const slots of idx.slotsByPattern.values()) slotsInPatterns += slots.length;
+  if (slotsInPatterns !== idx.slotsByTrip.size) {
+    throw new Error(`packIndex: ${slotsInPatterns} slots by pattern vs ${idx.slotsByTrip.size} by trip`);
   }
   let geoBytes = 4;
   for (const [routeId, pts] of idx.routeStops) {
@@ -562,7 +591,10 @@ export function unpackIndex(sealed: Buffer, expect: CacheExpectation): PatternIn
     // The checksum is what catches a truncated payload that still decompresses, and it runs
     // before the inflate so a corrupt blob never becomes an allocation.
     if (!createHash('sha256').update(gz).digest().equals(sealed.subarray(8, 40))) return null;
-    const body = brotliDecompressSync(gz);
+    // maxOutputLength bounds the inflate. The real board's body is 19 MiB, so 256 MiB is
+    // generous; without a cap a blob that passes its checksum could still be a decompression
+    // bomb, and the one thing a boot path must not do is allocate without a ceiling.
+    const body = brotliDecompressSync(gz, { maxOutputLength: 256 * 1024 * 1024 });
 
     let o = 0;
     const need = (n: number): void => {
@@ -654,6 +686,10 @@ export function unpackIndex(sealed: Buffer, expect: CacheExpectation): PatternIn
     if (idx.patterns.size !== meta.patterns) return null;
     if (idx.slotsByTrip.size !== meta.slots) return null;
     if (idx.tripIds.size !== meta.slots) return null;
+    // Route geometry gets the same treatment: a duplicated route id would collapse two
+    // entries into one and leave a route with no anchors, which reads as "this route has no
+    // geometry" rather than as the corruption it is.
+    if (idx.routeStops.size !== meta.routes) return null;
 
     finalizeIndex(idx);
     idx.elapsedMs = Date.now() - t0;
@@ -802,7 +838,25 @@ export async function loadOrBuildPatternIndex(
   }
 
   const idx = await buildPatternIndex(db, agency, boardTag, fingerprint ?? '');
-  if (fingerprint) await persistPatternIndex(db, agency, idx);
+  if (!fingerprint) return idx;
+
+  // RE-FINGERPRINT AFTER THE BUILD. The build is keyset-paged and takes ~110 s over Neon, so
+  // a re-seed landing mid-build is a real window, not a theoretical one: the pages before it
+  // describe one board and the pages after it another, and the result would then be cached
+  // under the key of the board it started from. If the board moved, the index we just built
+  // is a torn read — we still have to serve it (there is nothing better to hand back, and
+  // rebuilding immediately could loop against a still-running re-seed), but it must not be
+  // written to a cache, and clearing its fingerprint guarantees the next reload rebuilds
+  // rather than keeping it.
+  const after = await boardFingerprint(db, agency);
+  if (after !== fingerprint) {
+    console.warn(`[patterns] the board changed while the index was building ` +
+      `(${fingerprint.slice(0, 12)} -> ${after == null ? 'unknown' : after.slice(0, 12)}); ` +
+      'serving this index but not caching it, and the next reload will rebuild');
+    idx.fingerprint = '';
+    return idx;
+  }
+  await persistPatternIndex(db, agency, idx);
   return idx;
 }
 

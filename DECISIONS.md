@@ -1446,24 +1446,48 @@ Three pieces, in the order a boot meets them.
 
 **1. A one-row board fingerprint.** `boardFingerprint()` issues a single statement of scalar
 sub-selects over `calendar`, `calendar_dates`, `trips`, `stop_times` and `stops`. It returns
-five short text columns — a few hundred bytes — however large the board is, so the check can
-never grow into the cost it exists to avoid. It covers every column the index derives from:
-route, direction and service on `trips`; sequence, stop, arrival and departure on `stop_times`;
-the lat/lon on `stops` that become `routeStops`.
+five short text columns — about 250 bytes — however large the board is, so the check can never
+grow into the cost it exists to avoid. It covers every column the index derives from: route,
+direction and service on `trips`; sequence, stop, arrival and departure on `stop_times`; the
+lat/lon on `stops` that become `routeStops`.
 
 It also covers `calendar` and `calendar_dates`, which the index does **not** read. That is the
 part worth arguing for. The board tag is only `min(start_date)..max(end_date)`, so a calendar
 edit that leaves those two dates alone — a service withdrawn from Wednesdays, an exception
 added for one date — changes which trips are active on a date while the tag stays
 character-for-character identical. A tag-only check would serve a cached index against a
-calendar that had moved underneath it. Two of the nine mutation tests are exactly those two
-edits, and both fail a tag comparison and pass the fingerprint.
+calendar that had moved underneath it. Two of the mutation tests are exactly those two edits,
+and both fail a tag comparison and pass the fingerprint.
 
-Two details that are correctness, not taste. Every sum is integer-typed: a `float8` sum is at
+**And the first version of it was wrong, in the one way that matters.** It hashed each COLUMN
+independently — `sum(H(stop_id))`, `sum(arrival_s)`, `sum(stop_sequence)`, and so on. Every one
+of those totals is a *multiset* summary, so nothing in the fingerprint correlated two values
+appearing in the same row, and any permutation that moved values between rows was invisible:
+
+- swap two stops within a trip → same multiset of stop ids, same sequence sum, same time sums,
+  **different `patternIdFor`**;
+- swap the times of two stops on a trip → same sums, different schedule;
+- two trips exchanging `service_id`, or two trips whose `direction_id` flips in opposite
+  directions → same sums, different board.
+
+Each of those is precisely the failure this whole mechanism exists to prevent — a cached index
+served against a schedule that is no longer the schedule — and a review caught it before it
+shipped. The fix costs the same shape of query: digest the **whole row** first
+(`md5(trip_id||'|'||stop_sequence||'|'||stop_id||'|'||arrival||'|'||departure)`) and sum two
+disjoint 32-bit slices of that one hash, which correlates the columns and buys ~64 bits of
+collision resistance for one hash per row. There is now a regression test that applies the
+stop swap, asserts that **every naive column aggregate is byte-for-byte unchanged** — so the
+test is provably testing the blind spot — and then asserts the fingerprint changes anyway. Four
+of the mutation cases are permutations for the same reason.
+
+Three details that are correctness, not taste. Every sum is integer-typed: a `float8` sum is at
 the mercy of whatever aggregation order a parallel plan picks, and a fingerprint that flapped
-would rebuild every six hours forever and silently undo this whole entry. And when the
-fingerprint cannot be taken at all, it returns `null` rather than a guess — which disables both
-cache tiers and falls back to exactly today's always-build behaviour.
+would rebuild every six hours forever and silently undo this whole entry. lat/lon are scaled to
+integer microdegrees rather than rendered as float text, so the digest cannot depend on the
+session's `extra_float_digits`. And when the fingerprint cannot be taken at all it returns
+`null` rather than a guess — which disables both cache tiers and falls back to exactly today's
+always-build behaviour. It retries once first, because "safe" here still means a 143.70 MiB
+rebuild, and one flaky connection should not buy one.
 
 **2. A serialised index.** `packIndex` writes a sealed blob: `'GBPX'`, a `u32` format version, a
 sha256, then a compressed body of one interned string table, the patterns, the slots and the
@@ -1545,8 +1569,8 @@ both were wrong here by 5x and 1.5x respectively.
 | | before | after |
 | --- | ---: | ---: |
 | cold boot, fresh container | 143.70 MiB | **1.21 MiB** (fingerprint + blob) |
-| boot with the container's disk intact | 143.70 MiB | **~300 B** (fingerprint only) |
-| the 6-hourly reload, board unchanged | 143.70 MiB | **~300 B** (fingerprint only) |
+| boot with the container's disk intact | 143.70 MiB | **~250 B** (fingerprint only) |
+| the 6-hourly reload, board unchanged | 143.70 MiB | **~250 B** (fingerprint only) |
 | time to a usable index | 109–120 s (Neon) | **312 ms** to restore |
 
 **118x fewer bytes on the worst case**, and the same transfer budget that bought four rebuilds
@@ -1555,13 +1579,20 @@ changes.
 
 The 6-hourly reload deserves its own line, because it is the case a cache alone would not have
 fixed. `reloadStatic` now fingerprints *first* and returns early — keeping the very same index
-object — when the board is unchanged. A reload of an unchanged board issues **exactly one
-statement**, which a regression test asserts by counting them.
+object — when the board is unchanged. A reload of an unchanged board issues **two statements**,
+which a regression test asserts by counting them: the fingerprint, and the crosswalk-restore
+retry that the reload has always been responsible for. That retry was briefly lost to the early
+return and put back; `loadCrosswalk` swallows its own errors, so the 6-hourly reload is the only
+thing that ever tries a failed boot-time restore again, and it reads `rt_stop_xwalk` — thousands
+of rows, not 2.15M.
 
 And the check does not smuggle the cost back in as compute. Against 2,227,328 synthetic rows on
 PGlite — WebAssembly, so slower than Neon's native Postgres and therefore an upper bound rather
-than a prediction — the fingerprint query runs in **1.29–1.42 s**, repeatably, against **2.93 s
-for a single one** of the build's twelve 200,000-row pages.
+than a prediction — the fingerprint query runs in **2.97–3.09 s**, repeatably, against **2.87 s
+for a single one** of the build's twelve 200,000-row pages: the whole check costs about what one
+twelfth of the build costs, and returns 250 bytes instead of 12 MiB. Correlating the columns
+per row roughly doubled that (it was 1.29–1.42 s while the digest was column-wise and wrong),
+which is the right way round to spend 1.5 seconds.
 
 ### How it is proved, without a database to prove it against
 
@@ -1574,14 +1605,24 @@ index too).
 
 The comparison is structural, never a row count: pattern ids, the pattern *order*, every slot's
 times and arrivals, the slot ordering, the derived headways, and every by-trip map. A cache that
-got the count right and the times wrong fails. Thirteen tests cover: a cold boot writing both
+got the count right and the times wrong fails. Fifteen tests cover: a cold boot writing both
 tiers; a second boot restoring from disk while touching the database zero times; a wiped disk
-restoring from Postgres and re-landing on disk; nine board mutations each forcing a rebuild;
-eight kinds of damaged blob — truncation, a flipped payload byte, a flipped checksum byte, wrong
-magic, a future format version, empty, garbage — each **falling back rather than throwing or
-part-loading**; a truncated Postgres payload; a blob for another agency, board or fingerprint;
-a `null` fingerprint caching nothing at all; and the two engine-level regressions above. At real
-scale the round trip was verified exact over all 70,986 trips and all 4,454,656 integers.
+restoring from Postgres and re-landing on disk; thirteen board mutations each forcing a rebuild,
+four of them permutations invisible to column sums; eight kinds of damaged blob — truncation, a
+flipped payload byte, a flipped checksum byte, wrong magic, a future format version, empty,
+garbage — each **falling back rather than throwing or part-loading**; a truncated Postgres
+payload; a blob for another agency, board or fingerprint; a `null` fingerprint caching nothing
+at all; and the two engine-level regressions above. At real scale the round trip was verified
+exact over all 70,986 trips and all 4,454,656 integers.
+
+One class of test is there because the obvious tests could not reach it. Every damaged-file case
+is rejected by the magic, the format or the sha256 — all of which run *before* the inflate — so
+none of them exercise the structural checks inside `unpackIndex` at all. Those checks exist for a
+different failure: a blob that is internally inconsistent yet perfectly sealed, which is what a
+bug in `packIndex` would produce, not what a corrupted disk produces. So a separate test tampers
+with the **decompressed body** and re-seals it with a correct checksum — a trailing byte, four
+bytes short, each of the four metadata counts inflated by one, a metadata length running off the
+end, unparseable metadata — and asserts all eight are refused.
 
 `unpackIndex` has exactly one failure mode: `null`. Every rejection — bad magic, wrong format,
 failed checksum, truncation, a length field running off the end, a count disagreeing with the
@@ -1606,6 +1647,13 @@ The database is down, so these are honest gaps rather than omissions:
 - **The 1.21 MiB round trip has not been timed over the wire.**
 - The restored index was verified structurally and through the engine's boot path, **not against
   a live realtime feed** — no feed run was possible in this state.
+
+One window worth naming because it is now closed. The build is keyset-paged and takes ~110 s
+over Neon, so a re-seed landing mid-build is real rather than theoretical: the pages before it
+describe one board and the pages after it another. The index is therefore **re-fingerprinted
+after the build**, and if the board moved it is served (there is nothing better to hand back,
+and rebuilding immediately could loop against a still-running re-seed) but not cached, with its
+fingerprint cleared so the next reload rebuilds instead of keeping it.
 
 One thing deliberately left alone. When the board *content* changes but the tag does not, the
 crosswalk is still carried across, because `boardChanged` keys on the tag exactly as it did

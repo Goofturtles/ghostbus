@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, readFile, writeFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { brotliCompressSync, brotliDecompressSync, constants as zlibConstants } from 'node:zlib';
 import {
   patternIdFor, medianHeadwayForSlots, foldTrip, emptyPatternIndex, median,
   boardFingerprint, loadOrBuildPatternIndex, buildPatternIndex, packIndex, unpackIndex,
@@ -184,10 +186,13 @@ async function seedBoard(db: Db): Promise<void> {
         const start = 5 * 3600 + k * 600;
         p.stops.forEach((stopId, i) => {
           const t = start + i * 180;
-          // Trip 1 carries the two null shapes the fold has to fall back through, so the
-          // codec is forced to round-trip a departure that came from an arrival and back.
-          const arrival = n === 1 && i === 4 ? null : t;
-          const departure = n === 1 && i === 3 ? null : (n === 1 && i === 4 ? t + 30 : t);
+          // Trip 1 carries the three null shapes the fold has to fall back through, so the
+          // codec is forced to round-trip a departure that came from an arrival, an arrival
+          // that came from a departure, and a stop with NEITHER — which folds to the -1
+          // sentinel and is the one value a delta-coded time section could plausibly break.
+          const both = n === 1 && i === 5;
+          const arrival = both || (n === 1 && i === 4) ? null : t;
+          const departure = both ? null : (n === 1 && i === 3 ? null : (n === 1 && i === 4 ? t + 30 : t));
           stVals.push(AGENCY, tripId, i + 1, stopId, arrival, departure);
         });
       }
@@ -360,6 +365,23 @@ test('a changed board forces a rebuild — including calendar edits the board ta
       'UPDATE trips SET direction_id=1 WHERE agency=$1 AND trip_id=$2', [AGENCY, 'T00007']],
     ['a re-assigned service',
       "UPDATE trips SET service_id='SUN' WHERE agency=$1 AND trip_id=$2", [AGENCY, 'T00007']],
+    // PERMUTATIONS. Each of these leaves every per-column aggregate identical -- the same
+    // multiset of stop ids, the same sum of sequences, times, directions -- while genuinely
+    // changing the board. A fingerprint that hashed columns independently, as the first
+    // version of this did, is blind to all four.
+    ['PERMUTATION: two stops swapped within a trip',
+      "UPDATE stop_times SET stop_id = CASE stop_sequence WHEN 2 THEN 's03' ELSE 's02' END " +
+      'WHERE agency=$1 AND trip_id=$2 AND stop_sequence IN (2,3)', [AGENCY, 'T00002']],
+    ['PERMUTATION: two stop times swapped within a trip',
+      'UPDATE stop_times SET arrival_s = CASE stop_sequence WHEN 2 THEN 18360 ELSE 18180 END, ' +
+      'departure_s = CASE stop_sequence WHEN 2 THEN 18360 ELSE 18180 END ' +
+      'WHERE agency=$1 AND trip_id=$2 AND stop_sequence IN (2,3)', [AGENCY, 'T00002']],
+    ['PERMUTATION: two trips swapping service_id',
+      "UPDATE trips SET service_id = CASE trip_id WHEN 'T00001' THEN 'SAT' ELSE 'WEEK' END " +
+      "WHERE agency=$1 AND trip_id IN ('T00001','T00025')", [AGENCY]],
+    ['PERMUTATION: two trips swapping direction_id',
+      'UPDATE trips SET direction_id = 1 - direction_id ' +
+      "WHERE agency=$1 AND trip_id IN ('T00001','T00073')", [AGENCY]],
     // The board tag is only min(start_date)..max(end_date). These two leave it IDENTICAL,
     // which is exactly why the fingerprint covers the calendar and the tag alone cannot.
     ['a calendar exception the board tag cannot see',
@@ -383,6 +405,42 @@ test('a changed board forces a rebuild — including calendar edits the board ta
       assert.equal(next.fingerprint, after);
     } finally { await fx.dispose(); }
   }
+});
+
+test('REGRESSION: a permutation that leaves every column sum identical still changes the fingerprint', async () => {
+  // The first version of boardFingerprint hashed each COLUMN independently — sum(H(stop_id)),
+  // sum(arrival_s), sum(stop_sequence). Swapping two stops within one trip leaves every one
+  // of those totals untouched while producing a different pattern id, so a cached index built
+  // against the OLD stop order would have been served against the NEW board: realtime trips
+  // bound to a schedule that is no longer the schedule. This asserts both halves — that the
+  // naive aggregates really are unchanged, so the test is testing what it claims, and that
+  // the fingerprint catches it anyway.
+  const NAIVE = `SELECT count(*) AS n, sum(stop_sequence) AS seq, sum(arrival_s) AS arr,
+                        sum(departure_s) AS dep, sum(length(stop_id)) AS sid,
+                        sum(('x'||substr(md5(stop_id),1,8))::bit(32)::int::bigint) AS sidhash
+                   FROM stop_times WHERE agency=$1`;
+  const fx = await makeFixture();
+  try {
+    const naiveBefore = (await fx.db.query(NAIVE, [AGENCY])).rows[0];
+    const before = await boardFingerprint(fx.db, AGENCY);
+    const built = await loadOrBuildPatternIndex(fx.db, AGENCY, BOARD, before);
+    const patternsBefore = new Set(built.patterns.keys());
+
+    await fx.db.query(
+      "UPDATE stop_times SET stop_id = CASE stop_sequence WHEN 2 THEN 's03' ELSE 's02' END " +
+      'WHERE agency=$1 AND trip_id=$2 AND stop_sequence IN (2,3)', [AGENCY, 'T00002']);
+
+    assert.deepEqual((await fx.db.query(NAIVE, [AGENCY])).rows[0], naiveBefore,
+      'the per-column aggregates a naive fingerprint would use are byte-for-byte unchanged');
+
+    const after = await boardFingerprint(fx.db, AGENCY);
+    assert.notEqual(after, before, 'but the per-row digest sees the swap');
+
+    const next = await loadOrBuildPatternIndex(fx.db, AGENCY, BOARD, after);
+    assert.equal(next.source, 'build');
+    assert.notDeepEqual(new Set(next.patterns.keys()), patternsBefore,
+      'and the board really had changed — the pattern set is different');
+  } finally { await fx.dispose(); }
 });
 
 test('the fingerprint is stable across repeated reads of an unchanged board', async () => {
@@ -427,6 +485,60 @@ test('a corrupted or truncated disk cache falls back rather than throwing or par
       assert.equal(idx.source, 'cache-db', `${what} must be rejected, not half-loaded`);
       assert.deepEqual(snapshot(idx), snapshot(built), `${what}: the fallback is still exact`);
       await writeFile(file, good);
+    }
+  } finally { await fx.dispose(); }
+});
+
+test('a blob whose BODY is wrong but whose checksum is valid is still refused', async () => {
+  // Every damage case above is caught by the magic, the format or the sha256 — none of them
+  // reach the inflate, so the structural checks inside unpackIndex never run. Those checks
+  // exist for a different failure: a blob that is internally inconsistent yet perfectly
+  // sealed, which is what a bug in packIndex would produce. Reach them by tampering with the
+  // DECOMPRESSED body and re-sealing it with a correct checksum.
+  const reseal = (body: Buffer): Buffer => {
+    const z = brotliCompressSync(body, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 5 } });
+    const out = Buffer.allocUnsafe(40 + z.length);
+    out.write('GBPX', 0, 'ascii');
+    out.writeUInt32LE(PATTERN_CACHE_FORMAT, 4);
+    createHash('sha256').update(z).digest().copy(out, 8);
+    z.copy(out, 40);
+    return out;
+  };
+  const patchMeta = (body: Buffer, f: (m: Record<string, unknown>) => void): Buffer => {
+    const metaLen = body.readUInt32LE(0);
+    const meta = JSON.parse(body.toString('utf8', 4, 4 + metaLen)) as Record<string, unknown>;
+    f(meta);
+    const nb = Buffer.from(JSON.stringify(meta), 'utf8');
+    const head = Buffer.allocUnsafe(4);
+    head.writeUInt32LE(nb.length, 0);
+    return Buffer.concat([head, nb, body.subarray(4 + metaLen)]);
+  };
+
+  const fx = await makeFixture();
+  try {
+    const fp = (await boardFingerprint(fx.db, AGENCY))!;
+    const built = await loadOrBuildPatternIndex(fx.db, AGENCY, BOARD, fp);
+    const expect = { agency: AGENCY, boardTag: BOARD, fingerprint: fp };
+    const body = brotliDecompressSync(packIndex(built, AGENCY).subarray(40));
+
+    assert.ok(unpackIndex(reseal(body), expect), 'the untampered body still loads, so reseal is faithful');
+
+    const cases: [string, Buffer][] = [
+      ['one trailing byte', Buffer.concat([body, Buffer.from([0])])],
+      ['four bytes short', body.subarray(0, body.length - 4)],
+      ['the slot count inflated', patchMeta(body, (m) => { m.slots = Number(m.slots) + 1; })],
+      ['the pattern count inflated', patchMeta(body, (m) => { m.patterns = Number(m.patterns) + 1; })],
+      ['the route count inflated', patchMeta(body, (m) => { m.routes = Number(m.routes) + 1; })],
+      ['the string count inflated', patchMeta(body, (m) => { m.strings = Number(m.strings) + 1; })],
+      ['a metadata length that runs off the end', (() => {
+        const c = Buffer.from(body); c.writeUInt32LE(body.length + 99, 0); return c;
+      })()],
+      ['unparseable metadata', (() => {
+        const c = Buffer.from(body); c.write('{{{{', 4, 'utf8'); return c;
+      })()],
+    ];
+    for (const [what, bad] of cases) {
+      assert.equal(unpackIndex(reseal(bad), expect), null, `${what} must be refused`);
     }
   } finally { await fx.dispose(); }
 });
@@ -501,9 +613,12 @@ test('REGRESSION: the 6-hourly reload of an unchanged board reads one row, not 2
     counted.sql.length = 0;
     await engine.reloadStatic(BOARD);
     assert.equal(counted.reads(), 0, 'an unchanged board must not be re-read');
-    assert.equal(counted.sql.length, 1, 'exactly one statement: the fingerprint');
-    assert.ok(/FROM stop_times WHERE agency/.test(counted.sql[0]), 'and it is a scalar aggregate');
     assert.equal(engine.getIndex(), built, 'the very same index object is kept');
+    // One scalar-aggregate fingerprint, plus the crosswalk-restore retry the reload has
+    // always been responsible for (rt_stop_xwalk is thousands of rows, not 2.15M).
+    assert.equal(counted.sql.length, 2, counted.sql.join('\n--\n'));
+    assert.ok(/FROM stop_times WHERE agency/.test(counted.sql[0]), 'the first is the fingerprint');
+    assert.ok(/FROM rt_stop_xwalk/.test(counted.sql[1]), 'the second is the crosswalk restore');
   } finally { await fx.dispose(); }
 });
 

@@ -281,6 +281,12 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
     if (ready && boardTag === newBoardTag && fingerprint !== null && index.fingerprint === fingerprint) {
       console.log(`[engine] board ${boardTag} is unchanged (fingerprint ${fingerprint.slice(0, 12)}) ` +
         '— keeping the loaded index, no static read');
+      // The reload still gets to retry a crosswalk restore that failed at boot. loadCrosswalk
+      // swallows its own errors (a failed restore costs warm-up, not correctness), so before
+      // this early return existed the 6-hourly reload was the only thing that ever tried
+      // again. That retry is worth keeping: it reads rt_stop_xwalk, which is thousands of
+      // rows, not the 2.15M this early return is here to avoid.
+      if (xwalk.size === 0) await loadCrosswalk();
       return;
     }
     const next = await loadOrBuildPatternIndex(db, agency, newBoardTag, fingerprint);
