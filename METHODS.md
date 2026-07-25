@@ -6,13 +6,19 @@ This is the methods section for the accountability engine. Every threshold below
 real constant in the code, with the reason it has the value it has. Every number
 attributed to "our data" was measured, not estimated.
 
-**Verification stamp.** Unless noted otherwise, everything here was read out of the
-source tree and re-measured against the live TTC feeds on **2026-07-24, ~21:35
-America/Toronto**. Two workstreams were editing `server/` while this was written (a
-delay-engine rebuild and a ghost-surfaces phase); §3.3 and §7 say precisely which
-parts were verified as landed and which were verified as still in flight. Where the
-code and this document disagree, the code is right and this document is stale — say
-so rather than trusting the prose.
+**Verification stamp.** Everything here was read out of the source tree and re-measured
+against the live TTC feeds on **2026-07-24**, with feed measurements taken at **21:35**
+and a final source re-read at **21:50 America/Toronto**. Two workstreams were editing
+`server/` throughout, so each section carries its own status:
+
+- **Landed and verified at 21:50:** the trust-grade tiers (§6.3) and the ghost forecast
+  (§7) — both now read from the shipped code rather than the design intent, and both
+  covered by the 86 passing unit tests in `server/src/*.test.ts`.
+- **Still in flight at 21:50:** the delay-engine rewrite (§3.3). `poller.ts` was
+  unchanged since 15:32 and the 304,697 zero-delay rows were still in the database.
+
+Where the code and this document disagree, the code is right and this document is stale.
+Re-read before quoting.
 
 ---
 
@@ -98,15 +104,39 @@ America/Toronto**, decoding one full snapshot:
 |---|---|
 | `TripUpdate` entities | 1,508 |
 | `StopTimeUpdate` entries | 23,875 |
-| `StopTimeEvent`s carrying a `time` | 23,141 |
-| `StopTimeEvent`s carrying a `delay` field | 23,141 |
-| **`StopTimeEvent`s with a NON-ZERO `delay`** | **0** |
+| `StopTimeEvent`s decoded | 23,335 |
+| `time` present **as an own property** (i.e. actually on the wire) | **23,335** |
+| `delay` present **as an own property** (i.e. actually on the wire) | **0** |
+| `event.delay == null` — what our null-check saw | **0** |
+| `event.delay === 0` — what our null-check saw | **23,335** |
 
-**The TTC populates `delay` on essentially every stop-time event and the value is
-always exactly `0`** — while simultaneously publishing real, varying absolute `time`
-predictions in the same message. The `delay` field is structurally present and
-semantically empty. An earlier project measurement over a larger sample found the same
-thing: 23,664 stop-time updates, zero non-zero delays.
+Read those last three rows carefully, because the interesting part is the gap between
+them.
+
+**The TTC does not publish `delay` at all.** Not zero — *absent*. It is on the wire for
+exactly none of the 23,335 stop-time events, while `time` is on the wire for all of them.
+Confirmed two independent ways: `Object.hasOwnProperty(event, 'delay')` is false
+everywhere, and `FeedMessage.toObject(msg, { defaults: false })` yields zero events
+carrying a `delay` key.
+
+**But every naive read of that field returns `0`.** GTFS-realtime is proto2, where
+`delay` is an `optional int32` with an implicit default of `0`. protobuf.js materialises
+that default on the message prototype, so a decoded event *answers* `0` for a field it
+never received. A guard written as `if (event.delay != null)` — the obvious, idiomatic,
+apparently-defensive check — **passes on all 23,335 events and yields a measurement of
+zero seconds.** The check cannot distinguish "the agency told us this bus is exactly on
+time" from "the agency told us nothing."
+
+That is the actual finding, and it is a sharper one than "the agency publishes bad data":
+*a correct-looking null-check silently converted missing data into confident data.* The
+serialisation format's default value, the decoder's convenience behaviour, and a
+reasonable-looking guard combined to manufacture 304,697 measurements out of nothing.
+Nobody lied; the shape of the tooling did it.
+
+An earlier project measurement over a larger sample reported the same symptom (23,664
+stop-time updates, zero non-zero delays) but attributed it to the agency publishing
+zeros — the `hasOwnProperty` probe above is what distinguishes absence from zero, and it
+is the reason this section is worded the way it is.
 
 The same snapshot re-confirms two other feed facts this project depends on:
 
@@ -120,11 +150,12 @@ The same snapshot re-confirms two other feed facts this project depends on:
 
 ### 3.3 The consequence, and what we did about it
 
-The first-generation collector trusted `delay`. Because that field is always zero, its
-output was a database full of rows all saying "this bus was exactly on time," which is
-both false and useless. That is not a rounding error in a side table — it was the entire
-historical evidence base for the honest-ETA engine, and every percentile computed from it
-was a percentile of zeros.
+The first-generation collector trusted `delay`, guarded by `if (delay != null)`. Because
+the decoder answers `0` for a field that never arrived (§3.2), that guard always passed
+and the collector wrote a database full of rows all saying "this bus was exactly on
+time" — which is both false and useless. That is not a rounding error in a side table: it
+was the entire historical evidence base for the honest-ETA engine, and every percentile
+computed from it was a percentile of zeros.
 
 This was verified directly against the production Neon database on 2026-07-24, and the
 result is unambiguous:
@@ -149,6 +180,13 @@ currently returning, with full confidence and genuine sample sizes behind it, th
 estimate *"scheduled + 0, ± 0"*. The gating machinery is working perfectly on an input
 that is unanimously meaningless — which is exactly why measuring your own inputs matters
 more than gating them well.
+
+**The general lesson, since it outlives this feed:** a null-check is not an
+absence-check when the decoder supplies defaults. Anywhere a wire format has implicit
+defaults — proto2 scalars, and every library that helpfully materialises them — the only
+sound test for "did this arrive?" is an explicit presence probe (`hasOwnProperty`,
+`toObject({ defaults: false })`, or the generated `has*` accessors), never a comparison
+against the default value. GhostBus shipped 304,697 rows before anyone checked.
 
 The correction is to stop asking the agency how late its buses are and measure it
 ourselves:
@@ -247,8 +285,9 @@ Two independent things currently hold the measured live join rate at **0.0%**:
    which is not in our database, so there is nothing correct for them to match. An
    independent probe found 3.8% of realtime trips get exactly one coincidental vote and
    **0%** get the required two — the ≥2-vote threshold is doing precisely its job.
-2. **The `delay = 0` finding.** While the join reconstructs
-   `scheduled = predicted − delay` and `delay` is always zero, the reconstruction
+2. **The missing-`delay` finding.** While the join reconstructs
+   `scheduled = predicted − delay` and every read of `delay` yields the decoder's
+   materialised default of zero (§3.2), the reconstruction
    collapses to `scheduled = predicted`. That is exact only for a perfectly on-time
    trip; a trip running 4 minutes late will miss its true schedule slot by 240 s, far
    outside the ±75 s tolerance. The delay-engine rewrite (§3.3) removes this by
@@ -378,15 +417,34 @@ the architectural commitment the whole product is named after: the API cannot ex
 
 ### 6.3 Trust grade
 
-The arrivals contract carries an optional `grade` — a letter **A–E** derived from the
-sample size behind the estimate and the width of the P25–P75 spread, plus the `± X min`
-the UI shows. It is **absent, not defaulted**, whenever `evidence.bucket === 'none'`; an
-untracked departure has no letter and the UI must say "untracked."
+The arrivals contract carries an optional `grade` — a letter **A–E** derived from two
+things a rider actually cares about: how much evidence is behind the estimate, and how
+wide the answer is. `spreadMin` is **half the P25–P75 spread in whole minutes**, i.e. the
+`± X min` the UI renders.
 
-**Verification status:** the `TrustGrade` contract is defined in `shared/types.ts` and
-imported by `server/src/api.ts`, but at the stamp at the top of this file the tier table
-and `gradeFor` implementation had not yet landed in `api.ts`. Treat the specific tier
-boundaries as unverified until the code is re-read.
+A grade is awarded by the first tier whose *both* conditions are met:
+
+| Letter | Minimum n | Maximum ± spread |
+|---|---:|---:|
+| **A** | 40 | 4 min |
+| **B** | 25 | 6 min |
+| **C** | 15 | 9 min |
+| **D** | 8 | 14 min |
+| **E** | — | — (has evidence, meets no tier above) |
+
+The D floor of n ≥ 8 is deliberately the same floor `selectEvidence` uses for its
+tightest bucket, so D is the weakest grade a stop-hour bucket can earn on sample size
+alone. Requiring *both* a sample-size minimum and a spread ceiling is what stops a
+well-sampled but wildly inconsistent route from being graded A: 200 observations spanning
+±20 minutes is a lot of evidence that the route is unpredictable, and the letter should
+say so.
+
+The `grade` field is **absent, not defaulted**, whenever `evidence.bucket === 'none'`. An
+untracked departure has no letter and the UI must say "untracked" — never a soft "E" that
+looks like a measurement.
+
+*Verified in `server/src/api.ts` (`GRADE_TIERS`, `gradeFor`, `spreadMinutes`) at 21:50
+America/Toronto, with unit tests in `server/src/api.test.ts`.*
 
 ---
 
@@ -395,31 +453,52 @@ boundaries as unverified until the code is re-read.
 The forecast answers a different question from detection: not *did this trip vanish*
 but *how often does this route×hour vanish*.
 
-**Method.** For a `(route, hour-of-week)` cell, over a trailing window:
+**Method.** For a `(route_id, hour_of_week)` cell over a trailing 14-day window:
 
 ```
-ghost rate = ghosts recorded in that cell / scheduled trips in that cell
+rate = ghosts in that cell / scheduled trips in that cell
 ```
 
-Both numerator and denominator are counted over the **same** watched hour cells — a
-rate computed against hours we were not collecting would be arbitrarily deflated by our
-own downtime, which is the classic way this kind of metric lies.
+**The denominator is the hard part, and it is derived rather than assumed.** A *watched
+cell* is a wall-clock `(calendar-date, hour-of-week)` pair in which the collector
+demonstrably ran — proven by at least one row in `trip_delay_obs` whose `ts` falls inside
+that hour. The denominator then counts scheduled trips whose start lands in a watched
+cell, and the numerator counts ghosts whose scheduled start lands in **the same** watched
+cells.
 
-**Gating.** The `GhostRisk` field is present on a departure **only** when the cell both
-(a) clears a sample-size gate on the denominator and (b) shows a rate that is genuinely
-elevated. Levels are `elevated` and `high`. A quiet route simply has no field — there is
-no "low risk" badge, because a badge saying "low risk" on a cell with three observations
-is a fabrication wearing a calm expression. The response carries `rate`, `n`, `ghosts`
-and `windowDays` so the number can be audited by whoever reads it.
+This matters more than it looks. The lazy version — "days on which we saw anything" —
+silently counts scheduled trips from hours the collector slept through, deflating the
+rate by our own downtime. Restricting both sides to the same cells is what makes the
+ratio mean anything at all. An hour in which the collector ran but recorded zero
+observations is indistinguishable from an hour it did not run, so it is treated as
+unwatched; that drops the matching ghosts too, keeping the ratio consistent rather than
+inflated.
 
-The denominator query is expensive, so it is recomputed on a **30-minute** refresh
-(`FORECAST_REFRESH_MS`) rather than per request.
+**Gating.** Thresholds are structural and chosen *a priori* — deliberately not tuned to
+any observed distribution, because tuning a threshold to make your own numbers look
+interesting is how this kind of metric stops being a measurement:
 
-**Verification status:** `GhostRisk` is fully specified in `shared/types.ts` and
-imported by `api.ts`, and `FORECAST_REFRESH_MS` is present in `api.ts`. The
-`ghostRiskFor` implementation and its exact thresholds had **not** landed at the stamp
-at the top of this file. The method above is the design intent; the specific gate values
-must be read from the code before being quoted anywhere.
+| Constant | Value | Meaning |
+|---|---|---|
+| `GHOST_RISK_MIN_N` | **8** | A cell with fewer than eight scheduled trips is an anecdote, not a rate. |
+| `GHOST_RISK_ELEVATED_RATE` | **> 0.08** | `elevated` — roughly one run in twelve went missing. |
+| `GHOST_RISK_HIGH_RATE` | **> 0.20** | `high` — more than one run in five went missing. |
+
+Below the elevated threshold **there is no chip at all** — the field is simply absent.
+There is deliberately no "low risk" badge: a reassuring label on a cell with eight
+observations is a fabrication wearing a calm expression. A cell reporting more ghosts
+than scheduled trips is also withheld rather than reported as >100%, since the two sides
+must then disagree about the window.
+
+The response carries `rate`, `n` (the denominator), `ghosts` (the numerator) and
+`windowDays`, so anyone can check the arithmetic. The denominator query is expensive, so
+it is recomputed on a **30-minute** refresh (`FORECAST_REFRESH_MS`) rather than per
+request.
+
+*Verified in `server/src/api.ts` (`ghostRiskFor`, `GHOST_RISK_*`) at 21:50
+America/Toronto, with unit tests in `server/src/api.test.ts`. Note that with the board
+inert (§9.2) there are zero ghosts, so every cell currently returns `null` — the forecast
+is correct and silent, not broken.*
 
 ---
 

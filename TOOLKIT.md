@@ -46,6 +46,41 @@ TS directly (`npm run seed:toronto`, `npm run collect`).
 - **.env loading** — used Node's built-in `process.loadEnvFile()` (no `dotenv`).
 - **HTTP** — used the global `fetch` + `AbortController` (Node 24), no `axios`/`node-fetch`.
 
+## Vibe Coder Toolkit — every named resource, and what actually happened
+
+The spec names eight front-end resources, each with an assigned job, and requires that
+**every toolkit integration is either real or explicitly substituted here — zero
+hallucinated packages or components.**
+
+**The honest headline: none of the eight were used. Zero of them are installed.**
+Verified by direct filesystem check of `node_modules` — `@rive-app/react-canvas`,
+`animejs`, `motion`, `framer-motion`, `kokonutui`, `magicui`, `reactbits`, `limora` and
+`bklit` are all **absent**. The entire interface was hand-built. This table records each
+substitution rather than leaving the line item silent.
+
+| # | Resource | Assigned job | Outcome |
+|---|---|---|---|
+| 1 | **KokonutUI** (kokonutui.com) | Pre-built React/Tailwind UI blocks | **Not used.** The project has no Tailwind and no component library at all. Every surface — `NearbyPanel`, `DepartureRow`, `StopHeader`, `TabBar`, `TopBar`, `SettingsSheet`, `AlertsPanel`, the skeletons and the empty states — is a hand-written React component over three hand-written CSS files (`tokens.css`, `global.css`, `app.css`). The design is a transit-specific dark UI with a live map; generic marketing blocks had nothing to contribute to it. |
+| 2 | **Magic UI** (magicui.design) | Animated marketing/landing components | **Not used.** GhostBus has no landing page. It opens directly on the Nearby view — the app *is* the pitch. There was no surface for animated hero components to live on. |
+| 3 | **React Bits** (reactbits.dev) | Animated React component snippets | **Not used.** The animated pieces this app needs are domain-specific and had no off-the-shelf equivalent: the ~1,500-vehicle MapLibre symbol layer eased between polls on a single reused GeoJSON FeatureCollection, and the voxel sprites drawn procedurally to an offscreen canvas in `web/src/map/sprites.ts`. |
+| 4 | **Anime.js** | Timeline/keyframe animation | **Not used.** Substituted by native CSS `@keyframes` (5 in `app.css`) plus `requestAnimationFrame` for the one case CSS cannot express — per-frame interpolation of vehicle positions across a live GeoJSON source. A JS animation library would have added weight to do less. |
+| 5 | **Motion** (motion.dev) | React animation primitives | **Not used.** Substituted by four declared easing tokens in `tokens.css` — `--ease-standard: cubic-bezier(0.4,0,0.6,1)`, `--ease-out: cubic-bezier(0.16,1,0.3,1)`, `--ease-spring: cubic-bezier(0.28,0.11,0.32,1)`, `--ease-in: cubic-bezier(0.4,0,1,1)` — applied through CSS transitions. Keeping motion in CSS is also what makes the global `prefers-reduced-motion: reduce` rule able to flatten *everything* from one place. |
+| 6 | **Rive** (`@rive-app/react-canvas`) | Interactive animated mascot/illustration | **Not used, and this is the most concrete substitution.** The ghost mascot on the Ghost Feed's empty state is **not a `.riv` file** — it is `web/src/components/GhostMascot.tsx`, a voxel ghost drawn as one `<rect>` per cell on a 9×10 character-map grid, with three tonal bands for top-light and an offset dark copy behind it for the extruded faces. Its drift is a plain CSS keyframe whose two ends both sit at `translateY(0)`, so a reduced-motion viewer sees a still ghost. Zero dependencies, zero images, zero network requests, and it inherits the theme tokens automatically — none of which a hosted runtime plus a binary asset would have done. |
+| 7 | **Limora** (limora.ai) | — | **Not used.** No feature in Tier 0 called for it, and nothing was added speculatively. |
+| 8 | **Bklit** (bklit.com) | Web analytics | **Not used — and deliberately so.** GhostBus ships **no analytics of any kind**: no third-party script, no telemetry endpoint, no request logging (`Fastify({ logger: false })`). "Zero PII by design" (see `SECURITY.md` §7) is a structural claim, and it would have been false the moment an analytics beacon was embedded. This one is a refusal, not an omission. |
+
+**Why this is the right answer rather than an excuse.** The spec's non-negotiable is
+*no hallucinated packages* — a dependency claimed but not installed, or a component
+credited but not used, is exactly the failure mode it exists to prevent. Installing eight
+libraries so a checklist could be ticked would have produced precisely the dishonest
+artefact the rule forbids. What is written above is verifiable in seconds:
+`ls node_modules | grep -E 'rive|anime|motion|kokonut|magic|reactbits|limora|bklit'`
+returns nothing, and `package.json` lists sixteen runtime dependencies, none of which is
+a UI or animation library.
+
+`CREDITS.md` §2 states the same thing from the other direction: no third-party UI
+component was adapted, because none was used.
+
 ## Notes on `gtfs-realtime-bindings` version
 
 The pre-existing scaffold pinned `^1.1.1`; the current latest is `2.1.0` (verified).
