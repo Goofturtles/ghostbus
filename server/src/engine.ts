@@ -479,15 +479,27 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
    * the birth cycle is impossible given the merge floor, and refreshing the anchor would
    * destroy the only clean measurement available.
    */
-  async function lockPendingBirths(inp: EngineCycleInput, nowS: number): Promise<void> {
-    for (const [rtTripId, birth] of [...births]) {
+  /**
+   * Drop births we can no longer bind. This runs EVERY cycle, not only when the board is
+   * active: with an inactive board nothing is ever locked, so pruning inside the lock path
+   * left the pending map growing by ~100 entries a cycle forever — a leak that only shows
+   * up in exactly the state this deployment sits in until the board activates.
+   */
+  function expireBirths(nowS: number): void {
+    for (const [rtTripId, birth] of births) {
       if (nowS - birth.bornAtS > BIRTH_EXPIRY_S || birth.predFirstEpochS < nowS - BIRTH_EXPIRY_S) {
         births.delete(rtTripId);
         refusedTrips.set(rtTripId, 'refused_unresolved');
         stats.bindings.refusedUnresolved++;
-        continue;
       }
+    }
+    // refusedTrips is the other unbounded map: it exists to stop us retrying a trip we
+    // already judged, and a trip id never returns once it has left the feed.
+    if (refusedTrips.size > 50_000) refusedTrips.clear();
+  }
 
+  async function lockPendingBirths(inp: EngineCycleInput, nowS: number): Promise<void> {
+    for (const [rtTripId, birth] of [...births]) {
       const pattern = rtPatternByTrip.get(rtTripId);
       if (!pattern) continue;
       if (quarantined.has(pattern.rtPatternId)) {
@@ -947,6 +959,7 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
     // (d) Births and locking run even while suppressed, so the machinery keeps warming;
     // only the WRITE of delay rows is gated.
     stats.bindings.births += captureBirths(inp, nowS);
+    expireBirths(nowS);
     if (stats.boardActive) {
       try { await lockPendingBirths(inp, nowS); } catch (e) { console.error('[engine] lock failed:', e); }
     }
