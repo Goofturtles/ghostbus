@@ -9,14 +9,23 @@
 // from a fix that may no longer be true. There is no state in which this function
 // keeps counting down from data it cannot vouch for.
 
-import { walkSeconds } from './format';
+import { walkSeconds } from './walk';
 
 /** Below this the rider is standing at the stop. A consumer GPS fix is not
  *  precise enough to claim otherwise, and someone already at the stop cannot
  *  "miss" a bus by walking — so this outranks the buffer arithmetic. */
 export const AT_STOP_M = 40;
-/** A fix older than this is not a position any more, it is a memory. */
-export const STALE_FIX_MS = 90_000;
+/** A fix older than this is not a position any more, it is a memory.
+ *
+ *  MEASURED, not assumed (live TTC feed, 2026-07-24, sampled every 6s for a
+ *  minute): the server polls the agency every 45s (poller.ts POLL_MS) and the
+ *  feed's own vehicle timestamps are already ~40s behind our clock when they
+ *  arrive, so a perfectly healthy fix sawtooths between ~41s and ~106s old. The
+ *  spec's 90s would therefore have fired on every polling cycle and told riders
+ *  we could not see a vehicle that we could see perfectly well — an artifact of
+ *  our own cadence dressed up as a fact about the bus. 150s is the first age
+ *  that means the vehicle actually missed a poll of the feed. See DECISIONS §27. */
+export const STALE_FIX_MS = 150_000;
 /** Buffer at or above this is comfortable; below it, the rider should hurry. */
 export const COMFORTABLE_SEC = 120;
 
@@ -45,6 +54,11 @@ export interface CatchInput {
   arrivalMs: number | null;
   /** the freshest position seen for a vehicle on this route, however old. */
   vehicle: VehicleFix | null;
+  /** true when the vehicle feed itself is not healthy (or we cannot reach our own
+   *  API). The newest fix we hold cannot be refreshed, so it is not trustworthy
+   *  however recently it arrived — this trips the same degradation as staleness,
+   *  immediately rather than after it ages out. */
+  feedDown?: boolean;
 }
 
 export interface CatchVerdict {
@@ -86,13 +100,18 @@ export function computeVerdict(i: CatchInput): CatchVerdict {
   // including its distance to the stop, which would otherwise leak a stale
   // position into the UI underneath a headline that says we cannot see it.
   const fixUsable = i.vehicle != null
+    && !i.feedDown
     && finite(i.vehicle.ts, i.vehicle.lat, i.vehicle.lon, i.nowMs)
     && i.nowMs - i.vehicle.ts > -FUTURE_FIX_TOLERANCE_MS
     && i.nowMs - i.vehicle.ts <= STALE_FIX_MS;
   const fixAgeSec = i.vehicle == null || !finite(i.vehicle.ts, i.nowMs)
     ? null
     : Math.max(0, Math.round((i.nowMs - i.vehicle.ts) / 1000));
-  const base = { distanceM: null, walkSec: null, bufferSec: null, fixAgeSec, vehicleDistM: null, leaveByMs: null };
+  // Where the vehicle is relative to the stop stays true even when we cannot say
+  // anything about the RIDER — so it survives 'noGeo' and 'gone', and disappears
+  // only when the fix itself is the thing we distrust.
+  const vehicleDistM = fixUsable && i.vehicle != null && i.stop != null ? haversineM(i.vehicle, i.stop) : null;
+  const base = { distanceM: null, walkSec: null, bufferSec: null, fixAgeSec, vehicleDistM, leaveByMs: null };
 
   // Without two real endpoints there is no walk to time — and a walk timed from a
   // fallback location would be a fabricated position, which is the one thing this
@@ -117,13 +136,12 @@ export function computeVerdict(i: CatchInput): CatchVerdict {
   // Never keep computing from a position we can no longer vouch for. This one
   // gate covers all three ways trust is lost: the feed dropped, the vehicle
   // vanished (it simply stops refreshing and ages out), or its clock is wrong.
-  if (!fixUsable || i.vehicle == null) return { ...withWalk, kind: 'unseen' };
+  if (!fixUsable) return { ...withWalk, kind: 'unseen' };
 
-  const vehicleDistM = haversineM(i.vehicle, i.stop);
   const secsToArrival = Math.round((arrivalMs - i.nowMs) / 1000);
-  if (distanceM <= AT_STOP_M) return { ...withWalk, vehicleDistM, kind: 'atStop', bufferSec: secsToArrival };
+  if (distanceM <= AT_STOP_M) return { ...withWalk, kind: 'atStop', bufferSec: secsToArrival };
 
   const bufferSec = secsToArrival - walkSec;
   const kind: VerdictKind = bufferSec < 0 ? 'missed' : bufferSec < COMFORTABLE_SEC ? 'tight' : 'comfortable';
-  return { ...withWalk, vehicleDistM, kind, bufferSec };
+  return { ...withWalk, kind, bufferSec };
 }

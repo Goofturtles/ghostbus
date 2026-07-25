@@ -119,7 +119,7 @@ export function SettingsSheet() {
           <Toggle label={t('access.largerText')} on={largerText} onChange={setLargerText} />
           <Toggle label={t('access.highContrast')} on={highContrast} onChange={setHighContrast} />
 
-          <button className="set-row set-link" onClick={() => useStore.getState().openAbout(true)}>
+          <button className="set-row set-link" aria-haspopup="dialog" onClick={() => useStore.getState().openAbout(true)}>
             <span className="set-label">{t('settings.about')}</span>
             <ChevronIcon width={18} height={18} aria-hidden />
           </button>

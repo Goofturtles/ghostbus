@@ -131,3 +131,28 @@ test('a slower pace makes the same catch harder, never easier', () => {
   const slow = v({ paceMps: 3.6 / 3.6 }).bufferSec as number;
   assert.ok(slow < fast);
 });
+
+test('a stale fix outranks standing at the stop — we do not vouch for a position we cannot see', () => {
+  // Deliberate precedence, pinned so a future reorder has to argue with a test.
+  // A rider AT the stop still has an arrivalMs, so the atStop branch would happily
+  // print a countdown. But arrivalMs is only as trustworthy as the vehicle fix
+  // behind it: if the feed dropped, the vehicle aged out, or its clock is wrong,
+  // "arriving in 2 min" is a claim we cannot support. Saying we have lost sight
+  // of it is the honest answer even when the rider is standing on the platform.
+  const atStopStale = computeVerdict({
+    nowMs: NOW, rider: STOP, stop: STOP, paceMps: PACE,
+    arrivalMs: NOW + 2 * 60_000,
+    vehicle: { ...STOP, ts: NOW - STALE_FIX_MS - 1_000 },
+  });
+  assert.equal(atStopStale.kind, 'unseen', 'stale fix must win over atStop');
+
+  // ...and with a fresh fix the same rider does get the atStop countdown, so the
+  // gate above is the only thing suppressing it.
+  const atStopFresh = computeVerdict({
+    nowMs: NOW, rider: STOP, stop: STOP, paceMps: PACE,
+    arrivalMs: NOW + 2 * 60_000,
+    vehicle: { ...STOP, ts: NOW },
+  });
+  assert.equal(atStopFresh.kind, 'atStop');
+  assert.equal(atStopFresh.bufferSec, 120);
+});

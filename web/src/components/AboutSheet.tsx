@@ -13,11 +13,11 @@ import { useStore } from '@/store';
 import { fmtClock, fmtNum } from '@/lib/format';
 import { WarningIcon } from './icons';
 
-function Stat({ label, value, from }: { label: string; value: string; from: string }) {
+function Stat({ label, value, from, none = false }: { label: string; value: string; from: string; none?: boolean }) {
   return (
     <div className="abt-stat">
       <span className="gc-label">{label}</span>
-      <b className="abt-stat-num tnum">{value}</b>
+      <b className={`abt-stat-num tnum ${none ? 'abt-stat-none' : ''}`}>{value}</b>
       <span className="abt-stat-from">{from}</span>
     </div>
   );
@@ -82,7 +82,7 @@ export function AboutSheet() {
     <div className="sheet-scrim" onClick={close}>
       <div
         ref={ref}
-        className="settings-sheet about-sheet glass"
+        className="settings-sheet about-sheet"
         role="dialog"
         aria-modal="true"
         aria-label={t('about.title')}
@@ -94,7 +94,9 @@ export function AboutSheet() {
           <button className="btn btn-quiet sheet-close" onClick={close}>{t('settings.done')}</button>
         </div>
 
-        <div className="about-body scroll">
+        {/* Focusable so a keyboard-only reader can scroll eight sections of credits:
+            the Done button is the only other focusable in the dialog. */}
+        <div className="about-body scroll" tabIndex={0} role="group" aria-label={t('about.bodyLabel')}>
           <p className="abt-lede">{t('about.what')}</p>
           <p className="abt-p">{t('about.what2')}</p>
 
@@ -113,8 +115,9 @@ export function AboutSheet() {
                   <Stat label={t('about.statCancelled')} value={fmtNum(stats.cancelledThisWeek)} from={t('about.statCancelledFrom')} />
                   <Stat
                     label={t('about.statDelay')}
-                    value={stats.avgDelayRecentSec == null ? '—' : t('about.statDelaySec', { n: fmtNum(stats.avgDelayRecentSec) })}
+                    value={stats.avgDelayRecentSec == null ? t('eta.untrackedMark') : t('about.statDelaySec', { n: fmtNum(stats.avgDelayRecentSec) })}
                     from={stats.avgDelayRecentSec == null ? t('about.statDelayNone') : t('about.statDelayFrom')}
+                    none={stats.avgDelayRecentSec == null}
                   />
                 </div>
                 <p className="abt-note">{t('about.statsNote', { time: fmtClock(stats.updatedAtMs) })}</p>

@@ -47,9 +47,7 @@ export function relSeconds(ms: number, now: number): number {
   return Math.max(0, Math.round((now - ms) / 1000));
 }
 
-/** Walking seconds to cover `metres` at `mps`, inflated by a route factor to
- *  account for real (non-straight-line) walking paths. Default 1.25. */
-export function walkSeconds(metres: number, mps: number, routeFactor = 1.25): number {
-  if (!Number.isFinite(metres) || metres <= 0 || mps <= 0) return 0;
-  return Math.round((metres / mps) * routeFactor);
-}
+// The walk maths moved to lib/walk.ts so it can be unit-tested without dragging
+// the i18n runtime (and the DOM) into a Node test. Re-exported here because it is
+// where the rest of the app has always imported it from.
+export { walkSeconds } from './walk';
