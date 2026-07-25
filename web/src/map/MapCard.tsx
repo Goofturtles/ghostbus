@@ -455,7 +455,16 @@ export default function MapCard() {
    * synchronously but defers rendering to the next frame — so the intermediate steps
    * never paint, and the user sees one camera move to the answer.
    */
-  const FRAME_START_ZOOM = 16.1;
+  // RAISED 16.1 -> 16.35, measured off the reference rather than guessed. Its
+  // walk path (labelled "4 min walk", so ~250 m) spans about 210 px of a ~1030 px
+  // map pane, which puts the reference camera at ~0.95 m/px — z16.4 at Toronto's
+  // latitude — and at that scale its cubes are ~110 px, i.e. one city block each.
+  // At 16.1 our blocks came out a third smaller than the reference's and the frame
+  // read as busier than it should. This is the ceiling: `frameCamera` only ever
+  // zooms OUT from here, so a longer walk or a phone-sized card still fits, and
+  // z17 was tried and rejected — one whole-block footprint fills the pane and the
+  // grid disappears.
+  const FRAME_START_ZOOM = 16.35;
   const FRAME_MIN_ZOOM = 14.7;
 
   function markerBoxes(): DOMRect[] {

@@ -918,3 +918,129 @@ No console or page errors. Map chunk 985.9 kB / **262.1 kB gzipped** (was ~256 k
 7. **Street-name density is close but not equal.** The reference shows two names in a 715px
    frame; we show four to six, thinned with `symbol-spacing: 900` and `text-padding: 34`.
    Pushing further starts dropping the name of the street the rider is actually standing on.
+
+---
+
+## §32 — Closing the last three reference gaps: chunkiness, palette, and the composition
+
+§31 rebuilt the map against the reference and named what still differed. A side-by-side of a
+**production** screenshot against the reference sheet then isolated three gaps that were not on
+that list, and this section closes them. Everything here is in `web/src/map/**` except one
+constant in `web/src/hooks/useLive.ts`, which is where the third gap actually lived.
+
+### The measurement that made this tractable
+
+The previous pass matched the reference's **dominant colours** — a top-N list off a hue×value
+histogram — and the result still read as "greyer and flatter". A top-N list is the wrong
+statistic: it says which tones appear, not how much of the frame each one covers.
+
+The statistic that answers the actual complaint is the **value-decile histogram**, computed the
+same way on both images: the reference's desktop map region, and our own GL canvas read back per
+frame (`map.once('render', () => map.getCanvas().toDataURL())` — the drawing buffer is only
+intact inside a render tick, because `preserveDrawingBuffer` is false). Percentage of map pixels
+per 0.1 band of HSV value:
+
+|            | v<0.1 | .1–.2 | .2–.3 | .3–.4 | .4–.5 | >0.5 | mean S | mean V | mean hue |
+|------------|-------|-------|-------|-------|-------|------|--------|--------|----------|
+| reference  |  0.1  | 22.5  | 43.1  | 16.9  | 12.7  |  5.7 | 0.574  | 0.290  | 230      |
+| §31 build  |  0.0  | 13.4  | 37.3  |  2.9  | 43.4  |  3.0 | 0.480  | 0.345  | 231      |
+| this build |  0.0  | 30.8  | 30.0  | 24.2  | 14.2  |  0.8 | 0.571  | 0.284  | 233      |
+
+The §31 build was **bimodal** — dark walls at 0.25, bright roofs at 0.44, a hole between them —
+where the reference is a continuous ramp. That hole is exactly what "flat" looks like on screen:
+two tones and no modelling in between. And its mean saturation was 0.48 against 0.57, which is
+the "greyer" half of the same sentence. Note the mean hue was already right; the problem was
+never that the violet was the wrong colour.
+
+### 1. Palette
+
+Walls drop a step and gain chroma (`#1b203f` to `#12123a`); the ordinary roof drops out of the
+top band into the mid-band (`#454670` to `#363458`) so the ramp fills in; the blue-slate and
+violet families keep a brighter roof so the top band stays populated without owning the frame;
+the violet and rose accents move warmer (hue 262 to 250, and a rose at hue ~308) so the
+reference's "clear teal and mauve accent blocks" actually read as such.
+
+Result above: mean saturation 0.571 vs 0.574, mean value 0.284 vs 0.290, mean hue 233 vs 230.
+
+### 2. Chunkiness — an honest generalisation, and the lever that was NOT used
+
+`MIN_HEIGHT_BY_ZOOM` at the diorama zoom went 8 m to 16 m. Swept 8/12/16/20/26/34 at the default
+framing and measured: the lit-roof share of the frame falls 43% to 32% (reference ~30%) and the
+dark ground/street share climbs 13% to 30% (reference 22.5%). 16 m is where the summary
+statistics land closest while the block count stays high enough that the grid still reads as a
+city.
+
+What this removes is real, and it is removed the way every vector basemap removes its own small
+features: some genuine OSM buildings are omitted at wide zoom, and all of them are back by z17.4.
+
+**The lever deliberately not used:** merging neighbouring footprints into one "block". The
+reference reads as one chunky cube per city block because it is an illustration; downtown
+Toronto's real OSM footprints have a median area of ~600 m², several per block. Dissolving them
+into a block-sized mass would draw a building that does not exist, on a map whose whole argument
+is that it does not make things up. So the city stays finer-grained than the reference, and that
+is a gap we accept rather than close.
+
+### 3. Camera
+
+Pitch 58 to 50, and `FRAME_START_ZOOM` 16.1 to 16.35.
+
+The pitch note in §31 had the direction right — the reference is a comparatively top-down camera
+— but stopped short. At 58 the perspective gradient is severe enough that the nearest blocks are
+several times the on-screen size of the ones a street away, present mostly wall, and hide the
+grid behind them. The reference is near-isometric: block size is roughly uniform top to bottom of
+frame. 50 restores that, and with it the dark street gaps between blocks everywhere rather than
+only near the horizon.
+
+The zoom was measured off the reference rather than guessed. Its walk path is labelled
+"4 min walk" (~250 m) and spans ~210 px of a ~1030 px map pane, which puts the reference camera
+at ~0.95 m/px — z16.4 at Toronto's latitude — and at that scale its cubes are ~110 px, one city
+block each. `frameCamera` only ever zooms OUT from `FRAME_START_ZOOM`, so a longer walk or a
+phone-sized card still fits. z17 was tried and rejected: one whole-block footprint fills the pane
+and the grid disappears, reproducing the "canyon" failure §31 already recorded.
+
+### 4. The composition was a DATA problem, not a code problem
+
+The reference's defining composition — stop marker card, purple stop pin, beaded walk path with
+its walker-glyph node, You beacon — was absent from the default view. The cause was not the
+marker code or the collision rules. `DEFAULT_LOCATION` sat **~30 m** from its nearest stop, so
+You and the stop were effectively the same pixel: the walk was "1 min", the beaded path had no
+length to draw, and `collide()` correctly suppressed the stop marker as a duplicate of the You
+beacon. The reference shows a rider about four minutes from their stop, and that geometry simply
+was not in the data the default produced.
+
+The fix is the default location, not the drawing code. Candidates were found by gridding downtown
+Toronto against the real `stops` table and keeping points whose **nearest** stop is a genuine
+4-minute walk under the app's own arithmetic (`walkSeconds(d, 1.333 m/s, routeFactor 1.25)`,
+i.e. d between 224 m and 288 m), restricted to stops actually served by a streetcar route:
+
+    43.645, -79.38736  ->  stop 15644  King St West at John St East Side  (504 King, eastbound)
+                           236 m  ·  4 min  ·  second-nearest stop 15643 at 283 m, also 4 min
+
+Verified against a production build: the stop card, pin, beaded path, walker node and the You
+card reading **"You / 4 min walk"** are all present and unsuppressed at 1280×800 and 390×844, in
+light and dark, in `en` and `fr-CA` (`Vous / 4 min à pied`).
+
+Nothing about this is faked. The stop, the distance and the walk time are computed by exactly the
+code that runs on a real geolocation fix; no walk time is hardcoded and no path is drawn that the
+data does not support. The point is a *starting viewpoint* shown only until the rider grants
+location, and the UI says so on its face — "Using a default location — tap to use yours".
+
+### Verification (production build, `vite build` + `npm start`, real browser)
+
+`trueOverlaps: 0` and `hScroll: false` from §F's probe at 1280×800 and 390×844, light and dark,
+`en` and `fr-CA`. Zero vertical-overflow clipping hits. The map-marker pairwise check (not
+covered by §F) reports no intersections among the You beacon, stop marker, walker node, route
+badge, control stack and attribution. 168 building features render at the default desktop
+framing, which also proves the extrusions are live in production rather than a dev-only illusion.
+
+### What still differs — added to the §31 list
+
+8. **The city is finer-grained than the reference.** See §2 above: real footprints, several per
+   block, and merging them is off the table. Measured residue: our v0.1–0.2 band is 30.8% against
+   the reference's 22.5% (more visible ground) and our 0.2–0.3 band is 30.0% against 43.1%.
+9. **The route still does not turn** — §31 item 1 is unchanged and still server-side.
+10. **No live countdown, no `Live` pill on a row, and no alert card in the screenshots.** The
+    static schedule board covers 2026-07-26 onward and today is before it, so the honest state of
+    this stop is "No departures in the next 90 minutes" followed by the genuine next scheduled
+    service. The reference's `7 min` / `9 min` / `Trip cancelled 7:26 PM` are illustrative and
+    were not reproduced; a board was not invented to make a screenshot match a mockup.
