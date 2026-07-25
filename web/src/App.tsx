@@ -1,5 +1,6 @@
-import { useEffect, lazy, Suspense } from 'react';
+import { useEffect, useState, lazy, Suspense } from 'react';
 import { useTranslation } from 'react-i18next';
+import type { DepartureDto } from '@shared/types';
 import { useStore } from './store';
 import { useLive } from './hooks/useLive';
 import { TopBar, MobileTopStrip } from './components/TopBar';
@@ -7,6 +8,8 @@ import { TabBar } from './components/TabBar';
 import { NearbyPanel } from './components/NearbyPanel';
 import { AlertsPanel } from './components/AlertsPanel';
 import { SettingsSheet } from './components/SettingsSheet';
+import { AboutSheet } from './components/AboutSheet';
+import { CatchView } from './components/CatchView';
 import { RouteIcon, BookmarkIcon, LayersIcon } from './components/icons';
 
 // The real map (maplibre-gl) is code-split so it never lands in the initial JS
@@ -49,6 +52,10 @@ export default function App() {
 
   useEffect(() => start(), [start]);
 
+  // The departure the rider is trying to catch. Identity only — CatchView re-reads
+  // the live numbers off the board on every refresh, so this never goes stale.
+  const [catching, setCatching] = useState<DepartureDto | null>(null);
+
   const openRoute = () => setTab('plan');
 
   return (
@@ -65,7 +72,7 @@ export default function App() {
                 <MapCard />
               </Suspense>
               <div className="sheet">
-                <NearbyPanel onOpen={openRoute} />
+                <NearbyPanel onOpen={openRoute} onCatch={setCatching} />
               </div>
             </div>
           )}
@@ -85,6 +92,8 @@ export default function App() {
 
       <TabBar />
       <SettingsSheet />
+      <AboutSheet />
+      {catching && <CatchView dep={catching} onClose={() => setCatching(null)} />}
     </div>
   );
 }

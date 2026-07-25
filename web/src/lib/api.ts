@@ -3,7 +3,7 @@
 // drift from what the API actually returns.
 import type {
   HealthResponse, StopsResponse, ArrivalsResponse, VehiclesResponse, RouteShapeResponse,
-  AlertsResponse, GhostFeedResponse,
+  AlertsResponse, GhostFeedResponse, StatsResponse,
 } from '@shared/types';
 
 /** A viewport box in [minLon, minLat, maxLon, maxLat] order (what the API expects). */
@@ -46,4 +46,6 @@ export const api = {
 
   ghostFeed: (hours?: number, signal?: AbortSignal) =>
     j<GhostFeedResponse>(`/api/ghosts/feed${hours == null ? '' : `?hours=${hours}`}`, signal),
+
+  stats: (signal?: AbortSignal) => j<StatsResponse>('/api/stats', signal),
 };

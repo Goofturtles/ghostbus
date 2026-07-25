@@ -58,6 +58,12 @@ interface LiveState {
   /** serverNow - clientNow, so countdowns/freshness are honest despite clock skew. */
   skewMs: number;
 
+  /** navigator.onLine, kept in state so React re-renders when it flips. It is only
+   *  ever used to *explain* an absence of data — never to suppress data we have,
+   *  because it lies on captive portals. Where the two disagree, the app's own
+   *  fetch outcome (healthError / arrivalsError) is what the UI trusts. */
+  online: boolean;
+
   start: () => () => void;
   requestLocation: () => void;
   refetchArrivals: () => void;
@@ -93,6 +99,7 @@ export const useLive = create<LiveState>((set, get) => ({
   ghostsError: false,
   ghostAnnouncement: null,
   skewMs: 0,
+  online: typeof navigator === 'undefined' ? true : navigator.onLine,
 
   start: () => {
     get().requestLocation();
@@ -104,12 +111,17 @@ export const useLive = create<LiveState>((set, get) => ({
     const arrivalsTimer = setInterval(() => { if (!document.hidden) get().refetchArrivals(); }, ARRIVALS_INTERVAL_MS);
     const alertsTimer = setInterval(() => { if (!document.hidden) get().refetchAlerts(); }, ALERTS_INTERVAL_MS);
     const ghostsTimer = setInterval(() => { if (!document.hidden) get().refetchGhosts(); }, GHOSTS_INTERVAL_MS);
-    const onVis = () => {
-      if (!document.hidden) {
-        get().refetchHealth(); get().refetchArrivals(); get().refetchAlerts(); get().refetchGhosts();
-      }
+    const refetchAll = () => {
+      get().refetchHealth(); get().refetchArrivals(); get().refetchAlerts(); get().refetchGhosts();
     };
+    const onVis = () => { if (!document.hidden) refetchAll(); };
+    // Coming back online recovers immediately rather than waiting out the next
+    // poll interval, so the offline empty state resolves itself without a reload.
+    const onOnline = () => { set({ online: true }); refetchAll(); };
+    const onOffline = () => set({ online: false });
     document.addEventListener('visibilitychange', onVis);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
 
     return () => {
       clearInterval(healthTimer);
@@ -117,6 +129,8 @@ export const useLive = create<LiveState>((set, get) => ({
       clearInterval(alertsTimer);
       clearInterval(ghostsTimer);
       document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
     };
   },
 

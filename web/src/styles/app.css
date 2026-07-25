@@ -740,6 +740,114 @@
 .switch-on .switch-knob { transform: translateX(20px); }
 .settings-privacy { font-size: 12px; color: var(--text-3); line-height: 1.5; margin: var(--s2) 0 0; }
 
+/* ============================ catch mode ============================ */
+/* Mobile: the sheet fills the screen (align-items:stretch beats the scrim's
+   flex-end). Desktop turns it into a centred floating card — see the media query. */
+.catch-scrim { align-items: stretch; }
+.catch-sheet {
+  width: 100%;
+  display: flex; flex-direction: column; min-height: 0;
+  border-radius: 0;
+  padding: calc(env(safe-area-inset-top, 0px) + var(--s5)) var(--s5) calc(var(--s6) + env(safe-area-inset-bottom, 0px));
+  animation: sheet-up var(--dur-reveal) var(--ease-out) both;
+}
+.catch-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--s3); margin-bottom: var(--s5);
+}
+.catch-id { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
+.catch-dest { font-size: 14px; font-weight: 600; color: var(--text-2); line-height: 1.35; }
+.catch-close { flex: 0 0 auto; min-height: 38px; padding: 8px 16px; }
+
+.catch-body { display: flex; flex-direction: column; gap: var(--s5); overflow-y: auto; }
+
+.catch-verdict { display: flex; flex-direction: column; align-items: flex-start; gap: var(--s2); }
+.catch-headline {
+  margin: 0;
+  font-size: 32px; font-weight: 800; letter-spacing: -0.03em; line-height: 1.25;
+  color: var(--text);
+}
+.catch-detail { margin: 0; font-size: 16px; line-height: 1.5; color: var(--text-2); }
+.catch-retry { margin-top: var(--s2); }
+
+/* Verdict tone. The three degraded states stay in body colour on purpose: they
+   are not alarms, they are the absence of a claim. */
+.verdict-comfortable .catch-headline { color: var(--live-text); }
+.verdict-tight .catch-headline { color: var(--warn-text); }
+.verdict-missed .catch-headline { color: var(--danger-text); }
+.verdict-atStop .catch-headline { color: var(--brand-strong); }
+
+.catch-evidence { display: flex; flex-direction: column; gap: var(--s3); }
+.cev {
+  display: flex; align-items: flex-start; gap: var(--s3);
+  padding: var(--s3) var(--s4);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-card), var(--inner-top);
+}
+.cev-glyph {
+  flex: 0 0 auto;
+  width: 34px; height: 34px; border-radius: var(--r-sm);
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--brand-soft); color: var(--brand);
+}
+.cev-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+/* Wrapping, never truncating: every line here is a claim's receipt, and half a
+   receipt in French at 390px is worse than two lines. */
+.cev-line { margin: 0; font-size: 14px; font-weight: 700; line-height: 1.4; color: var(--text); overflow-wrap: anywhere; }
+.cev-sub { margin: 0; font-size: 12px; line-height: 1.45; color: var(--text-2); overflow-wrap: anywhere; }
+.catch-basis { margin: 0; font-size: 12px; line-height: 1.55; color: var(--text-3); }
+
+/* ============================ about & credits ============================ */
+.about-sheet { max-height: 92vh; }
+.about-body { display: flex; flex-direction: column; gap: var(--s5); overflow-y: auto; }
+.abt-section { display: flex; flex-direction: column; gap: var(--s2); }
+.abt-h {
+  margin: 0;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--text-3); line-height: 1.5;
+}
+.abt-lede { margin: 0; font-size: 16px; font-weight: 600; line-height: 1.5; color: var(--text); }
+.abt-p { margin: 0; font-size: 14px; line-height: 1.55; color: var(--text-2); overflow-wrap: anywhere; }
+.abt-b { color: var(--text); font-weight: 700; }
+.abt-note { margin: 0; font-size: 12px; line-height: 1.55; color: var(--text-3); overflow-wrap: anywhere; }
+.abt-built { margin: 0; font-size: 15px; font-weight: 700; color: var(--text); line-height: 1.45; }
+.abt-warn { display: flex; align-items: flex-start; gap: 6px; color: var(--warn-text); }
+.abt-warn svg { flex: 0 0 auto; margin-top: 3px; }
+/* The licence's own required wording, set apart so it reads as a quotation of the
+   licence rather than as our prose. */
+.abt-attrib {
+  margin: 0; padding: 10px var(--s4);
+  border-radius: var(--r-sm);
+  background: var(--surface-2); color: var(--text);
+  font-size: 12.5px; font-weight: 600; line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.abt-stats { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s3); }
+.abt-stat {
+  display: flex; flex-direction: column; gap: 3px;
+  padding: var(--s3) var(--s4);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-card), var(--inner-top);
+  min-width: 0;
+}
+/* Five figures in a two-up grid: the last one takes the full width rather than
+   leaving a hole. */
+.abt-stat:last-child { grid-column: 1 / -1; }
+.abt-stat-num { font-size: 20px; font-weight: 800; line-height: 1.3; color: var(--text); }
+.abt-stat-from { font-size: 11px; line-height: 1.45; color: var(--text-3); }
+.abt-stat-skeleton { height: 84px; border-radius: var(--r-md); }
+
+.set-link { width: 100%; min-height: 44px; text-align: left; color: var(--text-2); }
+.set-link .set-label { flex: 1 1 auto; }
+
+/* ============================ offline ============================ */
+.state-offline .state-glyph { background: rgba(255, 69, 58, 0.14); color: var(--danger-text); }
+/* Must come after .state-body: same specificity, later wins. */
+.state-fine { font-size: 12.5px; line-height: 1.5; color: var(--text-3); }
+
 /* ============================ skeletons ============================ */
 .stophead-skeleton { height: 56px; border-radius: var(--r-md); }
 .dep-skeleton { height: 96px; border-radius: var(--r-md); }
@@ -767,4 +875,14 @@
   .map-card { aspect-ratio: 16 / 9; }
   .tabbar { justify-content: center; gap: var(--s10); }
   .tab { flex: 0 0 96px; }
+
+  /* Catch stops being a full-screen sheet and becomes a floating card. */
+  .catch-scrim { align-items: center; }
+  .catch-sheet {
+    max-width: 460px;
+    max-height: 86vh;
+    border-radius: var(--r-lg);
+    padding: var(--s5) var(--s6) var(--s6);
+  }
+  .catch-headline { font-size: 36px; }
 }

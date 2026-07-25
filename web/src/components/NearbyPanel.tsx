@@ -3,6 +3,7 @@ import type { DepartureDto } from '@shared/types';
 import { useLive, liveNow, selectedNearbyStop } from '@/hooks/useLive';
 import { StopHeader } from './StopHeader';
 import { DepartureRow } from './DepartureRow';
+import { OfflineCard } from './OfflineCard';
 import { LocateIcon, WarningIcon } from './icons';
 import { fmtServiceDate } from '@/lib/format';
 
@@ -28,29 +29,27 @@ export function NearbyPanel({ onCatch, onOpen }: {
 }) {
   const { t } = useTranslation();
   const arr = useLive((s) => s.arrivals);
-  const loading = useLive((s) => s.arrivalsLoading);
   const error = useLive((s) => s.arrivalsError);
   const nextService = useLive((s) => s.nextService);
   const healthError = useLive((s) => s.healthError);
   const geoStatus = useLive((s) => s.geoStatus);
+  const online = useLive((s) => s.online);
   const requestLocation = useLive((s) => s.requestLocation);
   const stop = selectedNearbyStop();
   const distanceM = stop?.distanceM;
 
-  // ----- loading (skeleton rows shaped like real ones, never a spinner) -----
-  if ((loading || geoStatus === 'pending') && !arr) {
-    return (
-      <div className="nearby-panel">
-        <div className="skeleton stophead-skeleton" />
-        <div className="dep-list">
-          {[0, 1, 2].map((i) => <div key={i} className="skeleton dep-skeleton" />)}
-        </div>
-      </div>
-    );
+  // ---- No board to show. The reason is always on screen — this column is never
+  // blank, because an unexplained empty space is exactly when a rider decides the
+  // app is broken. Most specific reason first.
+
+  // ----- the device has no network -----
+  if (!arr && !online) {
+    return <div className="nearby-panel"><OfflineCard /></div>;
   }
 
-  // ----- API unreachable -----
-  if (error && !arr) {
+  // ----- online, but the API is unreachable (this is also the captive-portal
+  // case, where navigator.onLine claims we are connected and the fetch says no) -----
+  if (!arr && error) {
     return (
       <div className="nearby-panel">
         <div className="state-card state-down" role="status">
@@ -62,7 +61,19 @@ export function NearbyPanel({ onCatch, onOpen }: {
     );
   }
 
-  if (!arr) return null;
+  // ----- still working on it: skeleton rows shaped like real ones, never a
+  // spinner, and never nothing (this also covers the brief window after a fix
+  // lands but before the first arrivals request resolves) -----
+  if (!arr) {
+    return (
+      <div className="nearby-panel">
+        <div className="skeleton stophead-skeleton" />
+        <div className="dep-list">
+          {[0, 1, 2].map((i) => <div key={i} className="skeleton dep-skeleton" />)}
+        </div>
+      </div>
+    );
+  }
 
   const rows = byRoute(arr.departures);
   const nextRows = nextService ? byRoute(nextService.departures).slice(0, 6) : [];

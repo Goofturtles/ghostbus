@@ -6,6 +6,7 @@ import { useStore } from '@/store';
 import { useTick } from '@/hooks/useTick';
 import { RouteBadge } from './Primitives';
 import { GhostMascot } from './GhostMascot';
+import { OfflineCard } from './OfflineCard';
 import { ghostCopyKey } from '@/lib/ghostCopy';
 import { fmtClock } from '@/lib/format';
 import {
@@ -200,6 +201,7 @@ export function AlertsPanel() {
   const alertsError = useLive((s) => s.alertsError);
   const ghosts = useLive((s) => s.ghosts);
   const ghostsError = useLive((s) => s.ghostsError);
+  const online = useLive((s) => s.online);
   const announcement = useLive((s) => s.ghostAnnouncement);
 
   // A polite live region: new ghost detections are announced once, and the message is
@@ -260,7 +262,9 @@ export function AlertsPanel() {
           </div>
         )}
 
-        {ghostsError && !ghosts ? (
+        {!ghosts && !online ? (
+          <OfflineCard compact />
+        ) : ghostsError && !ghosts ? (
           <div className="state-card state-down" role="status">
             <div className="state-glyph" aria-hidden><WarningIcon width={22} height={22} /></div>
             <p className="state-body">{t('ghost.unreachable')}</p>
@@ -292,7 +296,9 @@ export function AlertsPanel() {
           <span className="eyebrow alerts-updated">{updated}</span>
         </div>
 
-        {alertsError && !alerts ? (
+        {!alerts && !online ? (
+          <OfflineCard compact />
+        ) : alertsError && !alerts ? (
           <div className="state-card state-down" role="status">
             <div className="state-glyph" aria-hidden><WarningIcon width={22} height={22} /></div>
             <p className="state-body">{t('alert.unreachable')}</p>

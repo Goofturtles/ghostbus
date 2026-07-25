@@ -9,7 +9,9 @@ export type Tab = 'nearby' | 'plan' | 'saved' | 'alerts';
 export type AccessProfile = 'none' | 'wheelchair' | 'walker' | 'stroller' | 'lowVision' | 'slower';
 
 const PACE_MPS: Record<Pace, number> = { slow: 3.6 / 3.6, average: 4.8 / 3.6, fast: 6 / 3.6 };
-export const paceMps = (p: Pace) => PACE_MPS[p];
+/** Always a usable speed. `pace` is restored from localStorage, which anything can
+ *  write, and a corrupt value must not silently become a zero-second walk. */
+export const paceMps = (p: Pace) => PACE_MPS[p] ?? PACE_MPS.average;
 
 function ls<T>(key: string, fallback: T): T {
   try {
@@ -43,6 +45,7 @@ interface State {
   voice: boolean;
   savedStops: string[];
   settingsOpen: boolean;
+  aboutOpen: boolean;
   searchOpen: boolean;
   mapExpanded: boolean;
   locale: LocaleId;
@@ -62,6 +65,7 @@ interface State {
   toggleSaved: (id: string) => void;
   setLocaleId: (l: LocaleId) => void;
   openSettings: (v: boolean) => void;
+  openAbout: (v: boolean) => void;
   openSearch: (v: boolean) => void;
   setMapExpanded: (v: boolean) => void;
 }
@@ -82,6 +86,7 @@ export const useStore = create<State>((set, get) => ({
   voice: ls('gb.voice', false),
   savedStops: ls<string[]>('gb.saved', ['union']),
   settingsOpen: false,
+  aboutOpen: false,
   searchOpen: false,
   mapExpanded: false,
   locale: (localStorage.getItem('gb.lang') as LocaleId) || 'en',
@@ -106,6 +111,9 @@ export const useStore = create<State>((set, get) => ({
   },
   setLocaleId: (l) => { setLocale(l); set({ locale: l }); },
   openSettings: (settingsOpen) => set({ settingsOpen }),
+  // About replaces Settings rather than stacking on it: two modals deep is two
+  // focus traps deep, and there is nothing on this path that needs both open.
+  openAbout: (aboutOpen) => set({ aboutOpen, settingsOpen: aboutOpen ? false : get().settingsOpen }),
   openSearch: (searchOpen) => set({ searchOpen }),
   setMapExpanded: (mapExpanded) => set({ mapExpanded }),
 }));

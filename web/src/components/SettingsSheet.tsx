@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useStore, type Theme } from '@/store';
 import { LOCALES, type LocaleId } from '@/i18n';
+import { ChevronIcon } from './icons';
 
 function Segmented<T extends string>({ label, value, options, onChange }: {
   label: string;
@@ -117,6 +118,11 @@ export function SettingsSheet() {
           />
           <Toggle label={t('access.largerText')} on={largerText} onChange={setLargerText} />
           <Toggle label={t('access.highContrast')} on={highContrast} onChange={setHighContrast} />
+
+          <button className="set-row set-link" onClick={() => useStore.getState().openAbout(true)}>
+            <span className="set-label">{t('settings.about')}</span>
+            <ChevronIcon width={18} height={18} aria-hidden />
+          </button>
 
           <p className="settings-privacy">{t('privacy.body')}</p>
         </div>
