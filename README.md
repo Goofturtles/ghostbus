@@ -119,6 +119,10 @@ SELECT delay_s, COUNT(*) FROM trip_delay_obs GROUP BY delay_s;
 --        0 |  304697     ← one group. There are no others.
 ```
 
+*(Snapshot at 2026-07-24 21:35 ET. The collector is still running as this is written and
+the table is still growing — re-checked at 21:58 it held **312,696** rows and still
+exactly **one** distinct `delay_s` value: zero. The count moves; the finding does not.)*
+
 They are all worthless, and the reason is more interesting than "the agency published bad
 data".
 

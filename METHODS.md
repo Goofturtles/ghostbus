@@ -207,9 +207,11 @@ top of this file:
 - `server/src/poller.ts` had **not yet been rewritten**. Its observation path still reads
   the feed's `delay` field, and its identity join still reconstructs
   `scheduled = predicted − delay`. The rewrite was in flight in a parallel workstream.
-- The **304,697 information-free rows were still present** in the production database,
-  and `agg_delay` was still derived from them. The purge and recomputation had not yet
-  been run.
+- The **information-free rows were still present** in the production database, and
+  `agg_delay` was still derived from them. The purge and recomputation had not yet been
+  run — and because the collector is still running, the table is still **growing**:
+  304,697 rows at 21:35, **312,696** at 21:58, with exactly **one** distinct `delay_s`
+  value (`min = max = 0`) at both readings. Quote the finding, not the row count.
 
 So until that work lands: the collector's delay observations remain information-free for
 the reason above, every honest-ETA estimate resolves to the bare schedule with a zero
