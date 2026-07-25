@@ -18,11 +18,21 @@ let hadControllerAtStartup = false;
 let reloadingForUpdate = false;
 
 export function registerServiceWorker(): void {
-  // The dev guard. See the file header before touching this line.
-  if (!import.meta.env.PROD) return;
-
-  if (typeof window === 'undefined' || typeof navigator === 'undefined') return;
   if (!('serviceWorker' in navigator)) return;
+
+  // The dev guard. See the file header before touching this line.
+  if (!import.meta.env.PROD) {
+    // Self-healing: if a production build was ever served from this origin
+    // (e.g. someone ran `vite preview` on the dev port), its worker would
+    // still be installed and would keep serving cached assets under
+    // `vite dev`. Tear it down rather than leaving a trap for the next
+    // person who wonders why their edit "didn't apply".
+    void navigator.serviceWorker
+      .getRegistrations()
+      .then((regs) => regs.forEach((r) => void r.unregister()))
+      .catch(() => {});
+    return;
+  }
 
   hadControllerAtStartup = navigator.serviceWorker.controller !== null;
 
@@ -36,29 +46,43 @@ export function registerServiceWorker(): void {
     window.location.reload();
   });
 
-  window.addEventListener('load', () => {
-    navigator.serviceWorker
-      .register('/sw.js', { scope: '/' })
-      .then((registration) => {
-        // Ask the browser to re-check sw.js now rather than on its own
-        // schedule, so a shipped fix reaches an already-installed client fast.
-        void registration.update().catch(() => {});
+  // `load` has already fired if this module evaluated late or the page came
+  // back from the bfcache; waiting for an event that will never arrive would
+  // mean never registering at all.
+  if (document.readyState === 'complete') register();
+  else window.addEventListener('load', register, { once: true });
+}
 
-        // sw.js calls skipWaiting() during install, so a new worker normally
-        // activates on its own. This is the belt-and-braces path for the case
-        // where it ends up waiting anyway (e.g. multiple open tabs).
-        registration.addEventListener('updatefound', () => {
-          const incoming = registration.installing;
-          if (!incoming) return;
-          incoming.addEventListener('statechange', () => {
-            if (incoming.state === 'installed' && registration.waiting) {
-              registration.waiting.postMessage({ type: 'SKIP_WAITING' });
-            }
-          });
+function register(): void {
+  navigator.serviceWorker
+    .register('/sw.js', { scope: '/' })
+    .then((registration) => {
+      // Ask the browser to re-check sw.js now rather than on its own
+      // schedule, so a shipped fix reaches an already-installed client fast.
+      void registration.update().catch(() => {});
+
+      // sw.js calls skipWaiting() during install, so a new worker normally
+      // activates on its own. These are the belt-and-braces paths for when it
+      // ends up waiting anyway (e.g. several tabs open on the old build).
+      promoteWaiting(registration);
+      registration.addEventListener('updatefound', () => {
+        const incoming = registration.installing;
+        if (!incoming) return;
+        incoming.addEventListener('statechange', () => {
+          if (incoming.state === 'installed') promoteWaiting(registration);
         });
-      })
-      .catch(() => {
-        /* SW unsupported or blocked — the app runs fine without it. */
       });
-  });
+    })
+    .catch(() => {
+      /* SW unsupported or blocked — the app runs fine without it. */
+    });
+}
+
+/**
+ * A worker may already be sitting in `waiting` by the time register() resolves,
+ * in which case its `updatefound` fired before we could listen for it. Checking
+ * directly covers that race.
+ */
+function promoteWaiting(registration: ServiceWorkerRegistration): void {
+  registration.waiting?.postMessage({ type: 'SKIP_WAITING' });
 }

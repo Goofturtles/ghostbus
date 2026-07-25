@@ -386,3 +386,61 @@ is the only change to a Phase-3 config file, and it is a direct consequence of t
 while `server/src/api.ts` serves `ghostbus/web/dist`, so the Fastify "one deployable service" can't serve
 the built SPA today (root `/` 404s in production). This mismatch predates Phase 4; left for a follow-up so
 this phase stays isolated to the map.
+
+## 27. PWA layer: installability, and a service worker that refuses to cache the truth
+
+Tier 0 required an installable app; `web/public/` had a favicon and nothing else. Added
+`manifest.webmanifest`, an icon set, `web/public/sw.js`, and `web/src/pwa.ts`, plus the manifest/meta
+links in `web/index.html`. No new dependency, no `vite.config.ts` change, no build step.
+
+**Icons are generated, not hand-drawn.** The mark is a voxel ghost — a 13x14 cell grid, four purple
+shading bands lit from the top (`#c07ce6` down to `#6f358d`) on `#0B0E1A`, with a 9% gap between cells so
+it reads as blocks rather than a silhouette. Committed at `web/public/icons/icon.svg` (glyph = 70% of the
+canvas) and `icon-maskable.svg` (54%); the PNGs were rasterised from those SVGs by the Playwright Chromium
+already present in the global npx cache, so nothing was added to `package.json`. Regenerating is just
+"render these two SVGs at size N". Verified by measurement, not assumption: each PNG decoded in-browser and
+its intrinsic size read back (192x192, 512x512, 180x180), and for the maskable variant every glyph pixel
+was scanned — the furthest sits 200.3px from centre against a 204.8px safe-zone radius, so nothing clips
+when Android crops to a circle.
+
+**Precache strategy: derived at install time, not hardcoded, not code-generated.** Vite content-hashes
+everything into `/assets/`, so a hardcoded list would 404 and break installation, and a build-time
+generator would need a `package.json` script that could silently stop running. Instead the worker fetches
+`index.html` during `install` and parses its `/assets/*` references — the precache always matches the build
+actually being served. Lazily-imported chunks (the map) never appear in `index.html`, so those are cached
+on first fetch at runtime; hashed names are immutable, which makes cache-first safe with nothing to
+revalidate. Because `sw.js` is byte-identical across builds its `activate` does not re-run on deploy, so
+the asset cache is keyed to a **build id** (FNV-1a over the sorted asset URL set). A new build changes the
+id and drops the previous build's assets wholesale, dynamic chunks included — bounded growth without
+pruning by "is it referenced right now?", which would have deleted the map chunk on every single load.
+
+**`/api/*` is network-only. This is a product decision, not a performance one.** No cache read, no cache
+write, no stale fallback. A cached arrival time replayed from disk looks exactly like a live one — same UI,
+same countdown — while being a lie, which is the precise failure this app exists to prevent. Offline, API
+requests fail and the UI says "Offline". Cross-origin tile requests pass through untouched; the browser's
+HTTP cache already honours the tile server's freshness headers, and a second, dumber cache is how you end
+up accidentally caching live data later.
+
+**Dev safety.** Registration is guarded on `import.meta.env.PROD`, so the worker never runs under
+`vite dev` — a dev-time worker would serve stale assets to everyone in this repo and quietly invalidate
+screenshot/QA runs. The `!PROD` branch actively unregisters any worker it finds, so an origin polluted by a
+local `vite preview` heals itself. Navigations are network-first (cached shell only as the offline
+fallback) and the worker `skipWaiting()`s and claims clients, so a stale shell cannot pin anyone to an old
+build.
+
+**Guard against the SPA fallback.** `server/src/api.ts` answers any non-`/api/` 404 with `index.html` at
+HTTP **200 text/html**. Without a check, a request for a missing hashed asset would return "successfully"
+and the worker would cache HTML under a `.js` URL — permanently, since hashed URLs are never revalidated.
+Any non-shell response with an HTML content-type is therefore refused.
+
+**§26 correction — the maplibre worker 404 is NOT dev-only.** §26 states the production build is
+unaffected by the `maplibre-gl-worker.mjs` problem. Measured: it is not. `dist/assets/MapCard-*.js`
+requests `/assets/maplibre-gl-worker.mjs`, Vite emits no such file, and in production the SPA fallback
+answers it with `index.html` at HTTP 200 — so maplibre receives HTML where it expects a module worker.
+This is pre-existing and outside the PWA layer's ownership, but it is real and should be picked up by
+whoever owns the map/build config. The service worker's HTML guard is what surfaced it, and is also what
+stops it from becoming permanent.
+
+**What this does NOT give you.** Shell survival only. The app's data-offline story — a cached schedule
+slice so a cold offline start can show *something* honest about when buses are meant to run — is a
+separate, unbuilt tier. Nothing in this layer may be read as offline live data.

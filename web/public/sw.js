@@ -17,14 +17,19 @@ const VERSION = 'v1';
 const SHELL_CACHE = `ghostbus-shell-${VERSION}`;
 const ASSET_CACHE = `ghostbus-assets-${VERSION}`;
 
+// Synthetic cache key holding the id of the build the asset cache belongs to.
+// Kept in the cache rather than a module variable because a service worker is
+// terminated and restarted freely, which would wipe any in-memory state.
+const BUILD_ID_KEY = '/__ghostbus-build-id';
+
 /*
  * Stable, unhashed entry points. Vite content-hashes everything it emits into
  * /assets/, so those filenames CANNOT be hardcoded here — a guessed name would
  * 404 during install, install would fail, and the app would never become
  * installable. Instead the hashed list is derived at install time by parsing
- * the index.html we just fetched (see precacheHashedAssets below). That keeps
- * the precache honest against whatever the current build actually emitted,
- * with no build-time codegen step to fall out of sync.
+ * the index.html we just fetched (see syncAssetsWith). That keeps the precache
+ * honest against whatever the current build actually emitted, with no
+ * build-time codegen step to fall out of sync.
  */
 const SHELL_URLS = [
   '/',
@@ -36,20 +41,73 @@ const SHELL_URLS = [
   '/icons/icon-maskable-192.png',
   '/icons/icon-maskable-512.png',
   '/icons/apple-touch-icon-180.png',
+  '/icons/icon.svg',
 ];
 
-/** Cache each URL independently so one bad entry cannot fail the whole install. */
-async function cacheAllTolerant(cache, urls) {
-  await Promise.all(
+/*
+ * The production server (server/src/api.ts) answers ANY non-/api/ 404 with
+ * index.html at HTTP 200 text/html, so that deep links reach the SPA router.
+ * That means a request for a hashed asset that is missing — a half-finished
+ * deploy, a rolled-back build — comes back "successful" with an HTML body.
+ * Caching that under a .js URL would permanently poison the cache: hashed URLs
+ * are cache-first and never revalidated, so the app would execute HTML forever.
+ * Any response that looks like the SPA fallback is therefore refused.
+ */
+function isSpaFallback(res) {
+  const type = res.headers.get('content-type') || '';
+  return type.includes('text/html');
+}
+
+/** The only two paths where an HTML body is the correct answer. */
+function expectsHtml(pathname) {
+  return pathname === '/' || pathname === '/index.html';
+}
+
+function pathOf(url) {
+  try {
+    return new URL(url, self.location.origin).pathname;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * @param {string} url  request URL (absolute or root-relative)
+ * @param {Response} res
+ */
+function isCacheable(url, res) {
+  if (!res || !res.ok || res.type === 'opaque') return false;
+  // Everything except the shell HTML must reject an HTML body — that body is
+  // the SPA fallback standing in for a file that does not exist.
+  if (!expectsHtml(pathOf(url)) && isSpaFallback(res)) return false;
+  return true;
+}
+
+/**
+ * Cache each URL independently so one bad entry cannot fail the whole install.
+ * @param {Cache} cache
+ * @param {string[]} urls
+ * @param {{skipIfCached?: boolean}} opts
+ * @returns {Promise<boolean>} true if every URL is now present in the cache
+ */
+async function cacheAllTolerant(cache, urls, opts = {}) {
+  const results = await Promise.all(
     urls.map(async (url) => {
       try {
+        // /assets/* filenames contain a content hash, so a cached copy can
+        // never be stale — re-fetching one is pure waste. This is what keeps
+        // repeat navigations off the network.
+        if (opts.skipIfCached && (await cache.match(url))) return true;
         const res = await fetch(new Request(url, { cache: 'reload' }));
-        if (res && res.ok) await cache.put(url, res.clone());
+        if (!isCacheable(url, res)) return false;
+        await cache.put(url, res);
+        return true;
       } catch {
-        /* best effort: a missing optional asset must not break installation */
+        return false; // best effort: one missing asset must not fail install
       }
     }),
   );
+  return results.every(Boolean);
 }
 
 /** Pull every /assets/* URL referenced by the built index.html. */
@@ -63,27 +121,52 @@ function hashedAssetUrlsFrom(html) {
   return [...urls];
 }
 
-async function precacheHashedAssets(html) {
-  const urls = hashedAssetUrlsFrom(html);
-  if (urls.length === 0) return;
-  const cache = await caches.open(ASSET_CACHE);
-  await cacheAllTolerant(cache, urls);
+/** Stable id for "the set of assets this build emitted" (FNV-1a, 32-bit). */
+function buildIdFrom(html) {
+  const urls = hashedAssetUrlsFrom(html).sort().join('|');
+  if (!urls) return null;
+  let h = 0x811c9dc5;
+  for (let i = 0; i < urls.length; i++) {
+    h ^= urls.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(36);
+}
+
+async function readStoredBuildId() {
+  const shell = await caches.open(SHELL_CACHE);
+  const res = await shell.match(BUILD_ID_KEY);
+  return res ? res.text() : null;
 }
 
 /*
- * /assets/* names are content-hashed, so a new build produces new names and the
- * old entries become dead weight. sw.js itself is byte-identical across builds
- * (nothing in it is hashed), so `activate` does not re-run on every deploy —
- * without this prune the asset cache would grow without bound. Called after
- * every successful navigation, which is when we learn the current asset set.
+ * Reconcile the asset cache with the build that this index.html describes.
+ *
+ * Not all of a build's chunks appear in index.html — App.tsx lazy-imports the
+ * map, and maplibre pulls its own worker chunk — so we cannot prune by "is it
+ * referenced right now?": that would delete every dynamic chunk on each load
+ * and the map would never survive offline. Instead the whole asset cache is
+ * keyed to a build id. A new deploy rewrites every hashed filename, which
+ * changes the id, which drops the previous build's assets wholesale — dynamic
+ * chunks included — while leaving the current build's runtime-cached chunks
+ * untouched. Bounded growth, no per-file guesswork.
  */
-async function pruneStaleAssets(html) {
-  const live = new Set(hashedAssetUrlsFrom(html));
-  if (live.size === 0) return;
+async function syncAssetsWith(html) {
+  const id = buildIdFrom(html);
+  if (!id) return;
+
+  const prev = await readStoredBuildId();
+  if (prev !== id) await caches.delete(ASSET_CACHE);
+
   const cache = await caches.open(ASSET_CACHE);
-  for (const req of await cache.keys()) {
-    const path = new URL(req.url).pathname;
-    if (path.startsWith('/assets/') && !live.has(path)) await cache.delete(req);
+  const complete = await cacheAllTolerant(cache, hashedAssetUrlsFrom(html), { skipIfCached: true });
+
+  // Only claim this build once its entry assets are genuinely cached. If a
+  // deploy race made them unfetchable, leaving the id unset means we retry on
+  // the next navigation instead of recording a build we cannot actually serve.
+  if (complete && prev !== id) {
+    const shell = await caches.open(SHELL_CACHE);
+    await shell.put(BUILD_ID_KEY, new Response(id, { headers: { 'content-type': 'text/plain' } }));
   }
 }
 
@@ -93,7 +176,7 @@ self.addEventListener('install', (event) => {
       const shell = await caches.open(SHELL_CACHE);
       await cacheAllTolerant(shell, SHELL_URLS);
       const cached = await shell.match('/index.html');
-      if (cached) await precacheHashedAssets(await cached.clone().text());
+      if (cached) await syncAssetsWith(await cached.text());
       // Take over immediately: a stale shell must never pin users to an old
       // build. Paired with clients.claim() in `activate`.
       await self.skipWaiting();
@@ -168,13 +251,21 @@ self.addEventListener('fetch', (event) => {
       (async () => {
         try {
           const res = await fetch(req);
-          if (res && res.ok) {
-            const shell = await caches.open(SHELL_CACHE);
+          if (res && res.ok && !res.redirected) {
             const copy = res.clone();
-            await shell.put('/index.html', copy.clone());
-            const html = await copy.text();
-            await precacheHashedAssets(html);
-            await pruneStaleAssets(html);
+            // Off the critical path: the document is returned immediately and
+            // the cache reconciliation continues under waitUntil.
+            event.waitUntil(
+              (async () => {
+                try {
+                  const shell = await caches.open(SHELL_CACHE);
+                  await shell.put('/index.html', copy.clone());
+                  await syncAssetsWith(await copy.text());
+                } catch {
+                  /* cache upkeep must never surface as a page error */
+                }
+              })(),
+            );
           }
           return res;
         } catch {
@@ -201,7 +292,7 @@ self.addEventListener('fetch', (event) => {
   // --- Other same-origin static shell files (icons, favicon, manifest).
   // Cache-first with a background refresh so an updated icon lands next load.
   if (SHELL_URLS.includes(url.pathname) || url.pathname.startsWith('/icons/')) {
-    event.respondWith(staleWhileRevalidate(req, SHELL_CACHE));
+    event.respondWith(staleWhileRevalidate(event, req, SHELL_CACHE));
   }
 });
 
@@ -211,22 +302,28 @@ async function cacheFirst(req, cacheName) {
   if (hit) return hit;
   try {
     const res = await fetch(req);
-    if (res && res.ok) await cache.put(req, res.clone());
+    // isCacheable rejects the SPA HTML fallback — see its comment.
+    if (isCacheable(req.url, res)) await cache.put(req, res.clone());
     return res;
   } catch {
     return Response.error();
   }
 }
 
-async function staleWhileRevalidate(req, cacheName) {
+async function staleWhileRevalidate(event, req, cacheName) {
   const cache = await caches.open(cacheName);
   const hit = await cache.match(req);
   const network = fetch(req)
     .then(async (res) => {
-      if (res && res.ok) await cache.put(req, res.clone());
+      if (isCacheable(req.url, res)) await cache.put(req, res.clone());
       return res;
     })
     .catch(() => null);
-  if (hit) return hit;
+  if (hit) {
+    // Hold the worker alive until the background refresh finishes, otherwise
+    // the browser may terminate it mid-write and the refresh never lands.
+    event.waitUntil(network);
+    return hit;
+  }
   return (await network) || Response.error();
 }
