@@ -24,6 +24,25 @@ interface Props {
 const COUNTDOWN_HORIZON_MIN = 90;
 
 /**
+ * Split a formatted clock time into its numeral and its trailing unit, so the
+ * scheduled branch can use the same "big number, small unit" treatment as the
+ * countdown ("5:41" + "AM" the way "7" + "min" reads).
+ *
+ * Purely presentational and locale-safe by construction: it only splits when the
+ * tail after the last space is short and carries no digits, which is true of an
+ * English/Spanish meridiem and false of `fr-CA`'s 24-hour "05:41" (no space at
+ * all). Anything it does not recognise is returned whole — the string is never
+ * rewritten, only broken for typesetting.
+ */
+export function splitClock(s: string): [string, string | null] {
+  const i = s.lastIndexOf(' ');
+  if (i <= 0) return [s, null];
+  const tail = s.slice(i + 1);
+  if (tail.length > 4 || /\d/.test(tail)) return [s, null];
+  return [s.slice(0, i), tail];
+}
+
+/**
  * One departure, in the reference's two shapes. The DOM is identical at both
  * widths and CSS does the reflow (see `.dep-card` in app.css):
  *
@@ -103,7 +122,21 @@ export function DepartureRow({ dep, nextMin, distanceM, onCatch, onOpen }: Props
               </>
             )
           ) : (
-            <span className="dep-clock">{fmtClock(arrivalMs)}</span>
+            // Same LARGE-NUMERAL treatment the countdown gets. In the reference the
+            // right-hand column is the strongest element in the row after the
+            // destination, and it was the only branch that fell back to ordinary
+            // body text — so on a board with no near-term departures (which is the
+            // honest state today) the hierarchy simply inverted. Nothing new is
+            // claimed: this is the same `fmtClock` string, set as numeral + unit.
+            (() => {
+              const [main, unit] = splitClock(fmtClock(arrivalMs));
+              return (
+                <>
+                  <span className="dep-num dep-num-clock">{main}</span>
+                  {unit && <span className="dep-unit">{unit}</span>}
+                </>
+              );
+            })()
           )}
         </div>
         <span className={`pill ${isLive ? 'pill-live' : 'pill-sched'}`}>

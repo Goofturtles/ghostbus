@@ -50,17 +50,40 @@ interface Palette {
 //     and its streets are a clearly readable lavender-slate lattice a good three
 //     steps above it. The street grid is a primary read of the picture, not a
 //     whisper — the "one step lighter" phrasing is about hue family, not contrast.
+//
+// PASS 3 (this one) is a LUMINANCE-BAND correction, and it is the statistic that
+// finally agrees with what the picture looks like. Share of the desktop map region
+// per 0-255 luminance band, reference vs the pass-2 build:
+//
+//                0-16   16-32  32-48  48-64  64-80
+//   reference     2.9%   37.3%  27.7%  13.2%  12.2%
+//   pass 2       21.1%   27.8%  12.3%   6.0%  30.0%
+//
+// Pass 2 was bimodal — void plus glare. `ground: #090E22` is luminance 14, so a
+// fifth of the frame sat in the 0-16 bucket the reference barely uses, and the
+// gaps between blocks read as HOLES rather than as a lit surface. Worse, the road
+// CASING (#0B1024, luminance 16) was DARKER than the ground it was drawn on, so
+// every major street was a trench.
+//
+// The reference's darkest common tone is #081028 (luminance 16) and its streets
+// are a lavender-slate around luminance 35-45 — a clearly lit surface, three or
+// four steps above the ground, which is what puts 27.7% of its frame in the
+// 32-48 band. These values reproduce that ladder: ground 20, casing 35, minor
+// street 40, secondary 47, major 58.
 const DARK: Palette = {
-  ground: '#090E22',
-  water: '#0A1330',
-  waterway: '#122046',
-  park: '#14211C',
-  grass: '#16231C',
+  ground: '#0E142B',
+  water: '#0C1636',
+  waterway: '#16264E',
+  park: '#152318',
+  grass: '#17251C',
   building: '#1B203F',
-  roadMinor: '#232C4C',
-  roadMed: '#2C3760',
-  roadMajor: '#3A4570',
-  roadCasing: '#0B1024',
+  roadMinor: '#1F2749',
+  roadMed: '#242E56',
+  roadMajor: '#2E3A66',
+  // The street SURFACE, not a trench: the casing is the widest road element at the
+  // diorama zoom, so it is what the eye reads as "the road", and it must sit above
+  // the ground rather than below it.
+  roadCasing: '#1B2242',
   rail: '#1E2440',
   boundary: 'rgba(180,184,220,0.12)',
   label: '#AAB0C4',
@@ -75,17 +98,24 @@ const DARK: Palette = {
 // #d7d3cd/#c4c0bb, and the only saturated things in frame are the trees and the
 // red route. Ground is set one step BELOW the roofs so blocks still separate from
 // the plaza they stand on, and roads one step above it so they read as ribbons.
+//
+// CORRECTED: the first pass painted the roads BRIGHTER than the roofs
+// (roadMed #F8F6F3 / roadMajor #FFFFFF against a #E7E4DE roof), so at the diorama
+// zoom the blocks and the streets between them were the same value and there was
+// no grid at all — "buildings white on white". The reference's daylight roofs are
+// the LIGHTEST surface in frame (#f3f0ea); its roads are a legible mid-grey a
+// clear step below them, which is what separates one block from the next.
 const LIGHT: Palette = {
-  ground: '#E3DED7',
+  ground: '#CFC9C1',
   water: '#BCD0EA',
   waterway: '#A8BEDD',
-  park: '#CFDCC4',
-  grass: '#D9E0CC',
+  park: '#C6D4BA',
+  grass: '#D2DAC4',
   building: '#E7E4DE',
-  roadMinor: '#F1EFEB',
-  roadMed: '#F8F6F3',
-  roadMajor: '#FFFFFF',
-  roadCasing: '#CDC7BF',
+  roadMinor: '#DAD5CD',
+  roadMed: '#E2DDD5',
+  roadMajor: '#EAE5DD',
+  roadCasing: '#BAB4AB',
   rail: '#C8C3BB',
   boundary: 'rgba(70,74,110,0.24)',
   label: '#3A3F52',
@@ -149,12 +179,19 @@ export function buildStyle(theme: MapTheme): StyleSpecification {
         paint: { 'line-color': p.rail, 'line-width': w([[12, 0.5], [16, 1.4]]) as number },
       },
 
-      // --- road casing (under fills, gives quiet separation) ---
+      // --- road casing: the STREET SURFACE the blocks stand on -------------------
+      // Widened deliberately. At the diorama zoom the casing is the widest road
+      // element, so it is what actually fills the gaps between footprints — and
+      // the reference's 27.7% of frame in the 32-48 luminance band is mostly this
+      // surface, not building walls. A hairline casing left those gaps showing the
+      // near-black ground, which is why the blocks read as plates floating over
+      // nothing. Minor streets are included now for the same reason: downtown they
+      // are the laneways between the big footprints.
       {
         id: 'road-casing', type: 'line', source: 'omt', 'source-layer': 'transportation', minzoom: 11,
-        filter: ['in', ['get', 'class'], ['literal', [...MAJOR, ...MED]]],
+        filter: ['in', ['get', 'class'], ['literal', [...MAJOR, ...MED, ...MINOR]]],
         layout: { 'line-cap': 'round', 'line-join': 'round' },
-        paint: { 'line-color': p.roadCasing, 'line-width': w([[11, 1.4], [14, 4], [17, 13], [19, 26]]) as number },
+        paint: { 'line-color': p.roadCasing, 'line-width': w([[11, 1.6], [14, 5], [17, 19], [19, 36]]) as number },
       },
 
       // --- road fills (quiet filled strokes, no glow) ---
@@ -162,19 +199,19 @@ export function buildStyle(theme: MapTheme): StyleSpecification {
         id: 'road-minor', type: 'line', source: 'omt', 'source-layer': 'transportation', minzoom: 13,
         filter: ['in', ['get', 'class'], ['literal', MINOR]],
         layout: { 'line-cap': 'round', 'line-join': 'round' },
-        paint: { 'line-color': p.roadMinor, 'line-width': w([[13, 0.6], [15, 2], [17, 5], [19, 11]]) as number },
+        paint: { 'line-color': p.roadMinor, 'line-width': w([[13, 0.8], [15, 3.4], [17, 10], [19, 20]]) as number },
       },
       {
         id: 'road-med', type: 'line', source: 'omt', 'source-layer': 'transportation', minzoom: 11,
         filter: ['in', ['get', 'class'], ['literal', MED]],
         layout: { 'line-cap': 'round', 'line-join': 'round' },
-        paint: { 'line-color': p.roadMed, 'line-width': w([[11, 0.8], [14, 2.2], [17, 8], [19, 15]]) as number },
+        paint: { 'line-color': p.roadMed, 'line-width': w([[11, 1], [14, 3.2], [17, 13], [19, 24]]) as number },
       },
       {
         id: 'road-major', type: 'line', source: 'omt', 'source-layer': 'transportation', minzoom: 9,
         filter: ['in', ['get', 'class'], ['literal', MAJOR]],
         layout: { 'line-cap': 'round', 'line-join': 'round' },
-        paint: { 'line-color': p.roadMajor, 'line-width': w([[9, 0.6], [12, 1.8], [14, 3.6], [17, 12], [19, 24]]) as number },
+        paint: { 'line-color': p.roadMajor, 'line-width': w([[9, 0.7], [12, 2.2], [14, 5], [17, 17], [19, 32]]) as number },
       },
 
       // --- admin boundaries (whisper) ---
@@ -202,7 +239,13 @@ export function buildStyle(theme: MapTheme): StyleSpecification {
         layout: {
           'text-field': ['coalesce', ['get', 'name:en'], ['get', 'name']],
           'text-font': ['Noto Sans Bold'],
-          'text-size': ['interpolate', ['linear'], ['zoom'], 14.5, 11, 17, 13.5],
+          // MEASURED off the reference, not chosen: "King St West" has a cap height
+          // of ~13 reference px in a 1023px-wide window, which is a ~20-22px font.
+          // The old 11 -> 13.5 ramp rendered street names at half that and they
+          // read as basemap chrome instead of, as §A4 has it, a primary read of the
+          // map. The wide `text-padding` below is what keeps the COUNT at two or
+          // three per frame while each one gets bigger.
+          'text-size': ['interpolate', ['linear'], ['zoom'], 14.5, 15.5, 17, 21],
           'text-letter-spacing': 0.02,
           'symbol-placement': 'line',
           // The reference shows TWO street names in a 715px frame. `symbol-spacing`
@@ -211,17 +254,21 @@ export function buildStyle(theme: MapTheme): StyleSpecification {
           // thins them: it inflates each label's collision box until neighbours (and
           // the marker blockers MapCard publishes) suppress each other.
           'symbol-spacing': 900,
-          'text-padding': 34,
+          'text-padding': 44,
           'text-max-angle': 30,
         },
         paint: {
           // Near-white on dark (the reference), near-black on the light map — a
           // street name is navigational, so it gets real contrast, not a whisper.
           'text-color': p.roadLabel,
+          // A HEAVIER halo than a basemap would use, because this layer is now
+          // lifted above the red route line (see `liftBasemapLabels`): the route
+          // used to be painted straight through the glyphs, slicing them in half.
+          // The halo is what lets the label sit ON the stroke and stay legible.
           'text-halo-color': p.roadLabelHalo,
-          'text-halo-width': 1.6,
-          'text-halo-blur': 0.4,
-          'text-opacity': 0.95,
+          'text-halo-width': 2.4,
+          'text-halo-blur': 0.3,
+          'text-opacity': 1,
         },
       },
       // Neighbourhood/place names are an OVERVIEW label class, and the reference's

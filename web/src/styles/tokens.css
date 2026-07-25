@@ -53,20 +53,37 @@
 :root,
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #0b0e1a;
-  --bg-deep: #070912;
-  /* The desktop sidebar reads one step deeper than the cards it holds, exactly as
+  /* ELEVATION LADDER — sampled out of ghostbus-design-reference.png, not chosen.
+     The reference climbs base #121724 -> card #1f2230 -> control #2f323f: steps of
+     roughly +13 and +16 per channel, which is what makes a card sit visibly proud
+     of the sidebar and the Track bar read as a distinct third level.
+
+     The shipped build climbed #0c0f1c -> #141828 -> #1a1f30 — every level 7 to 20
+     points darker AND the steps about half as large, which is why the sidebar read
+     flatter and greyer than the mockup even though its layout matched. The cause of
+     the halved steps was the ALPHA: `--surface` was rgba(24,28,44,0.72) composited
+     over a darker base, so each "step up" was partly the step below showing
+     through. These surfaces are opaque now, so every elevation step is explicit. */
+  --bg: #121724;
+  --bg-deep: #0d1220;
+  /* The desktop sidebar reads at the same base level as the top bar, exactly as
      in the reference: cards float on it rather than merging with it. */
-  --side-bg: #0c0f1c;
-  --surface: rgba(24, 28, 44, 0.72);
-  --surface-solid: #171b2b;
-  --surface-2: rgba(30, 35, 54, 0.6);
+  --side-bg: #121724;
+  --surface: #1f2230;
+  --surface-solid: #1f2230;
+  --surface-2: #2f323f;
+  /* The search field is its own level: recessed relative to the bar it sits in on
+     light, a quiet well on dark. Reference #202330 / #eaeae9. */
+  --field: #202330;
+  /* The reference's tab bar is a surface in its own right — on light it is the
+     LIGHTEST thing on the screen, lighter than the cards above it. */
+  --tabbar-bg: #121724;
   /* Text-safe accent. --brand (#8944ab) is a fill colour: as 12–13px text on the
      near-black background it only reaches ~4:1, and the reference's accent reads
      visibly brighter than the wordmark fill. This is the one used for words. */
   --accent: #b168e0;
-  --glass: rgba(20, 24, 40, 0.66);
-  --glass-strong: rgba(20, 24, 40, 0.82);
+  --glass: rgba(31, 34, 48, 0.7);
+  --glass-strong: rgba(31, 34, 48, 0.86);
   --hairline: rgba(255, 255, 255, 0.06);
   --hairline-2: rgba(255, 255, 255, 0.09);
 
@@ -93,15 +110,25 @@
 /* ---------- LIGHT (Daylight, first-class) ---------- */
 :root[data-theme="light"] {
   color-scheme: light;
-  --bg: #eef0f5;
-  --bg-deep: #e4e7ef;
-  --side-bg: #f4f5f9;
+  /* NEUTRAL, and sampled: the reference's light chrome has R, G and B within 2 of
+     each other at every level — page #f5f3f3, header #ececeb, field #eaeae9, cards
+     #fdfdfd, tab bar #fefeff. The shipped values ran the blue channel 10-14 points
+     above the red (#e5e1ef header on a #eef0f5 page), which is a clear periwinkle
+     cast the reference does not have. Two relationships were also inverted and are
+     corrected here: the search field is now DARKER than the bar it sits in (a
+     recessed well, not a raised pill), and the tab bar is the lightest surface on
+     the screen rather than darker than the cards above it. */
+  --bg: #f5f3f3;
+  --bg-deep: #e8e6e5;
+  --side-bg: #ececeb;
   --accent: #7b2f9e;
-  --surface: rgba(255, 255, 255, 0.86);
+  --surface: #fdfdfd;
   --surface-solid: #ffffff;
-  --surface-2: rgba(255, 255, 255, 0.7);
-  --glass: rgba(255, 255, 255, 0.72);
-  --glass-strong: rgba(255, 255, 255, 0.88);
+  --surface-2: #f1f0ef;
+  --field: #eaeae9;
+  --tabbar-bg: #fefeff;
+  --glass: rgba(253, 253, 253, 0.78);
+  --glass-strong: rgba(253, 253, 253, 0.92);
   --hairline: rgba(15, 18, 30, 0.08);
   --hairline-2: rgba(15, 18, 30, 0.12);
 

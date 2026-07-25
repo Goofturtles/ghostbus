@@ -15,9 +15,26 @@ export interface SpriteImage {
   pixelRatio: number;
 }
 
-/** Base sprite size in CSS px (before pixelRatio). */
-const S = 40;
+/**
+ * Base sprite size in CSS px (before pixelRatio).
+ *
+ * RAISED 40 -> 72. Measured off `ghostbus-design-reference.png`: the streetcar
+ * under the 504A badge is about 5.3% of the map frame's width. On the 944px-wide
+ * desktop map pane that is ~50 CSS px, and the shipped sprite was drawing a ~25px
+ * body — "a red lozenge", "debris on the route line". A streetcar body is
+ * `0.72 * S` long, so S = 72 puts it at 51.8px.
+ *
+ * Deliberately raised HERE rather than by pushing `icon-size` past 1: MapLibre
+ * upscales a symbol image with bilinear filtering, so doubling icon-size on a 40px
+ * sprite gives a blurry 50px lozenge instead of a crisp 50px vehicle. The atlas
+ * cost is bounded — two kinds times the handful of agency colours in view.
+ */
+const S = 72;
 const DPR = 2;
+
+/** The sprite's on-screen box in CSS px at `icon-size: 1`. Exported so MapCard can
+ *  place the route badge relative to the vehicle instead of to a magic number. */
+export const SPRITE_SIZE_PX = S;
 
 function clamp8(n: number): number {
   return n < 0 ? 0 : n > 255 ? 255 : Math.round(n);
@@ -57,10 +74,13 @@ export function makeVoxelSprite(kind: VehicleKind, hex: string): SpriteImage {
 
   const cx = S / 2;
   const cy = S / 2;
-  const bw = kind === 'streetcar' ? S * 0.34 : S * 0.42;
-  const bh = kind === 'streetcar' ? S * 0.72 : S * 0.60;
-  const depth = S * 0.09;           // extrusion toward the shadow side
-  const r = kind === 'streetcar' ? S * 0.07 : S * 0.09;
+  const bw = kind === 'streetcar' ? S * 0.28 : S * 0.32;
+  const bh = kind === 'streetcar' ? S * 0.72 : S * 0.56;
+  // Deep enough to read as an extrusion at this size. This is the visible SIDE of
+  // the block — at 40px it was 3.6px and invisible, which is why the sprite read
+  // as a flat lozenge rather than a solid.
+  const depth = S * 0.10;
+  const r = kind === 'streetcar' ? S * 0.055 : S * 0.07;
 
   const roofX = cx - bw / 2;
   const roofY = cy - bh / 2 - depth / 2; // bias up so the block sits centered incl. its extrusion
@@ -69,52 +89,78 @@ export function makeVoxelSprite(kind: VehicleKind, hex: string): SpriteImage {
   ctx.save();
   ctx.translate(cx, roofY + bh + depth * 0.7);
   ctx.scale(1, 0.4);
-  const grd = ctx.createRadialGradient(0, 0, 0, 0, 0, bw * 0.8);
-  grd.addColorStop(0, 'rgba(0,0,0,0.34)');
+  const grd = ctx.createRadialGradient(0, 0, 0, 0, 0, bw * 0.95);
+  grd.addColorStop(0, 'rgba(0,0,0,0.38)');
   grd.addColorStop(1, 'rgba(0,0,0,0)');
   ctx.fillStyle = grd;
   ctx.beginPath();
-  ctx.arc(0, 0, bw * 0.8, 0, Math.PI * 2);
+  ctx.arc(0, 0, bw * 0.95, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
 
+  // --- wheels: dark blocks peeking out of the extruded side, drawn UNDER the body
+  //     so only their outer edge shows, exactly as a voxel model would read ------
+  ctx.fillStyle = 'rgba(14, 16, 26, 0.9)';
+  const wW = bw * 0.20;
+  const wH = bh * 0.13;
+  for (const fy of kind === 'streetcar' ? [0.20, 0.50, 0.78] : [0.24, 0.74]) {
+    const wy = roofY + bh * fy;
+    roundRect(ctx, roofX - wW * 0.42 + depth * 0.55, wy + depth * 0.9, wW, wH, wW * 0.3);
+    ctx.fill();
+    roundRect(ctx, roofX + bw - wW * 0.58 + depth * 0.55, wy + depth * 0.9, wW, wH, wW * 0.3);
+    ctx.fill();
+  }
+
   // --- extruded side/base (darkest), offset down-right ---
-  ctx.fillStyle = shade(hex, -0.42);
+  ctx.fillStyle = shade(hex, -0.5);
   roundRect(ctx, roofX + depth * 0.55, roofY + depth, bw, bh, r);
   ctx.fill();
+  // The side face's own lit edge, so the extrusion has two values rather than one
+  // flat dark slab — the same wall/cap split the buildings use.
+  ctx.fillStyle = shade(hex, -0.3);
+  roundRect(ctx, roofX + depth * 0.55, roofY + depth, bw * 0.34, bh, r);
+  ctx.fill();
 
-  // --- roof (base color) ---
+  // --- roof / top face (base color) ---
   ctx.fillStyle = `#${hex}`;
   roundRect(ctx, roofX, roofY, bw, bh, r);
   ctx.fill();
 
   // crisp outline for definition on either theme
-  ctx.lineWidth = 0.6;
-  ctx.strokeStyle = shade(hex, -0.5);
+  ctx.lineWidth = 0.9;
+  ctx.strokeStyle = shade(hex, -0.55);
   ctx.stroke();
 
-  // --- roof highlight strip (light from top-left) ---
-  ctx.fillStyle = shade(hex, 0.28);
-  roundRect(ctx, roofX + bw * 0.14, roofY + bh * 0.06, bw * 0.24, bh * 0.86, r * 0.6);
+  // --- pale roof band running the length of the car (light from the top-left) ---
+  ctx.fillStyle = shade(hex, 0.46);
+  roundRect(ctx, roofX + bw * 0.16, roofY + bh * 0.07, bw * 0.30, bh * 0.86, r * 0.6);
   ctx.fill();
 
-  // --- windshield band near the front (top) ---
-  ctx.fillStyle = 'rgba(12, 16, 30, 0.82)';
-  roundRect(ctx, roofX + bw * 0.12, roofY + bh * 0.10, bw * 0.76, bh * 0.17, r * 0.5);
+  // --- dark window strip down the sunward flank ------------------------------
+  ctx.fillStyle = 'rgba(12, 16, 30, 0.66)';
+  roundRect(ctx, roofX + bw * 0.60, roofY + bh * 0.20, bw * 0.26, bh * 0.62, r * 0.5);
   ctx.fill();
-  // streetcars get a second (rear) window band
+
+  // --- lit windshield at the front (top) -------------------------------------
+  ctx.fillStyle = 'rgba(10, 14, 28, 0.88)';
+  roundRect(ctx, roofX + bw * 0.11, roofY + bh * 0.055, bw * 0.78, bh * 0.13, r * 0.5);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(190, 214, 255, 0.5)';
+  roundRect(ctx, roofX + bw * 0.15, roofY + bh * 0.07, bw * 0.70, bh * 0.05, r * 0.35);
+  ctx.fill();
+  // streetcars get a rear window band too
   if (kind === 'streetcar') {
-    ctx.fillStyle = 'rgba(12, 16, 30, 0.55)';
-    roundRect(ctx, roofX + bw * 0.12, roofY + bh * 0.66, bw * 0.76, bh * 0.15, r * 0.5);
+    ctx.fillStyle = 'rgba(12, 16, 30, 0.62)';
+    roundRect(ctx, roofX + bw * 0.11, roofY + bh * 0.84, bw * 0.78, bh * 0.10, r * 0.5);
     ctx.fill();
   }
 
   // --- headlight pixels at the very front ---
-  ctx.fillStyle = '#ffe08a';
-  const hlY = roofY + bh * 0.045;
-  const hlW = bw * 0.14;
-  ctx.fillRect(roofX + bw * 0.16, hlY, hlW, hlW);
-  ctx.fillRect(roofX + bw * 0.70, hlY, hlW, hlW);
+  ctx.fillStyle = '#ffe9b0';
+  const hlY = roofY + bh * 0.015;
+  const hlW = bw * 0.15;
+  ctx.fillRect(roofX + bw * 0.14, hlY, hlW, hlW * 0.8);
+  ctx.fillRect(roofX + bw * 0.71, hlY, hlW, hlW * 0.8);
 
   const img = ctx.getImageData(0, 0, px, px);
   return { width: px, height: px, data: new Uint8Array(img.data.buffer.slice(0)), pixelRatio: DPR };

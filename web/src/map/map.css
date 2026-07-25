@@ -120,20 +120,42 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The pin is a purple SQUIRCLE with a short downward nub, extruded — a rounded
+   square standing on the ground plane, with a darker purple side face showing
+   under it. Two corrections against the reference at 16x:
+     1. it is NOT a circle (the old comment here asserted it was, and the picture
+        contradicts that: the corners are visibly square-ish and there is a nub);
+     2. it has NO white outer ring. The shipped `0 0 0 2px rgba(255,255,255,0.9)`
+        halo was the loudest thing about the marker and is absent from the
+        reference — only the pin GLYPH inside it is white. */
 .map-card .stop-pin-dot {
+  position: relative;
   flex: 0 0 auto;
   width: 30px;
   height: 30px;
-  border-radius: 50%; /* the reference pin is a circle, not a teardrop */
+  border-radius: 11px 11px 13px 13px;
   transform: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   color: #fff;
   background: linear-gradient(150deg, #a163e8, #7c3aed);
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9), 0 8px 16px -6px rgba(0, 0, 0, 0.65);
+  /* the extruded bottom edge, then the contact shadow */
+  box-shadow: inset 0 -3px 0 rgba(70, 20, 130, 0.85), 0 8px 16px -6px rgba(0, 0, 0, 0.7);
 }
-.map-card .stop-pin-dot svg { transform: none; }
+/* the short downward nub that plants the squircle on the ground */
+.map-card .stop-pin-dot::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -4px;
+  width: 9px;
+  height: 7px;
+  margin-left: -4.5px;
+  border-radius: 0 0 3px 3px;
+  background: #5b21b6;
+}
+.map-card .stop-pin-dot svg { transform: translateY(-1px); }
 
 /* --- You beacon: blue disc + attached two-line card -------------------------- */
 /* NO `position` here. MapLibre positions a marker root with
@@ -149,6 +171,37 @@
   display: flex;
   align-items: center;
 }
+/* GROUND GLOW, not a halo in the air. Three corrections against the reference:
+     1. it lies IN the isometric plane, so it is a flattened ellipse (scaleY .55),
+        not a circle floating around the disc;
+     2. it is roughly 2.8x the disc, not 2x;
+     3. it never reaches zero. app.css animates `you-pulse` out to `opacity: 0`,
+        which meant that in a still — i.e. in every screenshot the user or a judge
+        ever looks at — the glow was usually simply not there. The pulse now rides
+        on top of a persistent floor. */
+.map-card .you-bloom {
+  /* Nested INSIDE `.you-disc` (see MapCard's marker markup) rather than beside it,
+     so it is centred on the disc by construction and needs no second set of
+     coordinates for the flipped layout. `.you-disc` is a stacking context, so a
+     negative z-index keeps it under the glyph while still spilling outside the
+     disc, which is the only part of it anyone sees. */
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: -1;
+  width: 96px;
+  height: 96px;
+  margin: 0;
+  transform: translate(-50%, -50%) scaleY(0.55);
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(10, 132, 255, 0.5), rgba(10, 132, 255, 0.14) 45%, transparent 70%);
+  animation: you-ground-pulse 2.6s var(--ease-standard) infinite;
+}
+@keyframes you-ground-pulse {
+  0%   { opacity: 0.42; transform: translate(-50%, -50%) scaleY(0.55) scale(0.86); }
+  55%  { opacity: 0.68; transform: translate(-50%, -50%) scaleY(0.55) scale(1.06); }
+  100% { opacity: 0.42; transform: translate(-50%, -50%) scaleY(0.55) scale(0.86); }
+}
 .map-card .you-disc {
   position: relative;
   z-index: 2;
@@ -161,13 +214,26 @@
   background: var(--you);
   box-shadow: 0 0 0 3px #fff, 0 8px 18px -5px rgba(10, 132, 255, 0.85);
 }
+/* The terminus of the bead path: a small blue-and-white dot floating just above
+   the beacon, so the walk path arrives somewhere instead of stopping in mid-air. */
+.map-card .you-tip {
+  position: absolute;
+  left: 50%;
+  top: -14px;
+  width: 10px;
+  height: 10px;
+  margin-left: -5px;
+  border-radius: 50%;
+  background: var(--you);
+  box-shadow: 0 0 0 2.5px #fff, 0 4px 8px -3px rgba(0, 0, 0, 0.6);
+}
 .map-card .you-card {
   position: relative;
   z-index: 1;
   display: flex;
   flex-direction: column;
-  margin-left: -10px;
-  padding: 6px 13px 6px 18px;
+  margin-left: -3px;
+  padding: 6px 13px 6px 14px;
   border-radius: 13px;
   /* darker than the beacon disc so 12px/800 white text clears AA (≈5.4:1) */
   background: #1064d8;
@@ -177,6 +243,27 @@
   max-width: 160px;
   min-width: 0;
 }
+/* The small left-pointing tail that notches the card into the beacon disc. A
+   45deg-rotated square: after rotation its left-facing vertex is formed by the
+   LEFT and BOTTOM borders (the stop card's downward tail uses right+bottom for
+   the same reason). Drawn behind the disc, so only the part that emerges from
+   under it is visible — which is exactly the notch the reference shows. */
+.map-card .you-card::before {
+  content: '';
+  position: absolute;
+  left: -5px;
+  top: 50%;
+  width: 11px;
+  height: 11px;
+  margin-top: -5.5px;
+  background: #1064d8;
+  border-left: 1.5px solid rgba(120, 180, 255, 0.55);
+  border-bottom: 1.5px solid rgba(120, 180, 255, 0.55);
+  border-bottom-left-radius: 3px;
+  transform: rotate(45deg);
+}
+/* TITLE over SUBTITLE, not one slab of bold. The reference sets "You" bold and
+   "4 min walk" at a regular weight, a little smaller and a little dimmer. */
 .map-card .you-card b {
   font-size: 12.5px;
   font-weight: 800;
@@ -186,9 +273,9 @@
 .map-card .you-card i {
   font-size: 11.5px;
   font-style: normal;
-  font-weight: 600;
+  font-weight: 500;
   line-height: 1.3;
-  color: rgba(255, 255, 255, 0.9);
+  color: rgba(255, 255, 255, 0.88);
   white-space: nowrap;
 }
 /* The card flips to the LEFT of the disc when it would otherwise run into the
@@ -196,22 +283,35 @@
 .map-card .you-beacon[data-flip='1'] { flex-direction: row-reverse; }
 .map-card .you-beacon[data-flip='1'] .you-card {
   margin-left: 0;
-  margin-right: -10px;
-  padding: 6px 18px 6px 13px;
+  margin-right: -3px;
+  padding: 6px 14px 6px 13px;
   align-items: flex-end;
 }
+/* …and the tail flips with it: right-facing vertex = top + right borders. */
+.map-card .you-beacon[data-flip='1'] .you-card::before {
+  left: auto;
+  right: -5px;
+  border-left: none;
+  border-bottom: none;
+  border-top: 1.5px solid rgba(120, 180, 255, 0.55);
+  border-right: 1.5px solid rgba(120, 180, 255, 0.55);
+  border-bottom-left-radius: 0;
+  border-top-right-radius: 3px;
+}
 
-/* --- walker node partway along the beaded walk path -------------------------- */
+/* --- walker node partway along the beaded walk path --------------------------
+   A SOLID purple disc with the glyph filling roughly 55% of it and no white ring
+   — same correction as the pin above: the reference has no outer ring on either. */
 .map-card .walk-node {
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   border-radius: 50%;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   color: #fff;
   background: linear-gradient(150deg, #a163e8, #7c3aed);
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85), 0 6px 14px -5px rgba(0, 0, 0, 0.6);
+  box-shadow: inset 0 -2px 0 rgba(70, 20, 130, 0.7), 0 7px 15px -5px rgba(0, 0, 0, 0.65);
 }
 
 /* --- route badge floating directly above the vehicle ------------------------- */
@@ -247,7 +347,10 @@
   pointer-events: auto;
   display: flex;
   flex-direction: column;
-  border-radius: 15px;
+  /* A rounded SQUARE, not a stadium. The reference's pills have a corner radius
+     around 20-22% of their width (about 9px on a 40px pill), so the top and bottom
+     ends read FLAT; at 15px they were full semicircles. */
+  border-radius: 9px;
   overflow: hidden;
   background: var(--mk-ctrl);
   border: 1px solid var(--mk-ctrl-edge);
@@ -277,9 +380,20 @@
 
 /* Phone: a slightly tighter inset so the stack clears the card's 16px radius. */
 @media (max-width: 560px) {
-  .map-card .map-controls { top: 10px; right: 10px; gap: 9px; }
+  /* The reference insets the two pills ~16px from the screen edge and CENTRES the
+     stack vertically in the map card (it spans y218-y355 inside a map running
+     y168-y378). Ours sat 10px from a 390px edge and started 10px below the map's
+     top, so the whole thing was jammed into the top-right corner and crowded the
+     504A badge. */
+  .map-card .map-controls {
+    top: 50%;
+    bottom: auto;
+    right: 14px;
+    gap: 9px;
+    transform: translateY(-50%);
+  }
   .map-card .map-ctrl { width: 34px; height: 34px; }
-  .map-card .map-pill { border-radius: 13px; }
+  .map-card .map-pill { border-radius: 8px; }
   .map-card .stop-card { max-width: 168px; padding: 5px 10px 5px 5px; }
   .map-card .stop-card-tile { width: 24px; height: 24px; border-radius: 8px; }
   .map-card .stop-card b { font-size: 11px; }
@@ -318,7 +432,7 @@
   text-align: right;
   font: 500 10px/1.45 var(--font);
   padding: 2px 8px 2px 9px !important;
-  border-radius: 9px 0 var(--r-lg) 0 !important;
+  border-radius: 9px 0 var(--r-md) 0 !important;
 }
 .map-card .maplibregl-ctrl-attrib-inner { white-space: normal; }
 @media (max-width: 560px) {

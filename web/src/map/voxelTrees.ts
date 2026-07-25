@@ -72,7 +72,9 @@ const VERGE_RATIO = 1.4;
 const MAX_TREES = 520;
 /** Fraction of candidate slots that actually get a tree (hash-gated, not random),
  *  so the spacing never reads as a metronome. */
-const KEEP = 0.55;
+/** THINNED 0.55 -> 0.3: measured against the reference, our trees covered 1.17%
+ *  of the desktop map frame to its 0.53%. Trees are set dressing here. */
+const KEEP = 0.3;
 export const TREE_MIN_ZOOM = 14.8;
 
 interface TreePalette {
@@ -92,7 +94,14 @@ interface TreePalette {
  * taking them literally produced grey-olive blocks nobody would call a tree. These
  * values are what actually RENDER as the sampled ones — muted, never saturated.
  */
-const DARK_TREES: TreePalette = { wall: '#2a3a28', cap: '#4a5c37' };
+//
+// CORRECTED. The "authored a little more saturated than the raw modes" reasoning
+// above overshot: measured back off a rendered production frame, our dark trees
+// average #415236 — hue 96, saturation 0.21 — against the reference's #4d5540 —
+// hue 81, saturation 0.14. Ours were a fresher, greener green over more than
+// twice the frame area (1.17% vs 0.53%). These values are the sampled sides/tops
+// this comment already records, which is where they should have been.
+const DARK_TREES: TreePalette = { wall: '#363f34', cap: '#555a42' };
 /** In daylight the trees carry nearly all the chroma in the frame — the blocks
  *  are near-white — so this is the one place the light map is allowed real colour. */
 const LIGHT_TREES: TreePalette = { wall: '#8ba482', cap: '#b2c79c' };

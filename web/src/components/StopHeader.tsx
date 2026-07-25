@@ -48,25 +48,20 @@ export function StopHeader({ arr, distanceM, headsigns }: {
             an ellipsis here would cut a fact off mid-word, which the zero-overlap
             rule forbids outright. The card grows instead. */}
         <h2 className="stop-name">{arr.stopName ?? t('stop.code', { code: arr.stopId })}</h2>
+        {/* The separator belongs to the fact that FOLLOWS it, drawn as a ::before
+            (see `.stop-fact + .stop-fact` in app.css) rather than as its own
+            element. As separate siblings the line could — and did — wrap after a
+            "·", leaving "Eastbound · Stop 15644 ·" with a separator dangling at
+            the end of a line and nothing after it. A separator that is part of the
+            next fact's own nowrap box can never be the last thing on a row. */}
         <p className="stop-sub">
-          {dir && (
-            <>
-              <span className="stop-fact stop-dir">{t(`direction.${dir}`)}</span>
-              <span className="dot-sep" aria-hidden>·</span>
-            </>
-          )}
+          {dir && <span className="stop-fact stop-dir">{t(`direction.${dir}`)}</span>}
           <span className={dir ? 'stop-fact' : 'stop-fact stop-dir'}>{t('stop.code', { code: arr.stopId })}</span>
           {distanceM != null && (
-            <>
-              <span className="dot-sep" aria-hidden>·</span>
-              <span className="stop-fact">{fmtDistance(distanceM, units === 'imperial')}</span>
-            </>
+            <span className="stop-fact">{fmtDistance(distanceM, units === 'imperial')}</span>
           )}
           {walkMin != null && (
-            <>
-              <span className="dot-sep" aria-hidden>·</span>
-              <span className="stop-fact">{t('stop.walk', { min: walkMin })}</span>
-            </>
+            <span className="stop-fact">{t('stop.walk', { min: walkMin })}</span>
           )}
         </p>
       </div>

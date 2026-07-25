@@ -21,7 +21,7 @@ import { useLive, selectedNearbyStop, DEFAULT_LOCATION } from '@/hooks/useLive';
 import { useStore, resolveTheme, paceMps } from '@/store';
 import { walkSeconds } from '@/lib/format';
 import { buildStyle, type MapTheme } from './mapStyle';
-import { makeVoxelSprite, spriteId, kindForRouteType, type VehicleKind } from './sprites';
+import { makeVoxelSprite, spriteId, kindForRouteType, SPRITE_SIZE_PX, type VehicleKind } from './sprites';
 import {
   addVoxelCityLayers,
   removeVoxelCityLayers,
@@ -49,8 +49,15 @@ const ANIM_MS = 1200;
 const FADE_MS = 420;
 const JUMP_M = 500;            // beyond this a vehicle fades in place, never slides
 const KNOWN_COLORS = ['ED1C24', '3C4A5B', '00A651', 'E472AC']; // the live TTC palette
-const ICON_BASE = 0.82;
-const ICON_SEL = 1.14;
+/** Sprites are authored at their final size (see `S` in sprites.ts), so icon-size
+ *  stays at 1 and MapLibre draws them at native resolution instead of upscaling a
+ *  small image into a blurry one. */
+const ICON_BASE = 1;
+const ICON_SEL = 1.18;
+/** How far above a vehicle's ground point the route badge's bottom edge sits.
+ *  `SPRITE_SIZE_PX * 0.42` is the sprite's roof when it is pointing north (its
+ *  worst case — a sprite pointing east is narrower), plus a few px of air. */
+const BADGE_LIFT_PX = Math.round(SPRITE_SIZE_PX * 0.42) + 5;
 /** Below this card width the reference keeps at most three floating labels on the
  *  map at once (DESIGN-TARGET §D). Measured against the card, not the window, so
  *  a narrow map inside a wide desktop window is treated as narrow. */
@@ -223,13 +230,22 @@ export default function MapCard() {
     (wrapRef.current as HTMLDivElement & { _gbMap?: maplibregl.Map })._gbMap = map;
     // The GL canvas is aria-hidden; make it truly inert so keyboard focus can't land on it.
     map.getCanvas().setAttribute('tabindex', '-1');
-    // `compact: false`, NOT compact-plus-force-expanded. The compact control renders
-    // a 29px ⓘ button *beside* the expanded text, and the pair was 127px wide, wrapped
-    // to three lines and covered a corner of the city. Non-compact is a single
-    // always-visible line — still a licence requirement satisfied, and now small
-    // enough to stay out of the way (see map.css). `collide()` treats its box as
-    // chrome, so no marker is ever placed over it.
-    map.addControl(new maplibregl.AttributionControl({ compact: false }), 'bottom-right');
+    // NO `compact` option, which is not the same thing as `compact: false`.
+    //
+    // The previous code forced `compact: false` because an earlier attempt had
+    // passed `compact: true` AND force-expanded it, which renders a 29px ⓘ button
+    // *beside* the expanded text — 127px wide, wrapped to three lines, over a
+    // corner of the city. Left undefined, MapLibre picks per container width
+    // (compact under 640px, re-evaluated on every resize), which is the behaviour
+    // actually wanted: a single always-visible line on desktop, and on a 390px
+    // phone an ⓘ toggle instead of a strip 202px wide — 52% of the screen — lying
+    // across the map's bottom-right corner.
+    //
+    // This keeps the licence satisfied: OSM's attribution guidelines explicitly
+    // permit placing the credit behind a link or button where space is very
+    // limited, and the credit is one tap away and never removed. `collide()` still
+    // treats its box as chrome, so no marker is ever placed over it.
+    map.addControl(new maplibregl.AttributionControl(), 'bottom-right');
     map.touchZoomRotate.disableRotation();
 
     // Tile-failure detection: don't latch on a single transient tile blip. The fallback
@@ -337,19 +353,53 @@ export default function MapCard() {
     // §C: the route carries a subtle darker casing in the reference, which is what
     // keeps it legible where it crosses a lit roof or a pale daylight block.
     const redCasing = thm === 'dark' ? '#7E2130' : '#93262A';
-    const stopFill = thm === 'dark' ? '#0C1229' : '#ffffff';
 
+    // The beads' own drop shadow, so the walk path sits ON the ground plane rather
+    // than floating flat over it (the reference's beads are 3D purple pucks).
+    if (!map.getLayer('walk-shadow')) {
+      map.addLayer({
+        id: 'walk-shadow', type: 'line', source: 'walk-path',
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: {
+          'line-color': 'rgba(0,0,0,0.5)',
+          'line-width': ['interpolate', ['linear'], ['zoom'], 14, 7, 16.6, 12, 18, 15],
+          'line-dasharray': [0, 1.55],
+          'line-translate': [1.5, 2.5],
+          'line-blur': 1.5,
+          'line-opacity': 0.75,
+        },
+      });
+    }
     if (!map.getLayer('walk-line')) {
       map.addLayer({
         id: 'walk-line', type: 'line', source: 'walk-path',
         layout: { 'line-cap': 'round', 'line-join': 'round' },
         paint: {
           // Round caps + a zero-length dash = a row of separated round BEADS, which
-          // is what the reference draws — not a dashed line.
+          // is what the reference draws — not a dashed line. The dash gap shrinks
+          // with the width so the beads keep the same spacing-to-size ratio.
           'line-color': purple,
-          'line-width': ['interpolate', ['linear'], ['zoom'], 14, 5, 16.6, 8, 18, 10],
-          'line-dasharray': [0, 1.9],
+          'line-width': ['interpolate', ['linear'], ['zoom'], 14, 7, 16.6, 12, 18, 15],
+          'line-dasharray': [0, 1.55],
           'line-opacity': 0.98,
+        },
+      });
+    }
+    // ROUTE RIBBON — three strokes, drawn widest-first: a soft ground shadow, a
+    // dark casing, then the bright top face. MEASURED off the reference, where the
+    // route's median width is 1.13% of the map frame with a visibly lighter top and
+    // a darker side. The shipped build drew a uniform 0.42%-of-frame hairline with
+    // no casing showing at all, which is why it read as a 2D stroke laid over the
+    // city instead of an extruded ribbon lying in it.
+    if (!map.getLayer('route-shadow')) {
+      map.addLayer({
+        id: 'route-shadow', type: 'line', source: 'route-shape',
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: {
+          'line-color': thm === 'dark' ? 'rgba(0,0,0,0.55)' : 'rgba(60,20,24,0.28)',
+          'line-width': ['interpolate', ['exponential', 1.5], ['zoom'], 11, 8, 14, 15, 17, 26],
+          'line-translate': [1, 3],
+          'line-blur': 4,
         },
       });
     }
@@ -358,8 +408,8 @@ export default function MapCard() {
         id: 'route-casing', type: 'line', source: 'route-shape',
         layout: { 'line-cap': 'round', 'line-join': 'round' },
         paint: {
-          'line-color': redCasing, 'line-opacity': 0.95,
-          'line-width': ['interpolate', ['exponential', 1.5], ['zoom'], 11, 4.5, 14, 8, 17, 13],
+          'line-color': redCasing, 'line-opacity': 1,
+          'line-width': ['interpolate', ['exponential', 1.5], ['zoom'], 11, 6, 14, 11.5, 17, 20],
         },
       });
     }
@@ -369,7 +419,7 @@ export default function MapCard() {
         layout: { 'line-cap': 'round', 'line-join': 'round' },
         paint: {
           'line-color': red, 'line-opacity': 1,
-          'line-width': ['interpolate', ['exponential', 1.5], ['zoom'], 11, 2.5, 14, 5, 17, 9],
+          'line-width': ['interpolate', ['exponential', 1.5], ['zoom'], 11, 3.6, 14, 7.5, 17, 13.5],
         },
       });
     }
@@ -377,8 +427,15 @@ export default function MapCard() {
       map.addLayer({
         id: 'route-stops', type: 'circle', source: 'route-stops', minzoom: 13,
         paint: {
-          'circle-radius': ['interpolate', ['linear'], ['zoom'], 13, 2, 16, 4],
-          'circle-color': stopFill, 'circle-stroke-color': red, 'circle-stroke-width': 1.6, 'circle-opacity': 0.95,
+          // A pale FILLED tick sitting in the ribbon, not a hollow ring. With a dark
+          // fill these read as holes punched through the map — and at a frame edge a
+          // half-clipped ring reads as a broken crescent. The reference integrates
+          // its stops into the stroke as small light marks.
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 13, 1.8, 16, 3.4],
+          'circle-color': thm === 'dark' ? '#FBE2E4' : '#FFF3F3',
+          'circle-stroke-color': redCasing,
+          'circle-stroke-width': 1.1,
+          'circle-opacity': 0.95,
         },
       });
     }
@@ -790,10 +847,39 @@ export default function MapCard() {
    * This never invents a vehicle. No live vehicle on that route in view means no
    * badge, exactly as it means no vehicle sprite.
    */
+  /** Inset from the map's own edges that a vehicle must clear before it may wear
+   *  the badge. The badge is drawn ~34px above its vehicle and is ~44px wide, so
+   *  this is the margin that keeps the PAIR fully in frame. */
+  const BADGE_SAFE_PX = 62;
+
+  /** True when this ground position projects inside the map container, inset. A
+   *  vehicle in the far-left gutter must not be given the badge: the reference's
+   *  strongest map anchor is a badge sitting ON a fully visible streetcar, and a
+   *  badge floating in empty sky beside a half-clipped vehicle is worse than none. */
+  function badgeInFrame(lon: number, lat: number): boolean {
+    const map = mapRef.current;
+    if (!map) return false;
+    const { x, y } = map.project([lon, lat]);
+    const c = map.getCanvas();
+    const w = c.clientWidth, h = c.clientHeight;
+    if (w < 2 * BADGE_SAFE_PX || h < 2 * BADGE_SAFE_PX) return false;
+    return x >= BADGE_SAFE_PX && x <= w - BADGE_SAFE_PX && y >= BADGE_SAFE_PX && y <= h - BADGE_SAFE_PX;
+  }
+
   function badgeVehicle(): { id: string; label: string; color: string; lon: number; lat: number } | null {
+    // `shortName ?? routeId` with NO string fallback. A vehicle whose feed record
+    // carries neither is unlabellable, and two production probes caught the old
+    // `?? '—'` shipping a literal em-dash badge — a badge that names no route at
+    // all, which is exactly the kind of placeholder-as-fact this app exists not to
+    // print. No badge is the honest answer.
+    const label = (v: { shortName?: string | null; routeId?: string | null }) => v.shortName ?? v.routeId ?? null;
+
     const sel = selectedRef.current;
     if (sel) {
-      return { id: sel.id, label: sel.shortName ?? sel.routeId ?? '—', color: sel.color, lon: sel.lon, lat: sel.lat };
+      const l = label(sel);
+      // An explicit selection overrides the framing test — the user asked for this
+      // one, and `selectVehicle` has already eased the camera onto it.
+      return l ? { id: sel.id, label: l, color: sel.color, lon: sel.lon, lat: sel.lat } : null;
     }
     const routeId = focusRouteRef.current?.routeId;
     const stop = boardingRef.current;
@@ -812,9 +898,17 @@ export default function MapCard() {
       for (const a of animsRef.current.values()) {
         const p = a.feat.properties as { id: string; routeId?: string; shortName?: string; color: string };
         if (wantRoute && p.routeId !== routeId) continue;
+        const l = label(p);
+        if (!l) continue;
         const [lon, lat] = a.feat.geometry.coordinates as LngLat;
+        // The comment above has always claimed the badge is "never shown when there
+        // is no live vehicle in frame", but the selection was nearest-by-haversine
+        // with no viewport test at all — so on four of six production captures the
+        // badge sat at map-local x=169-287 while the marker cluster was at x=420-555.
+        // This is that claim, enforced.
+        if (!badgeInFrame(lon, lat)) continue;
         const d = haversineM(lat, lon, stop.lat, stop.lon);
-        if (d < bestD) { bestD = d; best = { id: p.id, label: p.shortName ?? p.routeId ?? '—', color: p.color, lon, lat }; }
+        if (d < bestD) { bestD = d; best = { id: p.id, label: l, color: p.color, lon, lat }; }
       }
       if (best) return best;
     }
@@ -835,7 +929,11 @@ export default function MapCard() {
       el.style.setProperty('--badge', `#${hex}`);
       el.style.color = readableOn(hex); // AA on any agency color (black/white per luminance)
       el.textContent = label;
-      badgeMarker.current = new maplibregl.Marker({ element: el, anchor: 'bottom', offset: [0, -22] }).setLngLat(c).addTo(map);
+      // The sprite is S px tall (sprites.ts) centred on the vehicle's ground point,
+      // so its roof is ~S*0.40 above that point. The badge's bottom sits 6px above
+      // the roof — the reference reads badge and streetcar as ONE unit, and the old
+      // fixed -22 left a visible empty tail once the sprite grew.
+      badgeMarker.current = new maplibregl.Marker({ element: el, anchor: 'bottom', offset: [0, -BADGE_LIFT_PX] }).setLngLat(c).addTo(map);
     } else {
       const el = badgeMarker.current.getElement();
       el.style.setProperty('--badge', `#${hex}`);
@@ -857,8 +955,16 @@ export default function MapCard() {
         const el = document.createElement('div');
         el.className = 'you-beacon';
         el.innerHTML =
-          '<span class="you-bloom" aria-hidden="true"></span>' +
-          `<span class="you-disc">${PERSON_SVG}</span>` +
+          // The bloom lives INSIDE the disc so it stays centred on it in both the
+          // normal and the flipped layout (map.css explains the z-index), and the
+          // tip is the small blue-and-white dot the reference floats just above the
+          // beacon, where the bead path terminates — without it the beads simply
+          // stop in mid-air.
+          '<span class="you-disc">' +
+            '<span class="you-bloom" aria-hidden="true"></span>' +
+            PERSON_SVG +
+            '<span class="you-tip" aria-hidden="true"></span>' +
+          '</span>' +
           '<span class="you-card"><b></b><i></i></span>';
         youMarker.current = new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat([geo.lon, geo.lat]).addTo(map);
       } else {
@@ -1136,20 +1242,46 @@ export default function MapCard() {
 
     const feats: GeoJSON.Feature<GeoJSON.Point>[] = [];
     const canvasBox = map.getCanvas().getBoundingClientRect();
+
+    /** Register (idempotently) an all-zero RGBA image of this size — a real
+     *  collision box that paints nothing — and return its id. */
+    const blockerImg = (w: number, h: number): string => {
+      const img = `blk-${w}x${h}`;
+      if (!blockerSizes.current.has(img)) {
+        if (!map.hasImage(img)) {
+          map.addImage(img, { width: w, height: h, data: new Uint8Array(w * h * 4) }, { pixelRatio: 1 });
+        }
+        blockerSizes.current.add(img);
+      }
+      return img;
+    };
+
+    // --- the LEFT-EDGE gutter -------------------------------------------------
+    // A line-placed street name has no viewport padding in MapLibre: the label is
+    // laid along whatever part of the way is on screen, so on desktop "…y Street
+    // West" was routinely drawn with its first characters cut off by the map
+    // container's edge against the sidebar (DESIGN-TARGET §D1/§D2). There is no
+    // paint property for this, but the collision index is already the mechanism
+    // that keeps labels off the marker cards — so the gutter gets published to it
+    // as a stack of invisible boxes, and MapLibre moves the name along the street
+    // instead of drawing it half off-canvas.
+    const GUTTER_W = 56;
+    const GUTTER_STEP = 168;
+    if (canvasBox.width > NARROW_CARD_PX) {
+      const gutterImg = blockerImg(GUTTER_W, 160);
+      for (let y = 80; y < canvasBox.height; y += GUTTER_STEP) {
+        const p = map.unproject([GUTTER_W / 2, y]);
+        feats.push({ type: 'Feature', properties: { img: gutterImg }, geometry: { type: 'Point', coordinates: [p.lng, p.lat] } });
+      }
+    }
+
     for (const el of els) {
       if (isHidden(el)) continue;
       const r = el.getBoundingClientRect();
       if (r.width < 2 || r.height < 2) continue;
       const w = Math.min(320, Math.ceil(r.width / 8) * 8);
       const h = Math.min(160, Math.ceil(r.height / 8) * 8);
-      const img = `blk-${w}x${h}`;
-      if (!blockerSizes.current.has(img)) {
-        if (!map.hasImage(img)) {
-          // All-zero RGBA: a real collision box that paints nothing.
-          map.addImage(img, { width: w, height: h, data: new Uint8Array(w * h * 4) }, { pixelRatio: 1 });
-        }
-        blockerSizes.current.add(img);
-      }
+      const img = blockerImg(w, h);
       const p = map.unproject([
         r.left + r.width / 2 - canvasBox.left,
         r.top + r.height / 2 - canvasBox.top,
@@ -1271,7 +1403,7 @@ const PERSON_SVG =
 const PIN_SVG =
   '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-6-5.3-6-10a6 6 0 1 1 12 0c0 4.7-6 10-6 10Z"/><circle cx="12" cy="11" r="2.2"/></svg>';
 const WALKER_SVG =
-  '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="13" cy="4.2" r="1.9"/><path d="M11 21l1.6-5.2-2.2-2.4.8-4.2 3 1.6 2.4 1.4"/><path d="M10.2 9.2 7.4 11l-.9 3"/><path d="m12.6 15.8 2.6 2.1.9 3.1"/></svg>';
+  '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="13" cy="4.2" r="1.9"/><path d="M11 21l1.6-5.2-2.2-2.4.8-4.2 3 1.6 2.4 1.4"/><path d="M10.2 9.2 7.4 11l-.9 3"/><path d="m12.6 15.8 2.6 2.1.9 3.1"/></svg>';
 /** The transit glyph in the stop bubble's purple tile — a streetcar/tram box. */
 const TRANSIT_SVG =
   '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="3" width="14" height="13" rx="3.2"/><path d="M5 10.2h14"/><path d="M8.6 13.3h.01M15.4 13.3h.01"/><path d="M8.6 16.2 7 19.4M15.4 16.2 17 19.4"/></svg>';

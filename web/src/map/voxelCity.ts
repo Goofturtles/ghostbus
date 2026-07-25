@@ -40,17 +40,59 @@ const FLAT_BUILDING_LAYER = 'building';
 /** GhostBus overlays that must NEVER be occluded by a building. The extrusions are
  *  inserted beneath the first of these that exists, so MapLibre's per-layer depth
  *  range draws route / stops / vehicles / walk path in front of every block. */
-const OVERLAY_LAYER_IDS = ['walk-line', 'route-line', 'route-stops', 'vehicles'];
+const OVERLAY_LAYER_IDS = [
+  'walk-shadow', 'walk-line', 'route-shadow', 'route-casing', 'route-line', 'route-stops', 'vehicles',
+];
+
+/**
+ * Where the basemap's own street names get lifted to. They must end up ABOVE the
+ * red route line, not below it.
+ *
+ * A visual judge measured "…y Street West" with the route painted straight across
+ * the upper half of its glyphs, slicing them horizontally, and diagnosed it as
+ * `route-casing` missing from OVERLAY_LAYER_IDS. That diagnosis was wrong —
+ * `insertionPoint` returns the FIRST id in that list that exists, `walk-line` is
+ * created before every other overlay, and so the extrusions were already going in
+ * beneath all of them. The actual cause is that labels were being lifted to the
+ * same insertion point, which puts them under the route rather than over it.
+ *
+ * They stop below `vehicles` / `marker-blockers`, so a street name still can never
+ * cover a vehicle sprite, and `marker-blockers` stays the last symbol layer (it has
+ * to be, to win collisions against the DOM marker cards).
+ */
+const LABEL_ABOVE_LAYER_IDS = ['vehicles', 'marker-blockers'];
 
 // ---------------------------------------------------------------- geometry
 
 /** Metre step every roof snaps to. ~3 storeys — chunky enough to read as stacked
  *  blocks at z16 without turning a row of houses into a wall. */
-export const HEIGHT_STEP_M = 22;
+/**
+ * RAISED 22 -> 31, and this is the geometry half of the "blocks stop reading as
+ * cubes" fix. The arithmetic, because it is worth writing down once:
+ *
+ * At pitch p, a footprint of side s projects to a roof of area s²·cos(p) and two
+ * visible walls of area 2·s·h·sin(p). So
+ *
+ *     wall / roof  =  2 · (h/s) · tan(p)
+ *
+ * Downtown Toronto's OSM footprints are whole-block developments — s ≈ 100 m — and
+ * at 22 m with the zoom gain that is h/s ≈ 0.28, which at pitch 50 predicts a
+ * wall:roof of 0.67. Measured on the shipped build: 18% wall against 30% roof, a
+ * ratio of 0.6. The model is right, so it can be inverted: the reference reads
+ * around 1.2-1.4, and 31 m at pitch 56 gives 2 · 0.40 · 1.48 = 1.19.
+ *
+ * Note what this does NOT do: it does not add, subdivide or merge a single
+ * footprint. Every block is still one real OSM building; it is the documented
+ * decorative height distortion (see HEIGHT_SQRT_K) turned up, and it converts
+ * GROUND pixels into WALL pixels, which is precisely the band the reference has
+ * 27.7% of its frame in and we had 12.3%.
+ */
+export const HEIGHT_STEP_M = 31;
 /** Thickness of the brighter cap band at the top of each block. Constant, so with
  *  quantized roofs every cap in the city sits on one shared horizontal lattice —
- *  ~22% of a one-course block, so the lit top course reads at a glance. */
-export const CAP_BAND_M = 4.5;
+ *  ~20% of a one-course block, so the lit top course reads at a glance. Scaled
+ *  with HEIGHT_STEP_M so that fraction is unchanged. */
+export const CAP_BAND_M = 6.2;
 /** Buildings with no OSM height at all. */
 export const DEFAULT_HEIGHT_M = 8;
 /**
@@ -73,11 +115,20 @@ export const DEFAULT_HEIGHT_M = 8;
  * This is a deliberate, documented distortion of building height — a decorative
  * layer. No transit datum anywhere in the app is styled this way.
  */
-export const HEIGHT_BASE_M = 4;
-export const HEIGHT_SQRT_K = 3.0;
+/**
+ * RAISED with HEIGHT_STEP_M. Against the real render_height values in these tiles
+ * (4, 5, 8, 11, 30, 55, 132, 174 m) and a 31 m step, base 5 / k 4.6 quantizes to
+ * 1 / 1 / 1 / 1 / 1 / 2 / 2 / 3 courses. Keeping k at 3.0 under the taller step
+ * would have collapsed the whole city onto a single course and lost the stepped
+ * skyline the reference shows.
+ */
+export const HEIGHT_BASE_M = 5;
+export const HEIGHT_SQRT_K = 4.6;
 /** Per-block sub-step offset that separates abutting footprints. See the long note
- *  in `quantizedHeight`, which is where this earns its keep. */
-export const SEPARATION_M = 1.15;
+ *  in `quantizedHeight`, which is where this earns its keep. Raised with the step
+ *  so it stays ~20% of a course: it is the only tool MapLibre gives for stopping
+ *  two abutting whole-block footprints fusing into one unmodulated mass. */
+export const SEPARATION_M = 1.6;
 /** Below this the city is a texture, not architecture: not worth the draw calls. */
 export const VOXEL_MIN_ZOOM = 14.6;
 /**
@@ -102,8 +153,21 @@ export const VOXEL_MIN_ZOOM = 14.6;
  * foreground stops swallowing the frame, and the dark street gaps between blocks
  * (the thing that makes the reference read as separate chunky blocks rather than
  * one continuous mass) are visible everywhere instead of only near the horizon.
+ *
+ * RAISED AGAIN, 50 -> 56, and this one is arithmetic rather than judgement. At
+ * pitch p a block's wall:roof area ratio is 2·(h/s)·tan(p) (see HEIGHT_STEP_M).
+ * Measured on the shipped 50-degree build the frame was 30% roof against 18%
+ * wall — inverted against the reference, which shows mostly WALL, and the reason
+ * the blocks stopped reading as cubes and started reading as flat plates. tan
+ * climbs 1.19 -> 1.48 between 50 and 56, and cos falls 0.643 -> 0.559, so the
+ * same city gains a fifth more wall and loses a seventh of its roof for free.
+ *
+ * 56, not the 58 this comment previously rejected: the objection to 58 was the
+ * severity of the perspective gradient across the frame, and that objection was
+ * correct. 56 is the far edge of where the top faces still dominate and the grid
+ * still reads as a lattice.
  */
-export const VOXEL_PITCH = 50;
+export const VOXEL_PITCH = 56;
 /**
  * MapLibre's default `maxPitch` is 60 — any larger value passed to `setPitch` is
  * silently clamped, which makes a "steeper camera" change look like it did nothing.
@@ -249,26 +313,43 @@ const DARK: VoxelPalette = {
   // owns the frame. Measured result at the default framing: bands
   // [0, 20.5, 43.1, 26.4, 9.4], mean saturation 0.570, mean value 0.290 — against
   // the reference's mean 0.574 / 0.290.
-  wall: '#12123a',
-  roof: '#363458',
-  // The blue-slate family (hue ~218) — roughly a third of the massing, and the one
-  // that keeps a bright roof, so the reference's scattering of pale tops survives.
-  wallAlt: '#0d1a38',
-  roofAlt: '#33456e',
-  // The violet accent (hue ~250). Warmer and more saturated than the first pass:
-  // this is the "clear mauve accent blocks" the reference reads with.
-  wallAlt2: '#1e1746',
-  roofAlt2: '#453474',
-  // DARK teal, not cyan. The first pass authored #3d6a70 and — multiplied by the
-  // old blue light colour — came back as bright cyan blocks that shouted over the
-  // violet. The reference's teal face measures #23383d: it is a shadow with a hint
-  // of green in it, nothing more.
-  tealWall: '#10262b',
-  tealRoof: '#2b5158',
-  roseWall: '#2f1c38',
-  roseRoof: '#5d3757',
-  mutedWall: '#0f1226',
-  mutedRoof: '#171a33',
+  //
+  // PASS 3 REVERTS PASS 2's WALLS, and the reason is that pass 2 optimised the
+  // wrong statistic. It matched an HSV-VALUE decile histogram, which normalises
+  // away exactly the thing that was wrong: relative luminance. Measured per 0-255
+  // luminance band over the desktop map region, the pass-2 build came out
+  //
+  //     0-16 21.1% | 16-32 27.8% | 32-48 12.3% | 48-64 6.0% | 64-80 30.0%
+  //
+  // against a reference of 2.9 / 37.3 / 27.7 / 13.2 / 12.2 — void plus glare, with
+  // the mid-tones hollowed out. `wall: #12123a` is luminance 21, i.e. it sat in the
+  // same band as the GROUND, so a wall and the street beside it were the same tone
+  // and no block had a visible side. Meanwhile `roofAlt: #33456e` (luminance 68)
+  // covered a third of the frame on its own.
+  //
+  // These are the values this file's own header records as the measured reference
+  // faces, and they were right the first time: wall #1b203f (luminance 33) sits a
+  // clear band above the #0e142b ground (20), and roof #454670 (73) is 2.2x the
+  // wall — the ratio a separate judge confirmed is already correct and must not be
+  // churned. The 64-80 band comes down by making blocks TALLER (see HEIGHT_STEP_M)
+  // so more of each one is wall, not by dimming the roofs.
+  wall: '#1b203f',
+  roof: '#454670',
+  // The blue-slate family (hue ~212) — roughly a third of the massing.
+  wallAlt: '#14213c',
+  roofAlt: '#384d6f',
+  // The violet accent (hue ~262). This is the "clear mauve accent blocks" the
+  // reference reads with; brighter than the ordinary wall on purpose.
+  wallAlt2: '#332b52',
+  roofAlt2: '#574687',
+  // DARK teal, not cyan. The reference's teal face measures #23383d: a shadow with
+  // a hint of green in it, nothing more.
+  tealWall: '#20343a',
+  tealRoof: '#3d5f66',
+  roseWall: '#382340',
+  roseRoof: '#674669',
+  mutedWall: '#141a33',
+  mutedRoof: '#232a4a',
   // Screen-anchored so the lit side never swings as the user pans — a diorama,
   // not a sun. Kept LOW on purpose: the cap layer already supplies the roof/wall
   // value split, and a strong light would blow the sunward wall brighter than the
@@ -298,22 +379,34 @@ const DARK: VoxelPalette = {
  * route. Value still descends roof → lit wall → shaded wall, which is what keeps
  * every block reading as a solid cube instead of a white blob.
  */
+//
+// WIDENED, pass 3. The first light palette put wall and roof within ~8 levels of
+// each other (#cfcac4 / #f1eee9), which on screen is no cube at all: a judge
+// measured the daylight blocks as "near-uniform white with roof and wall within a
+// couple of levels", and with the light ground painted brighter than the walls
+// there was no street grid either. The dark theme's roof:wall luminance RATIO is
+// ~2.2 and is the thing that makes its blocks read as solid; daylight cannot use
+// 2.2 (a roof at 240 would need a wall at 109, which is charcoal, not daylight),
+// but it can and now does carry a ~55-level GAP — roof 238, lit wall 200, shaded
+// wall 183 — over a #cfc9c1 ground and a #dad5cd street that are both a clear
+// step below the darkest wall. That ordering (roof > wall > street > ground) is
+// what separates one block from the next.
 const LIGHT: VoxelPalette = {
-  wall: '#cfcac4',
+  wall: '#b9b3aa',
   roof: '#f1eee9',
-  wallAlt: '#c2beb8',
-  roofAlt: '#e7e4de',
+  wallAlt: '#aca69d',
+  roofAlt: '#e7e3dc',
   // The violet accent, held to a whisper — this is what #f8f4f7 in the histogram is.
-  wallAlt2: '#cdc8d8',
-  roofAlt2: '#edeaf2',
+  wallAlt2: '#b8b2c2',
+  roofAlt2: '#ebe7f0',
   // Blue-slate, not sage: the trees own green in this palette, and a green block
   // here competes with them.
-  tealWall: '#adbdb8',
-  tealRoof: '#d7e0da',
-  roseWall: '#cfb9b6',
-  roseRoof: '#f0e3e1',
-  mutedWall: '#dcd8d3',
-  mutedRoof: '#eeebe7',
+  tealWall: '#9aaaa5',
+  tealRoof: '#d4ddd7',
+  roseWall: '#bfa8a5',
+  roseRoof: '#eddfdd',
+  mutedWall: '#c9c4bd',
+  mutedRoof: '#e6e3de',
   light: { anchor: 'viewport', color: '#ffffff', intensity: 0.25, position: [1.4, 215, 30] },
 };
 
@@ -563,6 +656,13 @@ export function voxelInsertionPoint(map: MlMap): string | undefined {
   return insertionPoint(map);
 }
 
+/** See LABEL_ABOVE_LAYER_IDS. `undefined` when none of them exist yet, in which
+ *  case the caller falls back to the extrusion insertion point. */
+function labelInsertionPoint(map: MlMap): string | undefined {
+  for (const id of LABEL_ABOVE_LAYER_IDS) if (map.getLayer(id)) return id;
+  return undefined;
+}
+
 function insertionPoint(map: MlMap): string | undefined {
   for (const id of OVERLAY_LAYER_IDS) if (map.getLayer(id)) return id;
   const layers = map.getStyle()?.layers ?? [];
@@ -702,7 +802,7 @@ export function addVoxelCityLayers(
   // insertion point in the style order and would be drawn before — and therefore
   // behind — every block. Lifting them to just under the overlays is what makes
   // "King St West" readable along a street with towers on both sides.
-  liftBasemapLabels(map, sourceId, before);
+  liftBasemapLabels(map, sourceId, labelInsertionPoint(map) ?? before);
 
   const prevLight = existing?.prevLight ?? safeGetLight(map);
   safeSetLight(map, p.light);

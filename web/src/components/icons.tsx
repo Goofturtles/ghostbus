@@ -39,8 +39,11 @@ export const StarIcon = (p: P & { filled?: boolean }) => {
 export const LocateIcon = (p: P) => (
   <svg {...base(p)}><circle cx="12" cy="12" r="3.2" /><path d="M12 3v3M12 18v3M3 12h3M18 12h3" /></svg>
 );
+/** The map's "locate me" glyph. A plain paper-plane navigation arrow — the notched
+ *  five-point star the first version drew read as a fast-forward chevron, not as
+ *  the navigation arrow the reference uses. */
 export const NavIcon = (p: P) => (
-  <svg {...base(p)}><path d="M11.5 4.5 20 12l-8.5 7.5 1.2-6L6 12l6.7-1.5-1.2-6Z" /></svg>
+  <svg {...base(p)}><path d="M20.5 3.5 3.8 10.2a.6.6 0 0 0 .05 1.12l6.6 2.23 2.23 6.6a.6.6 0 0 0 1.12.05L20.5 3.5Z" /></svg>
 );
 export const PlusIcon = (p: P) => (<svg {...base(p)}><path d="M12 5v14M5 12h14" /></svg>);
 export const MinusIcon = (p: P) => (<svg {...base(p)}><path d="M5 12h14" /></svg>);
