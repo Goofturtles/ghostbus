@@ -742,6 +742,22 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
       `join=${jr} due=${dueCount} ghosts+=${ghostsIns} retracted=${retracted} cancelled+=${cancelledIns}${cancTag} alerts=${alerts} ` +
       `| totals obs=${totals.obs} ghost=${totals.ghosts} cancelled=${totals.cancelled}`,
     );
+    // The engine's own state, every cycle. The suppression reason in particular must be
+    // visible in the log: a collector that quietly writes nothing looks identical to one
+    // that is broken, and the whole point is that we can always say which.
+    if (engine.isReady()) {
+      const d = joinStats.delayEngine;
+      console.log(
+        `[engine][cycle ${cycle}] xwalk ${d.xwalk.confirmed}/${d.xwalk.rtStopsSeen} confirmed ` +
+        `(${(d.xwalk.occurrenceCoverage * 100).toFixed(1)}% of occurrences, ${d.xwalk.conflicted} conflicted, ` +
+        `agree=${d.xwalk.crossRouteAgreement == null ? 'n/a' : (d.xwalk.crossRouteAgreement * 100).toFixed(1) + '%'}) ` +
+        `| patterns ${d.patterns.resolved}/${d.patterns.rtTotal} resolved (maxIter=${d.patterns.maxResolveIter}, ` +
+        `amb=${d.patterns.ambiguous} noCand=${d.patterns.noCandidate} thin=${d.patterns.tooFewAnchors}) ` +
+        `| bindings births=${d.bindings.births} pending=${d.bindings.pending} active=${d.bindings.active} ` +
+        `| directTripIdMatch=${(d.directTripIdMatchRate * 100).toFixed(1)}% ` +
+        `| ${d.suppressionReason ? `SUPPRESSED (${d.suppressionGate}): ${d.suppressionReason}` : 'publishing'}`,
+      );
+    }
   }
 
   // ---------- lifecycle ----------

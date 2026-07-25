@@ -5,6 +5,7 @@ import {
   xwalkConfidence, usableForDelay, crossRouteAgreement, monotonicityViolations,
   type RtPattern, type StaticPatternLite,
 } from './xwalk.ts';
+import { dedupeByKey } from './engine.ts';
 
 // A degree of latitude is ~111,320 m; place test stops by offsetting metres directly.
 const LAT0 = 43.70, LON0 = -79.40;
@@ -275,4 +276,67 @@ test('MONOTONICITY flags a trip whose crosswalked stops go backwards', () => {
   assert.equal(m.total, 3);
   assert.equal(m.violations, 2);
   assert.equal(monotonicityViolations([]).rate, null);
+});
+
+// ---------- regressions found by running the engine against the live feed ----------
+
+test('REGRESSION: a re-derived stop keeps voting, so confidence can actually rise', () => {
+  // Cycle 1 discovers rt3 -> s3. Cycle 2 re-derives the same identity from the same
+  // evidence. `learned` is empty the second time (it is no longer new), so counting votes
+  // off `learned` froze every propagated entry at one vote — permanently below the 0.60
+  // usability floor, which made the crosswalk incapable of ever backing a delay row.
+  const P = pat('P', 'R', [[1, 'rt1'], [2, 'rt2'], [3, 'rt3']]);
+  const byRoute = new Map([['R', [staticPat('SP1', ['s1', 's2', 's3'])]]]);
+  const geo = new Map([['R|rt1', 's1'], ['R|rt2', 's2']]);
+
+  const c1 = resolvePatterns([P], byRoute, geo, new Map());
+  assert.equal(c1.learned.get('rt3'), 's3');
+  assert.equal(c1.implied.get('rt3'), 's3');
+
+  const c2 = resolvePatterns([P], byRoute, geo, c1.learned);
+  assert.equal(c2.learned.has('rt3'), false, 'not a new discovery on the second pass');
+  assert.equal(c2.implied.get('rt3'), 's3', 'but it WAS re-derived, and that is the vote');
+
+  // Ten corroborating cycles must clear the floor for a propagated entry.
+  assert.ok(xwalkConfidence(10, null, 'propagated') >= 0.60,
+    'a fully-corroborated propagated entry must be usable, or propagation is pointless');
+  assert.ok(xwalkConfidence(1, null, 'propagated') < 0.60, 'one sighting is not enough');
+  assert.ok(xwalkConfidence(10, null, 'geo') > xwalkConfidence(10, null, 'propagated'));
+});
+
+test('REGRESSION: a stop that flaps between two identities never accumulates votes', () => {
+  // The vote count must measure corroboration, not merely how long we have been running.
+  const A = pat('A', 'R1', [[1, 'a1'], [2, 'a2'], [3, 'rtX']]);
+  const B = pat('B', 'R2', [[1, 'b1'], [2, 'b2'], [3, 'rtX']]);
+  const byRoute = new Map<string, StaticPatternLite[]>([
+    ['R1', [staticPat('SP1', ['s1', 's2', 'sHERE'])]],
+    ['R2', [staticPat('SP2', ['t1', 't2', 'sTHERE'])]],
+  ]);
+  const geo = new Map([['R1|a1', 's1'], ['R1|a2', 's2'], ['R2|b1', 't1'], ['R2|b2', 't2']]);
+  const r = resolvePatterns([A, B], byRoute, geo, new Map());
+  assert.ok(r.conflicted.has('rtX'));
+  assert.equal(r.implied.has('rtX'), false, 'a contested stop casts no vote for either answer');
+});
+
+test('REGRESSION: a batch upsert must tolerate two rows sharing a conflict key', () => {
+  // Observed against the live feed: the crosswalk persist failed on three of eight cycles
+  // with "ON CONFLICT DO UPDATE command cannot affect row a second time". Postgres
+  // rejects the WHOLE statement, so a single duplicated key silently costs the entire
+  // batch. RT patterns are keyed by a content hash, so two pattern objects can carry one
+  // identity; the writer must collapse them rather than assume they cannot occur.
+  const rows = [
+    ['ttc', 'P1', 'board', 'routeA'],
+    ['ttc', 'P2', 'board', 'routeB'],
+    ['ttc', 'P1', 'board', 'routeC'],   // same (agency, pattern, board) as row 0
+  ];
+  const out = dedupeByKey(rows, 3);
+  assert.equal(out.length, 2);
+  assert.deepEqual(out.map((r) => r[1]), ['P1', 'P2']);
+  assert.equal(out[0][3], 'routeC', 'last writer wins');
+
+  // A wider key keeps both rows, because they no longer collide.
+  assert.equal(dedupeByKey(rows, 4).length, 3);
+  // The separator must not let two different keys concatenate into the same string.
+  assert.equal(dedupeByKey([['a', 'bc'], ['ab', 'c']], 2).length, 2);
+  assert.equal(dedupeByKey([], 3).length, 0);
 });

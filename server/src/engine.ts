@@ -28,6 +28,27 @@ import {
 } from './delay.ts';
 import { evaluateGates, patternHealthy, type GateResult } from './gates.ts';
 
+/**
+ * Collapse rows that share a conflict key, last writer winning.
+ *
+ * Postgres rejects an INSERT ... ON CONFLICT DO UPDATE whose own VALUES list names the
+ * same key twice ("ON CONFLICT DO UPDATE command cannot affect row a second time"), and
+ * it rejects the WHOLE statement — so one duplicate silently costs the entire batch. This
+ * is not defensive padding: it was found by running the engine against the live feed,
+ * where the crosswalk persist failed on three of eight cycles. RT patterns are identified
+ * by a content hash, so two pattern objects can legitimately carry one identity.
+ *
+ * `keyCols` is how many LEADING columns form the conflict target, which is why every
+ * table in migration 004 puts its primary key first.
+ */
+export function dedupeByKey(rows: readonly unknown[][], keyCols: number): unknown[][] {
+  // U+001F never appears in a GTFS id, so composite keys cannot collide by concatenation.
+  const SEP = String.fromCharCode(31);
+  const out = new Map<string, unknown[]>();
+  for (const r of rows) out.set(r.slice(0, keyCols).join(SEP), r as unknown[]);
+  return [...out.values()];
+}
+
 const AGENCY_DEFAULT = 'ttc';
 /** A vehicle ping older than this is not evidence of where the bus is now. */
 const ANCHOR_MAX_AGE_S = 120;
@@ -293,6 +314,31 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
       if (out.pattern) rtPatternByTrip.set(tu.rtTripId, out.pattern);
       else console.warn(`[engine] route ${tu.routeId} hit the RT pattern cap; not clustering further`);
     }
+    collapseDuplicatePatterns();
+  }
+
+  /**
+   * Two patterns that grew independently can converge on identical stop lists, and the
+   * pattern id is a content hash — so they become the same identity while remaining two
+   * objects. Left alone that double-counts `distinctPatterns`, which would promote a
+   * crosswalk entry to `confirmed` on what is really a single line of evidence.
+   */
+  function collapseDuplicatePatterns(): void {
+    const byId = new Map<string, RtPattern>();
+    const remap = new Map<RtPattern, RtPattern>();
+    for (const p of rtPatterns) {
+      const keep = byId.get(p.rtPatternId);
+      if (!keep) { byId.set(p.rtPatternId, p); continue; }
+      keep.nTrips += p.nTrips;
+      remap.set(p, keep);
+    }
+    if (remap.size === 0) return;
+    rtPatterns.length = 0;
+    for (const p of byId.values()) rtPatterns.push(p);
+    for (const [tripId, p] of rtPatternByTrip) {
+      const keep = remap.get(p);
+      if (keep) rtPatternByTrip.set(tripId, keep);
+    }
   }
 
   // ---------- (c) resolution to a fixpoint, and crosswalk promotion ----------
@@ -317,8 +363,12 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
 
     // Publish stop identities. Geometry overwrites propagation where both exist, because
     // geometry is measured and propagation is derived.
+    // Votes are counted on `implied`, not `learned`: a stop first identified on cycle 1 is
+    // in the seed on every later cycle and so never appears in `learned` again. Counting
+    // only new discoveries froze every propagated entry at one vote, permanently below the
+    // 0.60 usability floor.
     const proposals = new Map<string, { stop: string; source: 'geo' | 'propagated'; resid: number | null }>();
-    for (const [rtStop, stop] of rr.learned) proposals.set(rtStop, { stop, source: 'propagated', resid: null });
+    for (const [rtStop, stop] of rr.implied) proposals.set(rtStop, { stop, source: 'propagated', resid: null });
     for (const [key, stop] of geoAnchors) {
       proposals.set(rtStopOfKey(key), { stop, source: 'geo', resid: geoResid.get(key) ?? null });
     }
@@ -701,9 +751,11 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
   // ---------- persistence ----------
 
   async function upsertBatch(
-    table: string, columns: string[], rows: unknown[][], conflict: string, jsonbCol1Based = -1,
+    table: string, columns: string[], rows: unknown[][], conflict: string,
+    keyCols: number, jsonbCol1Based = -1,
   ): Promise<void> {
     if (rows.length === 0) return;
+    rows = dedupeByKey(rows, keyCols);
     const BATCH = 500;
     for (let i = 0; i < rows.length; i += BATCH) {
       const slice = rows.slice(i, i + BATCH);
@@ -732,7 +784,7 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
       ['agency', 'rt_stop_id', 'route_id', 'n', 'sum_lat', 'sum_lon', 'n_vehicles'], anchorRows,
       `ON CONFLICT (agency, rt_stop_id, route_id) DO UPDATE SET
          n=EXCLUDED.n, sum_lat=EXCLUDED.sum_lat, sum_lon=EXCLUDED.sum_lon,
-         n_vehicles=EXCLUDED.n_vehicles, last_seen=now()`);
+         n_vehicles=EXCLUDED.n_vehicles, last_seen=now()`, 3);
 
     // The raw vote ledger, so the promoted winner is always recomputable from evidence.
     const voteRows: unknown[][] = [];
@@ -743,7 +795,7 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
     await upsertBatch('rt_stop_xwalk_votes',
       ['agency', 'rt_stop_id', 'board_tag', 'stop_id', 'route_id', 'source', 'votes', 'sum_resid_m'], voteRows,
       `ON CONFLICT (agency, rt_stop_id, board_tag, stop_id, route_id, source) DO UPDATE SET
-         votes=EXCLUDED.votes, sum_resid_m=EXCLUDED.sum_resid_m, updated=now()`);
+         votes=EXCLUDED.votes, sum_resid_m=EXCLUDED.sum_resid_m, updated=now()`, 6);
 
     const xwRows: unknown[][] = [];
     for (const e of xwalk.values()) {
@@ -756,7 +808,7 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
       `ON CONFLICT (agency, rt_stop_id, board_tag) DO UPDATE SET
          stop_id=EXCLUDED.stop_id, votes=EXCLUDED.votes, distinct_patterns=EXCLUDED.distinct_patterns,
          geo_resid_m=EXCLUDED.geo_resid_m, source=EXCLUDED.source, state=EXCLUDED.state,
-         confidence=EXCLUDED.confidence, updated=now()`);
+         confidence=EXCLUDED.confidence, updated=now()`, 3);
 
     const patRows: unknown[][] = [];
     for (const p of rtPatterns) {
@@ -772,7 +824,7 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
          seq_stops=EXCLUDED.seq_stops, n_stops=EXCLUDED.n_stops,
          static_pattern_id=EXCLUDED.static_pattern_id, resolve_iter=EXCLUDED.resolve_iter,
          state=EXCLUDED.state, updated=now()`,
-      5);
+      3, 5);
   }
 
   async function writeObs(rows: readonly DelayRow[]): Promise<number> {

@@ -205,8 +205,17 @@ export interface ResolvedPattern {
 export interface ResolveResult {
   resolved: Map<string, ResolvedPattern>;
   states: Map<string, PatternState>;
-  /** rt stop id -> static stop id, learned during this run (geo anchors excluded). */
+  /** rt stop id -> static stop id, NEWLY learned during this run (geo anchors excluded). */
   learned: Map<string, string>;
+  /**
+   * Every stop identity the resolved patterns implied this run, including ones that were
+   * already known and were re-derived in agreement. `learned` alone is not enough for
+   * vote counting: a stop discovered on the first cycle is in the seed on every later
+   * cycle, so it would never appear in `learned` again and its vote count would freeze at
+   * one — permanently below the confidence floor, making the crosswalk unable to ever
+   * back a delay row. Re-derivation IS the evidence.
+   */
+  implied: Map<string, string>;
   /** rt stop ids where two different static stops were proposed — permanently unusable. */
   conflicted: Set<string>;
   iterations: number;
@@ -241,6 +250,7 @@ export function resolvePatterns(
 
   const working = new Map<string, string>(seedXwalk);
   const learned = new Map<string, string>();
+  const implied = new Map<string, string>();
   const conflicted = new Set<string>();
   const resolved = new Map<string, ResolvedPattern>();
   const states = new Map<string, PatternState>();
@@ -286,6 +296,8 @@ export function resolvePatterns(
             conflicted.add(a.rtStop);
             working.delete(a.rtStop);
             learned.delete(a.rtStop);
+            // …and retract its vote: a contested identity is not corroboration.
+            implied.delete(a.rtStop);
           }
           candidates = geoCands;
         }
@@ -293,7 +305,7 @@ export function resolvePatterns(
       if (candidates.length === 0) { states.set(p.rtPatternId, 'no_candidate'); continue; }
 
       // 3. ambiguity on the implied crosswalk.
-      const implied = new Map<number, string>();
+      const impliedHere = new Map<number, string>();
       let differs = false;
       for (const [seq] of p.seqStops) {
         let mapped: string | null = null;
@@ -304,7 +316,7 @@ export function resolvePatterns(
           else if (mapped !== s) { differs = true; break; }
         }
         if (differs) break;
-        if (mapped != null) implied.set(seq, mapped);
+        if (mapped != null) impliedHere.set(seq, mapped);
       }
       if (differs) { states.set(p.rtPatternId, 'ambiguous'); continue; }
 
@@ -312,16 +324,22 @@ export function resolvePatterns(
       resolved.set(p.rtPatternId, { staticPatternId: candidates[0].patternId, iter, nAnchors: anchors.length });
       states.set(p.rtPatternId, 'resolved');
       newly++;
-      for (const [seq, staticStop] of implied) {
+      for (const [seq, staticStop] of impliedHere) {
         const rtStop = p.seqStops.get(seq);
         if (!rtStop || conflicted.has(rtStop)) continue;
         const prior = working.get(rtStop);
-        if (prior === undefined) { working.set(rtStop, staticStop); learned.set(rtStop, staticStop); }
-        else if (prior !== staticStop) {
+        if (prior === undefined) {
+          working.set(rtStop, staticStop);
+          learned.set(rtStop, staticStop);
+          implied.set(rtStop, staticStop);
+        } else if (prior === staticStop) {
+          implied.set(rtStop, staticStop);   // independently re-derived: this is a vote
+        } else {
           // Two resolutions disagree about one physical stop. Neither is trustworthy.
           conflicted.add(rtStop);
           working.delete(rtStop);
           learned.delete(rtStop);
+          implied.delete(rtStop);
         }
       }
     }
@@ -329,7 +347,7 @@ export function resolvePatterns(
     if (newly === 0) { iter++; break; }
   }
 
-  return { resolved, states, learned, conflicted, iterations: iter, newlyResolvedPerIter };
+  return { resolved, states, learned, implied, conflicted, iterations: iter, newlyResolvedPerIter };
 }
 
 // ---------- promotion and confidence ----------
@@ -369,13 +387,25 @@ export function promotionState(
   return 'candidate';
 }
 
+/**
+ * `votes` is the number of independent cycles in which this identity was re-derived and
+ * agreed. A stop that flaps between two static ids never accumulates votes — it is marked
+ * conflicted instead — so votes measure corroboration, not merely uptime.
+ *
+ * A propagated entry has no geometric residual of its own. It is NOT penalised twice for
+ * that: the residual factor is 1 (no evidence of error) and the 0.85 source discount is
+ * what encodes "derived rather than measured". Applying an extra penalty for the missing
+ * residual capped propagated entries at 0.595 — permanently below the 0.60 usability
+ * floor, which would have made transitive propagation, the single largest source of
+ * coverage, incapable of ever backing a delay row.
+ */
 export function xwalkConfidence(
   votes: number,
   geoResidM: number | null,
   source: 'geo' | 'propagated',
 ): number {
   const byVotes = Math.min(1, votes / 10);
-  const resid = geoResidM == null ? 0.7 : clamp(1 - geoResidM / 60, 0.2, 1);
+  const resid = geoResidM == null ? 1 : clamp(1 - geoResidM / 60, 0.2, 1);
   return byVotes * resid * (source === 'geo' ? 1.0 : 0.85);
 }
 

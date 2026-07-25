@@ -98,3 +98,92 @@ The trips feed returns **no `ETag` and no `Last-Modified`**, and a conditional r
 headers are harmless no-ops and a "fresh" cycle is always a real 200 snapshot. The ghost-scan freshness
 gate (`feedsFresh`) is therefore never satisfied by a stale-but-unchanged reuse — there is nothing to
 reuse. No state-caching-on-304 path was built because it would be dead code on this feed.
+
+## BLOCKER (measured, 2026-07-24) — the TTC realtime feed publishes NO `delay` field at all
+
+The previously-reported finding "every StopTimeUpdate carries a `delay` and every one is 0" was
+itself wrong. It was a **decoder artifact**, not a measurement.
+
+GTFS-realtime is proto2, and protobuf.js materialises every optional field's default on the message
+**prototype**. So a field the producer never put on the wire still reads as a value. `poller.ts` used
+`ev.delay != null`, which cannot distinguish "reported as on time" from "never reported".
+
+**Own-property census over one live snapshot** (`Object.prototype.hasOwnProperty.call(ev, 'delay')`):
+
+| Entity | Count | `hasOwnProperty('delay')` |
+|---|---:|---:|
+| StopTimeEvent | 23,476 | **0** |
+| TripUpdate | 1,392 | **0** |
+
+Every one of them reads `delay === 0`. **Wire-level proof** (`server/src/pb.test.ts`, test 1):
+`StopTimeEvent.create({time:123})` encodes to **2 bytes** and decodes with `hasOwn(delay) === false`;
+adding an explicit `delay: 0` encodes to **4 bytes** and decodes with `hasOwn(delay) === true`.
+
+**Consequence.** Every delay observation this project accumulated before 2026-07-24 recorded a
+protobuf default as if it were a measurement. The evidence base was information-free, and the
+identity join built on it (`scheduled = predicted − delay`) reduced to `scheduled = predicted` — a
+circular comparison of predictions against predictions, which is exactly why its measured join rate
+was 0%. `join.ts` is deleted; genuine delay is now `predicted_time − scheduled_time` with the
+scheduled time taken from our own seeded `stop_times`.
+
+**The same trap applies to three more fields**, all verified by round-trip:
+`VehiclePosition.currentStatus` defaults to **IN_TRANSIT_TO (2)**, not 0 (live census: 565 absent,
+460 explicit 0, 102 explicit 1, 286 explicit 2); `TripDescriptor.directionId` defaults to 0;
+`TripDescriptor.startDate`/`startTime` default to `''`. Every optional scalar must be read through
+`server/src/pb.ts`.
+
+## BLOCKER (measured) — RT and static `stop_id` are DISJOINT namespaces
+
+Matching realtime stop ids against static stop ids directly produces confident, plausible, entirely
+wrong results. Measured on one live snapshot:
+
+- **Per-route overlap: 69 of 10,262 = 0.67%.** A realtime stop id almost never names a stop that
+  route actually serves in our static board.
+- The tempting **59.3% global id overlap** (4,892 of 8,244) is pure numeric coincidence — both
+  namespaces are small integers.
+- **Control measurement, and it is decisive:** for a vehicle reported STOPPED_AT realtime stop *X*,
+  the static stop *numbered X* sits a **median 13,703 m away**, and **0 of 55** are within 100 m.
+
+Stop identity must therefore be **learned** from geometry and propagated (`server/src/xwalk.ts`).
+Every published delay passes through an inferred crosswalk, and the row carries `xwalk_conf` so the
+UI can say so.
+
+## BLOCKER (measured) — `TripDescriptor` carries no start time, start date, or direction
+
+Own-property census over 1,392 TripUpdates: `startTime` present **0** times, `startDate` **0**,
+`directionId` **0**. Only `tripId`, `routeId` and `scheduleRelationship` are on the wire. Direction
+must be inferred from the stop pattern and must never be read from this feed.
+
+Also: **13 of 1,392** trip updates carry a negative synthetic `tripId`, and those 13 are exactly the
+13 with the undocumented trip-level `scheduleRelationship === 8` (not a value in the GTFS-realtime
+enum). They are counted and excluded from binding; no semantics are inferred from them. The other
+1,379 trip ids are positive and **every one ends in `"020"`**, which reads like a board tag — so the
+engine re-measures the direct `trip_id` match rate every cycle rather than hardcoding today's 0.00%
+(0 of 1,392).
+
+`StopTimeUpdate.scheduleRelationship` values seen: **NO_DATA (2) = 483, SKIPPED (1) = 0.** NO_DATA
+carries no time and is never emitted — imputing an on-time arrival for it would reproduce exactly the
+fabrication described above.
+
+## BLOCKER (filed, NOT fixed — `seed_toronto.ts` is not owned by this workstream) — Saturday has no trips
+
+`calendar` contains service_id `'2'` with `sat = true`, but **zero trips reference it**. Trips per
+service in the seeded board: `1` = 38,112 (Mon–Fri), `3` = 29,870 (Sun), `6701` = 360, and 59 more
+across four small specials. **Every Saturday the engine will legitimately find no schedule**, and the
+honest product state on those days is "no calendar-active schedule for this date".
+
+Total seeded trips are **68,401** against roughly 133,682 in TTC's published board, so the gap is
+probably wider than Saturday alone. This needs a re-seed; it is not something the delay engine can
+or should paper over.
+
+## BLOCKER (structural) — no end-to-end accuracy validation is possible before 2026-07-26
+
+The seeded board covers **20260726..20260905** and today is 2026-07-24/25, so **zero static service
+is calendar-active**. The crosswalk half of the engine is calendar-independent and is measurable
+today (see DECISIONS). Trip binding and delay measurement are not: they are gated off by
+`boardActive`, emit nothing, and cannot be validated until the board activates.
+
+Consequently **no accuracy figure for binding or delay is claimed anywhere in this repo.** In
+particular, the simulation-derived numbers that appeared in earlier design documents (33.2% / 70.5% /
+90.2% / 97.7%) rest on an assumed delay distribution and assumed noise. They are not measurements and
+must not be reported as performance.

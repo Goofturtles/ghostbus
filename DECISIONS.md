@@ -524,3 +524,151 @@ loaded from `/assets/maplibre-gl-worker-<hash>.js`, 68 vehicles in view of 1,352
 dev too. Screenshot: `screenshots/prod/map-production-build.png`. Initial-load gzip is unchanged by this
 work (97.9 KB against a 550 KB budget): the worker is a lazy sibling of the already-lazy MapCard chunk, and
 `maplibre` appears zero times in the initial chunk.
+
+## §29 — The delay engine: measuring lateness against our own schedule
+
+**The defect.** Every delay observation this project had accumulated was zero, and the identity join
+that produced them had a measured match rate of 0%. Both had one cause: the TTC feed publishes no
+`delay` field, protobuf.js's proto2 defaults made an absent field read as `0`, and the join
+reconstructed `scheduled = predicted − delay`, which with `delay = 0` is `scheduled = predicted`. The
+join was comparing predictions against predictions. See BLOCKERS.md for the census and the wire-level
+proof.
+
+**The replacement.** `delay_s = event_epoch_s − sched_epoch_s`, where the scheduled time comes only
+from our own seeded `stop_times`. That requires knowing which static trip a realtime trip is running,
+without a usable `trip_id` and without a shared stop-id namespace. Five new modules do it:
+`pb.ts` (presence-aware protobuf reads), `patterns.ts` (static pattern index), `xwalk.ts` (learned
+stop crosswalk), `bind.ts` (origin lock), `delay.ts` (settle and emit), plus `gates.ts` and the
+DB-facing `engine.ts`.
+
+### Why the legacy rows are marked, not deleted
+
+`trip_delay_obs` was already empty when this work began (a prior step had truncated it), so
+migration 004's `UPDATE ... SET method='legacy_feed_delay_zero' WHERE method IS NULL` affected **0
+rows** — but the statement stays, because it is what makes `method IS NULL` impossible for any row
+that predates the engine, on any database this migration is applied to.
+
+Had the rows still been present, the decision would have been the same: **mark and filter, never
+delete.** They are the forensic record that the feed publishes no delay; `aggregate.ts` excludes them
+so they can never enter a percentile; and the existing 14-day retention prune ages them out without a
+destructive statement on a shared production database. A table that mysteriously emptied teaches a
+future reader nothing.
+
+### What is deliberately NOT done, and why
+
+**No day-long FIFO slot chaining.** It is the tempting design and it is a trap: one missed collector
+cycle phase-slips an entire (route, pattern) for the rest of the service day, producing delays wrong
+by exactly one headway that are perfectly self-consistent and invisible to every internal check.
+Slot claiming is kept only as a uniqueness constraint and a ghost signal. The accept rule is instead
+a per-trip, memoryless margin test with no cross-trip state to corrupt.
+
+**No order-preserving assignment.** TTC bunching means a late bus gets overtaken, so observed order
+does not preserve scheduled order. Order preservation was measured strictly worse than independent
+selection (64.7% against 77.0%).
+
+**No re-solving a binding, and no band after the lock.** A binding is written once and never
+revisited. Re-solving under a "plausible delay" window would truncate the delay distribution and bias
+the published p75 low — the app would systematically under-report exactly the lateness it exists to
+expose. Post-lock, values beyond ±5400 s are dropped and counted, never clamped.
+
+### One deviation from the specified design, forced by measurement
+
+The design calls for binding a trip in the cycle it is born. That is not achievable: a newborn
+publishes a **median of one stop**, which can never clear the three-shared-sequence floor that stops
+the pattern merge from fusing distinct branches. So a birth is **captured** immediately — including
+its first predicted departure — and **bound** in a later cycle, once its RT pattern has become
+resolvable. Crucially the binding still uses the **anchors captured at birth**, which are never
+refreshed. The property the whole design rests on (the origin measurement is taken before any live
+drift accumulates) is preserved; only the moment of the database write moves.
+
+### The bias, stated plainly rather than buried in a constant
+
+The origin band is asymmetric, `[−180, +420]` s: a trip published ~29 minutes before it departs
+cannot be meaningfully early, so the early edge only covers clock and rounding slop while the late
+edge covers a genuinely late block handoff.
+
+That asymmetry, **together with headway aliasing** — a bus more than half a headway late is
+shape-identical to the next bus departing on time — means our *errors* skew toward matching a late
+bus to a later slot, which reads as **less** lateness than reality. **Our errors flatter the TTC.**
+That is the wrong direction for an accountability product, and it cannot be engineered away; it can
+only be bounded and disclosed. It is bounded by refusing the sub-300 s headway band outright (~4.9%
+of trips, measured, and the regime where aliasing is worst) and by the 120 s runner-up margin test.
+It is disclosed here and in every row, which carries `method`, `confidence`, `xwalk_conf`,
+`match_margin_s` and `headway_s`.
+
+### Every delay passes through an inferred stop crosswalk
+
+Because the two stop-id namespaces are disjoint (BLOCKERS.md), stop identity is learned from
+geometry and propagated transitively. **The UI must be able to say so.** Each observation carries
+`xwalk_conf`, and `getJoinStats().delayEngine.xwalk.crossRouteAgreement` is the crosswalk's honest,
+falsifiable accuracy estimate — an rt stop seen from two or more routes must resolve identically from
+each, and it can fail.
+
+### Measured behaviour, 2026-07-24 (crosswalk warming, board inactive)
+
+Live cycles from an empty crosswalk, real TTC feed, real Neon:
+
+- Static pattern index: **1,252 distinct patterns** from 68,401 trips (p50 4 patterns/route, max 31;
+  p50 16 trips/pattern, max 586). Keyset-paged build: **109–183 s, 71 MB heap delta** — slower than
+  an unpaged read but a third of the memory, and it runs in the background, never on a request path.
+- Median scheduled headway p10 540 s / p50 1,140 s / p90 1,800 s. Trip-weighted band shares on
+  service 1: **<300 s 4.9%**, 300–600 s 20.7%, 600–1200 s 46.4%, ≥1200 s 28.0%.
+- Geometry: a STOPPED_AT vehicle sits a median **17.9 m** from the correct static stop on its route
+  (p90 44 m, 90 of 93 within 50 m). Only ~100 of ~1,400 vehicles per cycle are usable anchors.
+- **Transitive propagation is the multiplier**, and `rt_pattern.resolve_iter` proves it: on an
+  eight-cycle run, 569 of 1,106 RT patterns resolved, at iterations 0 through 7 — 503 at iteration 0
+  and 66 reachable only by iterating to a fixpoint.
+
+### Honest state today
+
+The loaded board covers **20260726..20260905** and the machine date is 2026-07-24, so **no static
+service is calendar-active**. The `boardActive` gate fires, the engine emits **zero** delay rows, and
+`getJoinStats().delayEngine.suppressionReason` reads *"no calendar-active schedule for 20260724; the
+loaded board covers 20260726..20260905"* — a string deliberately distinct from both "no data yet" and
+"0 min delay". No trust grade, percentile or ETA adjustment is produced from zero observations. On
+2026-07-26 the existing service-day reload flips the gate and the engine self-enables.
+
+### Three bugs found by running it against the live feed, not by reading it
+
+1. **Votes could never accumulate.** `resolvePatterns` reported only *newly* learned stops, but a
+   stop discovered on cycle 1 is in the seed on every later cycle — so its vote count froze at one,
+   permanently below the 0.60 confidence floor. The crosswalk could never have backed a single delay
+   row. Fixed by also reporting re-derivations (`implied`), which is what corroboration actually is.
+2. **Propagated entries were penalised twice** — once by the 0.85 source discount and again by a
+   missing-residual factor — capping them at 0.595, just under the same floor. The residual factor
+   for an unknown residual is now 1; the source discount alone encodes "derived, not measured".
+3. **A duplicated conflict key aborted the whole batch.** Postgres rejects an
+   `INSERT ... ON CONFLICT DO UPDATE` whose own `VALUES` list names a key twice, and it rejects the
+   entire statement — the crosswalk persist failed on three of eight cycles. RT patterns are keyed by
+   a content hash, so two objects can legitimately carry one identity; writes now collapse on the
+   conflict key and clustering collapses converged patterns in memory.
+
+### Where the inherited design was wrong when it met reality
+
+- The design asserted the RT `(route, stopSequence) → stopId` map is "perfectly self-consistent
+  (10,838 agreements, 0 conflicts)". Re-measured at route level it is **not**: 6,340 agreements
+  against **11,728 conflicts**, because opposite directions and branches put different stops at the
+  same sequence number. This does not invalidate the merge rule — it is precisely why pattern
+  clustering must split those apart rather than trust a route-wide sequence map. The supporting
+  statistic was wrong; the rule it was cited for is right, and is doing real work.
+- The design's route-52 example claims that route's longest static pattern is 73 stops. Measured
+  against this board it is **80**. The length cap is still correct as a rule; the specific numbers in
+  that anecdote do not hold, so the regression test states the mechanism explicitly instead of
+  relying on them.
+- The design describes the pre-existing `trip_delay_obs` as holding 308,586 rows to be marked. The
+  table was **already empty** when this work began.
+
+### Notes for other owners
+
+- **`api.ts`**: `getJoinStats()` now returns a `delayEngine` field (`DelayEngineStats`, exported from
+  `poller.ts`). `/api/health` currently reads only `boardCoverage` off that object. The new stats —
+  especially `suppressionReason`, `xwalk.occurrenceCoverage` and `xwalk.crossRouteAgreement` — should
+  be surfaced. No change to `api.ts` was made by this workstream.
+- **`tsconfig.json`**: `npm run typecheck` includes only `web/src` and `shared`, so it does **not**
+  typecheck the server. Server types were verified separately with `tsc -p tsconfig.node.json`, which
+  is clean. Whoever owns the build config should consider making `typecheck` cover both.
+- **`seed_toronto.ts`**: `trips.txt` carries a `block_id` that the seeder drops. Persisting it would
+  give a free, independent confirmation of every trip binding — two trips in the same block cannot
+  both be running — and would materially strengthen the weakest part of this design. Filed, not done.
+- **`METHODS.md` / `ARCHITECTURE.md`** describe the old reconstruct-from-delay algorithm and are now
+  wrong. They are not owned by this workstream; they need updating to match this section.
