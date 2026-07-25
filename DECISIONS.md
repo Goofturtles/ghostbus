@@ -161,7 +161,9 @@ eviction, bogus-delay drop.
 > Two things in the text below are now known to be false:
 >
 > 1. **"an explicit `delay` … per StopTimeUpdate"** — the TTC publishes **no `delay` field at
->    all**. Own-property census: 0 of 23,476 StopTimeEvents. Protobuf.js materialises the
+>    all**. Own-property census: 0 of 23,476 StopTimeEvents on the snapshot recorded in
+>    BLOCKERS.md (other snapshots read 23,165 / 23,335 / 23,371 — the total drifts run to run,
+>    the zero does not). Protobuf.js materialises the
 >    proto2 default on the decoded message's prototype, so it *reads* as `0` and we recorded it
 >    as a measurement 314,742 times. See BLOCKERS.md entry 6 and METHODS.md §4.
 > 2. **"The pure claim logic lives in `server/src/join.ts`"** — `join.ts` and `join.test.ts`
@@ -325,9 +327,14 @@ few routes would slip past a global-only breaker; the per-route breaker catches 
 
 ## 21. Small post-review fixes
 
-- **Same-event time+delay** (`poller.ts`): the join reconstruction reads `time` and `delay` from the
-  *same* `StopTimeEvent` (departure preferred, else arrival) — never a departure time with an arrival
-  delay, which would corrupt the reconstructed schedule second.
+- **Same-event time+delay** (`poller.ts`) — **SUPERSEDED, see §29 and §33.** The join
+  reconstruction this describes no longer exists; nothing reads `delay` from the feed at all,
+  because the feed does not publish it. Recorded because the *shape* of the fix was right and
+  survived into the replacement: `delay.ts` still compares a departure event against the
+  scheduled **departure** and an arrival event against the scheduled **arrival**, never crossing
+  them. Measured on one snapshot: 22,391 stop-time updates carry arrival only, 602 departure
+  only, and 0 carry both — so the pairing rule is load-bearing, just on the other side of the
+  subtraction now.
 - **arrivals `dayList` sized to the window** (`api.ts`): was a fixed 3 days; now spans one day before
   through one day after `[at, at+window]`, so a large `windowMin` (up to the 4320-min cap) never
   silently truncates.

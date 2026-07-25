@@ -79,14 +79,18 @@ The one-liner types on in two lines.
 ## Beat 3 — Live core loop with the real data timestamp (0:20–1:00, 91 words ≈ 36s)
 
 **On-screen action**
-Screen capture of the running app, desktop dark theme, exactly the state in
-`screenshots/phase4/desktop-dark-nearby.png`.
+Screen capture of the running app, desktop dark theme. **Frame it against
+`screenshots/reference-match/PROD-desktop-dark-verified.png`, not the phase4 stills** — the
+phase4 captures predate the shell rebuild (`DECISIONS.md` §30) and the voxel map rebuild
+(§31–§32), so they no longer show what the app renders.
 
 1. (0:20) The Nearby view. Map card, every TTC vehicle in the viewport drawn as a voxel
-   sprite (roughly 15 in this frame; the collector tracked 1,190-1,232 fleet-wide per cycle on
+   sprite (roughly 15 in this frame; the collector tracked 1,190–1,232 fleet-wide per cycle on
    2026-07-25 mid-afternoon, and more at peak — **read the count off the log on shoot day, and
-   do not say a fleet-wide number over a shot showing 15**), the **You** beacon with
-   "You · 1 min walk", the boarding-stop pin, the beaded walk path.
+   do not say a fleet-wide number over a shot showing 15**), the **You** beacon, the
+   boarding-stop pin, the beaded walk path. **The default-location walk reads "You · 4 min
+   walk", not 1 min** — §32 moved `DEFAULT_LOCATION` (`web/src/hooks/useLive.ts`) to a point
+   236 m from its nearest stop. Read whatever the screen says; do not narrate a distance.
 2. (0:28) **Click the `Live` pill, then push in on the freshness stamp it opens.** The
    stamp lives inside the pill's popover (`web/src/components/Primitives.tsx`) and is in
    neither reference screenshot, so you have to click it — do not plan a shot that assumes
@@ -94,7 +98,9 @@ Screen capture of the running app, desktop dark theme, exactly the state in
    at 1080p. Safer alternative, or in addition: cut to a terminal running
    `curl -s localhost:8799/api/health | jq` and hold on `lastPollAtMs` and `serverNowMs`.
 3. (0:38) Click a vehicle. The red route line snaps in along the real GTFS shape with the
-   real intermediate stop dots — as in `screenshots/phase4/mobile-dark-selected.png`.
+   real intermediate stop dots. **Known gap, do not pick a shot that exposes it:** the route
+   line does not yet turn corners the way the reference does (`DECISIONS.md` §31, item 1,
+   still open server-side).
 4. (0:50) Scroll the sheet down. **Expect the honest empty state, not a departures list** —
    until the board activates on 2026-07-26 this stop reads *"No departures in the next 90
    minutes"* followed by *"NEXT SCHEDULED SERVICE — SUN, JUL 26"*. That is a feature, and
@@ -285,7 +291,7 @@ Then a one-second cut to `render.yaml` showing a single `type: web` service.
   `delay.ts`, `gates.ts` — and a judge may open any of them. Label the stroke with the file
   names if it fits. **Do not draw a box labelled `join.ts`**: it was the first attempt and it
   is deleted (`DECISIONS.md` §12, superseded, and §29).
-- Optional one-frame flash of `screenshots/phase4/desktop-light-fullscreen.png` to prove
+- Optional one-frame flash of `screenshots/reference-match/desktop-light-full.png` to prove
   the light theme is a real second theme and not an inverted filter.
 
 ---

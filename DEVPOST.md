@@ -309,7 +309,8 @@ guard — `if (delay != null)` — passed on all 23,165 events and wrote a measu
 quantity the feed never sent. Nobody lied. A correct-looking null check silently converted
 *missing data* into *confident data*, three hundred thousand times.
 
-Two consequences, both live in the product before anyone noticed:
+Three consequences. The first two were live in the product before anyone noticed; the third we
+caught only because the first two taught us where to look:
 
 1. **The observations measured nothing.** Every row in `trip_delay_obs` had `delay_s = 0`, so
    every stop-hour and route-hour aggregate bucket had `p25 = p50 = p75 = 0`. Buckets cleared
@@ -342,8 +343,12 @@ CAUSE"*). The zero was manufactured by our decoder. It was never on the wire.
 **The general rule this produced:** a null check is not an absence check when the decoder
 supplies defaults. Anywhere a wire format has implicit defaults, the only sound test for "did
 this arrive?" is an explicit presence probe — never a comparison against the default value.
-That is why `server/src/pb.ts` exists, and why every optional scalar in this codebase is read
-through it.
+That is why `server/src/pb.ts` exists. Every optional scalar on the **delay-engine and vehicle**
+paths is now read through it. It is not yet universal: `poller.ts` still reads `al.effect` and
+`al.cause` off the alerts feed raw, which is filed as `BLOCKERS.md` entry 16 rather than
+quietly fixed in a sentence. Enum fields are lower-stakes than `delay` was — a defaulted enum
+name is visibly wrong, where a defaulted `0` is invisibly wrong — but the rule is the rule, and
+the exception is named here rather than rounded off.
 
 **The point, for anyone evaluating AI-assisted work:** an honesty architecture is worthless
 unless someone verifies it against reality. The evidence gates did their job flawlessly and
@@ -396,7 +401,8 @@ when it was written, on 2026-07-24 at 22:02 ET. It is no longer true. What is tr
 
 - **The half of the engine that can work today is working.** Crosswalk learning is
   calendar-independent, and it is warming: **8,162** realtime stop ids seen, **3,048
-  confirmed**, 203 conflicted, cross-route agreement **93.9%**. Its occurrence coverage is
+  confirmed**, 203 conflicted, cross-route agreement **93.9%** (93.8–93.9% across cycles, and a
+  **geometric-anchor** figure — see the correction below). Its occurrence coverage is
   **33.6%**, peaking at 37.2% — **below its own 50% gate**, so it would suppress publication
   even if the board were active. Two gates would have to pass, and today neither does.
 
@@ -484,7 +490,8 @@ re-checking, and the willingness to write down what re-checking turns up.
 Measured with `gzip -9` over `dist/assets/` from the build of **2026-07-25 11:10**. The map
 chunk is `React.lazy` and never enters the initial budget; MapLibre also emits a separate
 468,361 B raw worker chunk, loaded only once the map mounts. Earlier drafts of this document
-and `DECISIONS.md` §23 record 79.3 KB and 255.1 KB for the same two bundles — that is genuine
+and `DECISIONS.md` §23 record 79.6 KB and 256.6 KB for the same two bundles (and §28 records a
+97.9 KB initial load, §31 a 262.1 KB map chunk, from builds in between) — that is genuine
 growth from features landing (Catch Mode, the About/Credits sheets), not a disagreement about
 method. Re-measure after the final build; the command is one line and the numbers move.
 
@@ -597,7 +604,7 @@ pair is worth re-reading against the source before any submission or any camera.
   active yet — here's its scheduled service"* and then walks forward day by day to find and
   label the genuine next service day — **SUN, JUL 26** — rather than showing the first plausible
   future day it finds (see `DECISIONS.md` §15, Phase-4 amendment; visible in
-  `screenshots/phase4/desktop-dark-nearby.png`).
+  `screenshots/reference-match/PROD-desktop-dark-verified.png`).
 - **Skeletons shaped like real rows**, not spinners, so the layout does not jump.
 - **Feed failure is a first-class state**: the header pill stops saying `Live`, and a banner
   says the TTC feed is unreachable and that you are looking at scheduled times.
@@ -629,12 +636,12 @@ Start with `README.md` for setup. Then, depending on what you want to check:
 | The claim that predictions are gated on evidence | `server/src/eta.ts` (77 lines) and `server/src/eta.test.ts` |
 | How a trip is identified without a shared `trip_id` | `server/src/patterns.ts` → `xwalk.ts` → `bind.ts` → `delay.ts` → `gates.ts`, each with its own `*.test.ts`; `server/src/engine.ts` wires them; `METHODS.md` §3 derives every constant. **`server/src/join.ts` does not exist** — it was the first attempt and it was deleted, for the reason in `DECISIONS.md` §12 (superseded) and §29 |
 | The conditions under which the engine refuses to publish | `server/src/gates.ts` (103 lines, six gates, each with a distinct reason string) and `gates.test.ts` |
-| Whether the self-audits can actually fail | `xwalk.test.ts`, *"REGRESSION (BLOCKERS 17): the monotonicity gate can actually fail"* — and `BLOCKERS.md` entry 17 for the one that still can't |
+| Whether the self-audits can actually fail | `xwalk.test.ts`, *"REGRESSION (BLOCKERS 17): the monotonicity gate can actually fail"* for the repaired one, and `server/src/engine.ts` (its `perRoute` map is built from `geoAnchors` alone) for the one that still cannot. `BLOCKERS.md` entry 17 filed both; its monotonicity half describes the state before the fix landed |
 | Ghost confirmation, retraction, circuit breakers | `server/src/poller.ts`; `DECISIONS.md` §14, §18, §20, §22 |
 | The API contract | `shared/types.ts` — one file, both sides, heavily commented |
 | That the feed really behaves as claimed | **Reproduce it in one command, no clone artifacts needed** (see the box below). `.data/` and `*.log` are gitignored, so `.data/feedprobe.cjs` and `collector.log` exist on the build machine but **not in a fresh clone** — every figure sourced from them in this document is labelled with where it came from. |
 | What we could not do and why | `BLOCKERS.md` — every entry is an empirical measurement, not a guess |
-| Every deviation from the original plan | `DECISIONS.md` — 34 numbered sections, including the ones that make us look bad, and including three marked **superseded** rather than rewritten |
+| Every deviation from the original plan | `DECISIONS.md` — 34 numbered sections, including the ones that make us look bad, and including three marked **superseded** (one of them only partly) rather than rewritten |
 
 The two files worth reading if you only read two: **`BLOCKERS.md`** and **`DECISIONS.md`**.
 They are the project's actual record.
@@ -712,7 +719,7 @@ omitting it.
 | The first identity join (`join.ts`) | **Deleted** — it reconstructed `scheduled = predicted − delay` against a feed that publishes no `delay`, so it compared predictions with themselves | commit `65e3843`; `DECISIONS.md` §12 (superseded), §29 |
 | Ghost confirm-over-2-cycles + retraction + breakers | **Built** (dormant until the board activates 2026-07-26) | `server/src/poller.ts` |
 | Fastify API, poller in-process, one deployable service | **Built** | `server/src/server.ts`, `render.yaml` |
-| Nearby view, live MapLibre map, voxel sprites, markers | **Built** | `screenshots/phase4/*` |
+| Nearby view, live MapLibre map, voxel sprites, markers | **Built** | `screenshots/reference-match/*` (production build). The `phase4/*` stills predate the §30 shell rebuild and the §31–§32 map rebuild — they are a historical record, not current UI |
 | Both themes, en/fr-CA/es, skeletons, honest empty states | **Built** | `screenshots/phase3/*`, `web/src/i18n/*` |
 | Route shape endpoint + real GTFS route line | **Built** | `GET /api/routes/:routeId/shape` |
 | Service alerts incl. accessibility flagging | **Built** | 82 stored, 15 flagged (2026-07-25 15:11 ET) |
@@ -727,7 +734,7 @@ omitting it.
 | Catch Mode (Tier 0) | **Built** — `App.tsx` passes `onCatch` and mounts `CatchView` | `web/src/components/CatchView.tsx`, `web/src/lib/catch.ts` |
 | Catch Mode's full guided choreography | **Designed, not built** | remaining `catch.*` strings |
 | Focused Boarding Mode | **Designed, not built** | — |
-| 3D voxel building city | **Deliberately deferred** | `DECISIONS.md` §23 |
+| 3D voxel building city | **Built** — deferred at `DECISIONS.md` §23, then rebuilt against a reference image in §31–§32; 168 building features verified in a production build | `web/src/map/voxelCity.ts`, wired in `MapCard.tsx`; `screenshots/voxel/*` |
 | Vancouver / multi-city coverage engine | **Removed** — Tier 0 is Toronto-only | `DECISIONS.md` §10 |
 | Transit Passport | **Designed, not built** | `settings.passport` string only |
 | Rider Evidence (crowd reports) | **Designed, not built** | — |
@@ -781,9 +788,13 @@ worth more than one someone found for you.
 8. **The walk path is a straight line**, not a walking route. There is no routing engine.
 9. **Web-only, foreground-only.** No background tracking, no push notifications; the app says as
    much in its own copy (`ride.keepOpen`).
-10. **Seeded schedule is windowed by default** to service active in the next 7 days
-   (`GHOSTBUS_SEED_WINDOW_DAYS`), so schedules beyond the window are absent until a re-seed.
-   `GHOSTBUS_SEED_FULL=1` loads all 2,151,105 rows.
+10. **The seeded schedule has holes, and the seeder's window is why.** `GHOSTBUS_SEED_WINDOW_DAYS`
+    (default 7) filters trips to services active in the next N days **from the seed date**, which
+    is a different window from the board `calendar` loads whole. Consequence, measured: **7 of
+    this board's 42 days** — the six Saturdays and the civic holiday — are calendar-active with
+    **zero** loaded trips. A `boardIntegrity` gate now refuses to publish on those days rather
+    than letting them read as clean service, but **the seed itself is not fixed**
+    (`DECISIONS.md` §34, `BLOCKERS.md` entry 9). `GHOSTBUS_SEED_FULL=1` loads all 2,151,105 rows.
 11. **Single-operator scale.** All figures come from one collector process against one Neon free-tier
     instance (pool capped at 4 connections) over a single afternoon. Nothing here has been load-tested.
 
