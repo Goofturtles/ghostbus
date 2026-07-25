@@ -119,9 +119,10 @@ SELECT delay_s, COUNT(*) FROM trip_delay_obs GROUP BY delay_s;
 --        0 |  304697     ← one group. There are no others.
 ```
 
-*(Snapshot at 2026-07-24 21:35 ET. The collector is still running as this is written and
-the table is still growing — re-checked at 21:58 it held **312,696** rows and still
-exactly **one** distinct `delay_s` value: zero. The count moves; the finding does not.)*
+*(Snapshot at 2026-07-24 21:35 ET, while the collector was still running. It kept growing
+— 312,696 rows at 21:58, 314,742 by the time it was stopped — and never held more than
+**one** distinct `delay_s` value: zero. The count moved; the finding did not. The table
+has since been truncated; see the status note below.)*
 
 They are all worthless, and the reason is more interesting than "the agency published bad
 data".
@@ -146,9 +147,25 @@ gating machinery worked perfectly on an input that was unanimously meaningless.
 The fix is to stop asking the agency how late its buses are and measure it ourselves:
 `delay = predicted time − scheduled time`, using our own static GTFS for the second term.
 
-**Status, stated plainly: that rewrite was still in flight at the time of writing.** The
-304,697 zero rows were still in the database and `poller.ts` still read the feed's
-`delay` field. See `METHODS.md` §3 for the full measurement and the general lesson — with
+**Status, stated plainly, in two parts.**
+
+*Done.* The write path no longer records a decoder default as a measurement. `poller.ts`
+now requires `delay` to be an **own property** of the decoded event, so a field the agency
+never sent stays absent instead of arriving as a confident `0` (commit `f54b1cd`). The
+contaminated history — which had grown to **314,742** rows, still one distinct value — was
+truncated along with the 87,955 aggregate buckets derived from it. Verified in a clean
+room: with every stale process stopped and only the fixed code running, a full poll cycle
+over **1,417 vehicles and 1,397 trip updates** wrote **0** observations. Absence stays
+absent, the evidence gates correctly see no samples, and every departure honestly reports
+"schedule only".
+
+*Not done.* Measuring delay properly — `predicted − scheduled` against our own static
+GTFS — is a harder problem than it sounds, because the realtime feed shares neither
+`trip_id` nor a complete `stop_id` namespace with the schedule, and it is still being
+built. Until it lands, GhostBus has **no delay measurements at all**, and it says so on
+every row rather than showing a grade it cannot justify.
+
+See `METHODS.md` §3 for the full measurement and the general lesson — with
 implicit-default wire formats, only an explicit presence probe is an absence check.
 
 This is exactly why the honesty architecture exists. A system that displays a number
