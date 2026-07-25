@@ -1,10 +1,32 @@
 import { useTranslation } from 'react-i18next';
 import type { ArrivalsResponse } from '@shared/types';
-import { PinIcon, HeartIcon } from './icons';
+import { PinIcon, HeartIcon, StarIcon } from './icons';
 import { useStore, paceMps } from '@/store';
 import { fmtDistance, walkSeconds } from '@/lib/format';
+import { stopDirection } from '@/lib/headsign';
 
-export function StopHeader({ arr, distanceM }: { arr: ArrivalsResponse; distanceM?: number }) {
+/**
+ * The reference's CURRENT STOP block. One component, two shapes:
+ *  - desktop: a card on the sidebar — purple pin tile, two text lines, outline heart.
+ *  - phone: a bare header on the sheet — title, sub-line, ringed star button.
+ * The two glyphs are both rendered inside the SAME button and swapped by CSS, so
+ * the save control is one control to a screen reader at every width.
+ *
+ * The sub-line leads with the direction in the accent colour, as the reference
+ * does — which side of the street this is, is the first thing a rider checks. It
+ * is read out of the agency's own headsigns (see lib/headsign.ts) and printed ONLY
+ * when every departure on this board agrees on one cardinal. A stop that serves
+ * both directions has no single direction, so the word is omitted rather than
+ * guessed: sending someone to the wrong side of King St is not a cosmetic error.
+ */
+export function StopHeader({ arr, distanceM, headsigns }: {
+  arr: ArrivalsResponse;
+  distanceM?: number;
+  /** Headsigns to read the stop's direction out of. Defaults to this board's own
+   *  departures; Nearby passes the next-service board instead when "now" is empty,
+   *  because a stop faces the same way whichever service day is being listed. */
+  headsigns?: (string | null | undefined)[];
+}) {
   const { t } = useTranslation();
   const saved = useStore((s) => s.savedStops.includes(arr.stopId));
   const toggleSaved = useStore((s) => s.toggleSaved);
@@ -12,40 +34,52 @@ export function StopHeader({ arr, distanceM }: { arr: ArrivalsResponse; distance
   const pace = useStore((s) => s.pace);
 
   const walkMin = distanceM != null ? Math.max(1, Math.round(walkSeconds(distanceM, paceMps(pace)) / 60)) : null;
+  const dir = stopDirection(headsigns ?? arr.departures.map((d) => d.directionLabel));
 
   return (
-    <div className="stop-header">
-      <div className="stop-pin-tile" aria-hidden>
-        <PinIcon width={20} height={20} />
-      </div>
+    <div className="stop-head">
+      <span className="stop-head-tile only-desktop" aria-hidden>
+        <PinIcon width={19} height={19} />
+      </span>
+
       <div className="stop-head-text">
-        <h2 className="stop-name truncate balance">{arr.stopName ?? t('stop.code', { code: arr.stopId })}</h2>
-        <p className="stop-sub truncate">
-          <span className="stop-dir">{t('stop.code', { code: arr.stopId })}</span>
+        {/* Both lines WRAP. A TTC stop name is routinely "King St West at Spadina
+            Ave West Side" and its sub-line carries three facts in three locales:
+            an ellipsis here would cut a fact off mid-word, which the zero-overlap
+            rule forbids outright. The card grows instead. */}
+        <h2 className="stop-name">{arr.stopName ?? t('stop.code', { code: arr.stopId })}</h2>
+        <p className="stop-sub">
+          {dir && (
+            <>
+              <span className="stop-fact stop-dir">{t(`direction.${dir}`)}</span>
+              <span className="dot-sep" aria-hidden>·</span>
+            </>
+          )}
+          <span className={dir ? 'stop-fact' : 'stop-fact stop-dir'}>{t('stop.code', { code: arr.stopId })}</span>
           {distanceM != null && (
             <>
-              <span className="dot-sep">·</span>
-              {fmtDistance(distanceM, units === 'imperial')}
+              <span className="dot-sep" aria-hidden>·</span>
+              <span className="stop-fact">{fmtDistance(distanceM, units === 'imperial')}</span>
             </>
           )}
           {walkMin != null && (
             <>
-              <span className="dot-sep">·</span>
-              {t('stop.walk', { min: walkMin })}
+              <span className="dot-sep" aria-hidden>·</span>
+              <span className="stop-fact">{t('stop.walk', { min: walkMin })}</span>
             </>
           )}
         </p>
       </div>
-      <div className="stop-head-actions">
-        <button
-          className="icon-btn heart-btn"
-          aria-pressed={saved}
-          aria-label={saved ? t('stop.saved') : t('stop.save')}
-          onClick={() => toggleSaved(arr.stopId)}
-        >
-          <HeartIcon width={20} height={20} filled={saved} />
-        </button>
-      </div>
+
+      <button
+        className={`stop-save ${saved ? 'is-saved' : ''}`}
+        aria-pressed={saved}
+        aria-label={saved ? t('stop.saved') : t('stop.save')}
+        onClick={() => toggleSaved(arr.stopId)}
+      >
+        <span className="only-desktop"><HeartIcon width={20} height={20} filled={saved} /></span>
+        <span className="only-mobile"><StarIcon width={20} height={20} filled={saved} /></span>
+      </button>
     </div>
   );
 }

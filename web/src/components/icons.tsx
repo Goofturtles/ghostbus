@@ -28,6 +28,14 @@ export const HeartIcon = (p: P & { filled?: boolean }) => {
     </svg>
   );
 };
+export const StarIcon = (p: P & { filled?: boolean }) => {
+  const { filled, ...rest } = p;
+  return (
+    <svg {...base(rest)} fill={filled ? 'currentColor' : 'none'}>
+      <path d="M12 4.2l2.35 4.76 5.25.77-3.8 3.7.9 5.23L12 16.19l-4.7 2.47.9-5.23-3.8-3.7 5.25-.77L12 4.2Z" />
+    </svg>
+  );
+};
 export const LocateIcon = (p: P) => (
   <svg {...base(p)}><circle cx="12" cy="12" r="3.2" /><path d="M12 3v3M12 18v3M3 12h3M18 12h3" /></svg>
 );

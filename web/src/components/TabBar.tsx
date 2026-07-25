@@ -19,7 +19,10 @@ export function TabBar() {
   const alertCount = useLive((s) => s.alerts?.count ?? 0);
 
   return (
-    <nav className="tabbar glass" aria-label={t('nav.primary')}>
+    // Deliberately not `.glass`: the bar is opaque so the scrolling column can be
+    // clipped cleanly above it, and a backdrop-filter under an opaque background
+    // is a compositing layer that buys nothing.
+    <nav className="tabbar" aria-label={t('nav.primary')}>
       {TABS.map(({ id, Icon, key }) => {
         const dot = id === 'alerts' && alertCount > 0;
         return (

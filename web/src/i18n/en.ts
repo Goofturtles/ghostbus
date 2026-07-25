@@ -38,6 +38,14 @@ const en = {
     ghosts: 'Ghosts',
     nextService: 'Next scheduled service',
   },
+  // The rider-facing wording for a direction the agency published in its own
+  // headsign. Translating the agency's compass word is not inventing a fact.
+  direction: {
+    north: 'Northbound',
+    south: 'Southbound',
+    east: 'Eastbound',
+    west: 'Westbound',
+  },
   stop: {
     directionStop: '{{direction}} · Stop {{code}}',
     code: 'Stop {{code}}',
@@ -171,10 +179,14 @@ const en = {
     vUnseen: "Can't see this vehicle right now",
     vUnseenAgo: 'Last fix {{min}} min ago — GhostBus will not guess where it is now.',
     vUnseenNever: 'No {{route}} in the live feed near this stop yet.',
+    vUnseenFeedDown: 'The live vehicle feed is down, so the position we hold cannot be refreshed.',
     vGone: 'This run has left the live board',
     vNoGeo: "GhostBus can't work out your walk",
     vNoGeoBody: 'Without your position there is no walk to time, so there is no honest verdict. The departure is below.',
+    vNoStop: 'This stop has no published position',
+    vNoStopBody: 'The agency publishes this stop without coordinates, so there is nothing to measure a walk to.',
     useLocation: 'Use my location',
+    bodyLabel: 'Verdict and evidence',
     // The receipts.
     evWalk: '{{dist}} to the stop · {{min}} min walk',
     evWalkUnknown: 'Your walk is unknown without your position',
@@ -184,8 +196,11 @@ const en = {
     evVehicle: 'Closest tracked {{route}} · {{dist}} from the stop',
     evVehicleStale: 'Last {{route}} fix is too old to place it',
     evVehicleNone: 'No {{route}} visible in the live feed near this stop',
+    evVehicleFeedDown: 'Vehicle feed unavailable',
     evNoFix: 'No position received yet',
-    basis: 'Recomputed from your live position and the newest vehicle fix. The feed names vehicles by route, not by run, so the vehicle above is the closest tracked one on this route.',
+    evFeedDown: 'Nothing to refresh it with right now',
+    basis: 'This verdict is recomputed continuously from your position and the vehicle feed. It is never frozen, and never carried over from a fix GhostBus can no longer stand behind.',
+    basisVehicle: 'The feed names vehicles by route, not by run, so the vehicle above is the closest tracked one on this route.',
     // Tier 2 — the guided walk/wait/board choreography. Not built in Tier 0.
     imOn: "I'm on",
     ghostedReplan: 'That bus never came. Re-planning to the next tracked departure.',
@@ -207,6 +222,7 @@ const en = {
     title: 'About & credits',
     what: "GhostBus is an accountability engine with a transit app attached: it watches the TTC's own feeds and records what actually happened.",
     what2: 'Every number it prints carries the evidence behind it, and where there is no evidence it says so instead of guessing.',
+    bodyLabel: 'About and credits',
     statsTitle: 'What GhostBus has measured',
     statsNote: 'Read from /api/stats when this screen opened, at {{time}}. A zero here is a real zero.',
     statsUnavailable: "Can't reach the stats endpoint right now.",

@@ -2,11 +2,12 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { DepartureDto } from '@shared/types';
 import { RouteBadge } from './Primitives';
-import { SignalIcon, ChevronIcon, WarningIcon } from './icons';
+import { PinIcon, ChevronIcon, WarningIcon } from './icons';
 import { useTick } from '@/hooks/useTick';
 import { liveNow } from '@/hooks/useLive';
 import { useStore, paceMps } from '@/store';
 import { fmtClock, walkSeconds } from '@/lib/format';
+import { parseHeadsign } from '@/lib/headsign';
 
 interface Props {
   dep: DepartureDto;
@@ -22,6 +23,20 @@ interface Props {
  *  scheduled service shows a clock time instead (a 2-day-out "2880 min" is noise). */
 const COUNTDOWN_HORIZON_MIN = 90;
 
+/**
+ * One departure, in the reference's two shapes. The DOM is identical at both
+ * widths and CSS does the reflow (see `.dep-card` in app.css):
+ *
+ *   desktop — badge + route name / destination / next line, countdown and status
+ *             stacked at the right, then a FULL-WIDTH action bar across the foot.
+ *   phone   — badge + "route → destination" on ONE line, next line beneath, and a
+ *             right column of countdown, status pill and a pill-shaped action.
+ *
+ * The action's wording is not decorative. On a live row the vehicle is genuinely
+ * in the feed, so the reference's "Track" is a promise the data keeps. On a
+ * scheduled row nothing is being tracked, so it stays "View route" — offering to
+ * track a vehicle that no feed can see is the one thing this app refuses to do.
+ */
 export function DepartureRow({ dep, nextMin, distanceM, onCatch, onOpen }: Props) {
   const { t } = useTranslation();
   useTick(1000);
@@ -51,66 +66,70 @@ export function DepartureRow({ dep, nextMin, distanceM, onCatch, onOpen }: Props
 
   const routeName = dep.longName ?? dep.shortName ?? dep.routeId ?? '';
   const short = dep.shortName ?? dep.routeId ?? '—';
-
-  const action = isLive ? (
-    <button className="btn btn-primary dep-catch" onClick={() => onCatch?.(dep)}>
-      <SignalIcon width={15} height={15} />
-      <span className="dep-action-label">{t('row.catch')}</span>
-      <ChevronIcon width={16} height={16} />
-    </button>
-  ) : (
-    <button className="btn btn-quiet dep-viewroute" onClick={() => onOpen?.(dep)} aria-label={t('row.viewRoute')}>
-      <span className="dep-action-label">{t('row.viewRoute')}</span>
-      <ChevronIcon width={16} height={16} />
-    </button>
-  );
+  // "South - 310 Spadina towards Union Station" -> "Union Station". The direction
+  // and the route number are already on screen (the stop line and the badge), and
+  // repeating them here is what squeezed the destination into 96px and cut it
+  // mid-word. Anything that does not match the agency's pattern is shown verbatim.
+  const destination = parseHeadsign(dep.directionLabel).destination || dep.directionLabel;
 
   return (
-    <article className="dep-card" role="listitem">
-      <div className="dep-top">
-        <button
-          className="dep-info"
-          onClick={() => onOpen?.(dep)}
-          aria-label={t('row.toward', { route: short, headsign: dep.directionLabel })}
-        >
-          <div className="dep-line1">
-            <RouteBadge color={dep.color} short={short} size="md" />
-            <span className="dep-long truncate">{routeName}</span>
-          </div>
-          <div className="dep-dest truncate">→ {dep.directionLabel}</div>
-          <div className="dep-next truncate">
-            {typeof nextMin === 'number' ? t('row.next', { min: Math.max(0, Math.round(nextMin)) }) : t('row.nextNone')}
-          </div>
-        </button>
-
-        <div className="dep-times">
-          <div className="dep-min tnum">
-            {countdown ? (
-              mins === 0 ? (
-                <span className="dep-due">{t('row.due')}</span>
-              ) : (
-                <>
-                  {mins}
-                  <span className="dep-unit">{t('row.min')}</span>
-                </>
-              )
-            ) : (
-              <span className="dep-clock">{fmtClock(arrivalMs)}</span>
-            )}
-          </div>
-          <span className={`pill ${isLive ? 'pill-live' : 'pill-sched'}`}>
-            {isLive ? <span className="live-dot" aria-hidden /> : null}
-            {isLive ? t('status.live') : t('status.scheduled')}
-          </span>
+    <article className={`dep-card ${isLive ? 'dep-is-live' : 'dep-is-sched'}`} role="listitem">
+      <div className="dep-info">
+        <div className="dep-id">
+          <RouteBadge color={dep.color} short={short} size="md" />
+          <span className="dep-route">{routeName}</span>
+          <span className="dep-arrow" aria-hidden>→</span>
+          {/* On the sidebar the destination owns its own line, so it wraps and is
+              never cut. On a phone it shares the line with the route name and the
+              right-hand columns hold reserved widths, so there it ellipsises —
+              which is the reserved-width rule, not an accident. Both behaviours
+              are set in CSS, on the same element. */}
+          <span className="dep-dest">{destination}</span>
         </div>
-
-        <div className="dep-action">{action}</div>
+        <div className="dep-next">
+          {typeof nextMin === 'number' ? t('row.next', { min: Math.max(0, Math.round(nextMin)) }) : t('row.nextNone')}
+        </div>
       </div>
 
-      {/* evidence — the brand: never a number without its receipts.
-          The row wraps rather than truncating a claim: the trust chip, the evidence
-          line, the leave-by chip and the forecast chip can never collide, at any width
-          or in any locale (French runs ~25% longer than English). */}
+      <div className="dep-times">
+        <div className="dep-min tnum">
+          {countdown ? (
+            mins === 0 ? (
+              <span className="dep-due">{t('row.due')}</span>
+            ) : (
+              <>
+                <span className="dep-num">{mins}</span>
+                <span className="dep-unit">{t('row.min')}</span>
+              </>
+            )
+          ) : (
+            <span className="dep-clock">{fmtClock(arrivalMs)}</span>
+          )}
+        </div>
+        <span className={`pill ${isLive ? 'pill-live' : 'pill-sched'}`}>
+          {isLive ? <span className="live-dot" aria-hidden /> : null}
+          {isLive ? t('status.live') : t('status.scheduled')}
+        </span>
+      </div>
+
+      <div className="dep-action">
+        <button
+          className={`dep-track ${isLive ? 'dep-track-live' : 'dep-track-sched'}`}
+          onClick={() => (isLive ? onCatch?.(dep) : onOpen?.(dep))}
+          aria-label={`${isLive ? t('row.track') : t('row.viewRoute')} — ${t('row.toward', { route: short, headsign: dep.directionLabel })}`}
+        >
+          <PinIcon width={15} height={15} aria-hidden />
+          <span className="dep-track-label">{isLive ? t('row.track') : t('row.viewRoute')}</span>
+          <ChevronIcon width={16} height={16} aria-hidden />
+        </button>
+      </div>
+
+      {/* evidence — the brand: never a number without its receipts. The reference
+          mockup shows illustrative rows with no evidence layer; dropping it to match
+          the picture would delete the one thing GhostBus exists to do, so it stays,
+          quiet, on its own full-width line. It wraps rather than truncating: the
+          trust chip, the evidence line, the leave-by chip and the forecast chip can
+          never collide, at any width or locale (French runs ~25% longer). */}
       <div className="dep-evidence-row">
         {grade ? (
           <button
@@ -131,11 +150,11 @@ export function DepartureRow({ dep, nextMin, distanceM, onCatch, onOpen }: Props
         )}
 
         {hasEvidence ? (
-          <span className="evidence-chip truncate">{t('eta.evidence', { spread: spreadMin, n: ev.n })}</span>
+          <span className="evidence-chip">{t('eta.evidence', { spread: spreadMin, n: ev.n })}</span>
         ) : (
-          <span className="evidence-chip evidence-thin truncate">{t('eta.scheduleOnly')}</span>
+          <span className="evidence-chip evidence-thin">{t('eta.scheduleOnly')}</span>
         )}
-        {showLeaveBy && <span className="leaveby-chip truncate">{t('eta.leaveBy', { time: fmtClock(leaveByMs) })}</span>}
+        {showLeaveBy && <span className="leaveby-chip">{t('eta.leaveBy', { time: fmtClock(leaveByMs) })}</span>}
 
         {grade && gradeOpen && (
           <p className="grade-detail">

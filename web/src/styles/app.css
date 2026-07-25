@@ -1,73 +1,114 @@
-/* GhostBus Tier 0 — app layout + component skin. Built entirely on tokens.css.
-   Mobile-first (390px), with a clean centered desktop column (not the split view,
-   which is a later phase). Depth is tone + shadow; hairlines stay whisper-quiet. */
+/* GhostBus app layout + component skin, built to the reference mockup.
+   Two shapes, one DOM:
+     phone   (< 880px) — a single scrolling column: header, search, map card,
+                         stop header, compact departure rows, alert card, saved
+                         places; the tab bar is an opaque bar at the foot.
+     desktop (>= 880px) — a fixed 320px sidebar on the left with the tab bar at
+                         ITS foot, and the map full-bleed to the window's right
+                         and bottom edges, no gap and no rounded card.
+
+   Overlap discipline (DESIGN-TARGET §D): every scrolling region ends ABOVE the
+   tab bar and carries --tab-clear of bottom padding, so no content is ever
+   painted under the bar and the last row can always be scrolled fully into view.
+   Nothing in this file positions text over text. */
 
 /* ============================ shell ============================ */
 .app {
+  position: relative;
   height: 100%;
   display: flex;
   flex-direction: column;
   min-height: 0;
   background:
-    radial-gradient(120% 60% at 50% -10%, rgba(137, 68, 171, 0.16), transparent 60%),
+    radial-gradient(120% 60% at 50% -10%, rgba(137, 68, 171, 0.14), transparent 60%),
     var(--bg);
 }
 
-.only-mobile { display: contents; }
-.only-desktop { display: none; }
+/* Breakpoint switches live in the two media queries at the foot of this file, so
+   they always beat a component rule regardless of source order. They are how a
+   component renders both variants of ONE control (heart / star) and lets CSS
+   pick, instead of duplicating the button. */
 
-.app-main {
-  flex: 1;
+/* PHONE: .app-body is the scroll container for the whole column. */
+.app-body {
+  flex: 1 1 auto;
   min-height: 0;
-  padding: var(--s4) var(--s4) var(--s6);
+  display: block;
 }
-.app-col {
-  max-width: 560px;
-  margin: 0 auto;
-}
+.pane-side { min-width: 0; }
+.side-scroll { min-width: 0; }
+.side-inner { padding: 0 var(--s4) var(--s5); }
 
 /* ============================ top bars ============================ */
 .mobile-top {
-  padding: calc(env(safe-area-inset-top, 0px) + var(--s3)) var(--s4) var(--s3);
   display: flex;
   flex-direction: column;
   gap: var(--s3);
-  background: linear-gradient(var(--bg), transparent);
+  padding: calc(env(safe-area-inset-top, 0px) + var(--s3)) var(--s4) var(--s3);
 }
 .mobile-top-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--s3);
-}
-.mobile-top-right {
-  display: flex;
-  align-items: center;
-  gap: var(--s2);
   min-width: 0;
 }
 
 .topbar {
+  position: relative;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: var(--s4);
   height: var(--topbar-h);
-  padding: 0 var(--s5);
-  border-radius: 0;
+  padding: 0 var(--s4) 0 var(--s5);
+  background: var(--side-bg);
+  box-shadow: inset 0 -1px 0 var(--hairline);
 }
-.topbar-left { flex: 0 0 auto; }
-.topbar-center { flex: 1 1 auto; min-width: 0; display: flex; justify-content: center; }
-.topbar-right { flex: 0 0 auto; display: flex; align-items: center; gap: var(--s3); }
+/* The reference centres the pill in the WINDOW, not in the space left over, so it
+   is taken out of flow. --pill-w is declared once here and BOTH flanking groups
+   derive their max-width from it, so the three can never meet at any width or in
+   any locale: each flank stops (--s3) short of the pill's edge, and its own
+   contents ellipsise inside that cap. */
+.topbar { --pill-w: min(360px, 34vw); }
+.topbar-left,
+.topbar-right {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  max-width: calc(50% - var(--pill-w) / 2 - var(--s3));
+}
+.topbar-left { flex: 0 1 auto; gap: var(--s4); }
+.topbar-center {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: var(--pill-w);
+  min-width: 180px;
+}
+/* margin-left:auto, not `flex:1`. Capping the width of a flex-grow item leaves it
+   parked next to .topbar-left with dead space to its right — measured at 1280px:
+   the group sat at x=184..614, directly under the centred pill (3 real overlaps).
+   An auto margin eats the slack instead, so the group is always at the right edge. */
+.topbar-right { flex: 0 1 auto; margin-left: auto; justify-content: flex-end; gap: var(--s3); }
+
+/* macOS traffic lights — decoration only (no button, aria-hidden, no handler). */
+.win-dots { display: inline-flex; align-items: center; gap: 8px; }
+.win-dot { width: 12px; height: 12px; border-radius: 50%; display: block; }
+.wd-red { background: #ff5f57; }
+.wd-amber { background: #febc2e; }
+.wd-green { background: #28c840; }
 
 /* Wordmark */
 .wordmark {
-  font-size: 25px;
+  font-size: 20px;
   font-weight: 800;
   letter-spacing: -0.02em;
-  line-height: 1.15;
+  line-height: 1.3;
   white-space: nowrap;
 }
-.wm-ghost { color: var(--brand); }
+.wm-ghost { color: var(--accent); }
 .wm-bus { color: var(--text); }
 
 /* Status pill */
@@ -76,15 +117,17 @@
   align-items: center;
   gap: var(--s2);
   border-radius: var(--r-pill);
-  padding: 7px 13px;
+  padding: 6px 13px;
   font-size: 13px;
   font-weight: 700;
-  min-height: 34px;
+  min-height: 32px;
   max-width: 100%;
+  flex: 0 1 auto;
+  min-width: 0;
   transition: transform var(--dur-micro) var(--ease-spring);
 }
 .status-pill:active { transform: scale(0.97); }
-.sp-label { line-height: 1.2; }
+.sp-label { line-height: 1.3; white-space: nowrap; }
 .sp-inline, .sp-detail {
   font-weight: 500;
   opacity: 0.85;
@@ -96,15 +139,14 @@
 .sp-sched { background: var(--surface-2); color: var(--text-2); }
 .sp-offline { background: rgba(255, 69, 58, 0.15); color: var(--danger-text); }
 .sp-dot {
-  width: 8px; height: 8px; border-radius: 50%;
+  width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto;
   background: var(--live);
-  box-shadow: 0 0 0 4px rgba(52, 199, 89, 0.18);
 }
-.sp-compact { padding: 6px 11px; min-height: 30px; }
+.sp-compact { padding: 5px 11px; min-height: 30px; }
 
-/* Profile */
+/* Profile / avatar */
 .profile-btn {
-  width: 40px; height: 40px;
+  width: 34px; height: 34px;
   border-radius: 50%;
   display: inline-flex; align-items: center; justify-content: center;
   background: linear-gradient(150deg, var(--brand-strong), var(--brand));
@@ -114,84 +156,110 @@
 }
 .profile-btn:active { transform: scale(0.94); }
 
-/* Search field (presentational this phase) */
-.searchfield { display: flex; gap: var(--s3); width: 100%; }
-.sf-bar { max-width: 460px; }
+/* Search field */
+.searchfield { display: flex; gap: var(--s2); width: 100%; min-width: 0; }
 .searchfield-input {
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
   align-items: center;
   gap: var(--s3);
-  height: 48px;
+  height: 46px;
   padding: 0 var(--s4);
-  border-radius: var(--r-md);
-  background: var(--surface);
+  border-radius: 13px;
+  background: var(--surface-2);
   color: var(--text-3);
-  box-shadow: var(--inner-top);
+  box-shadow: inset 0 0 0 1px var(--hairline);
 }
-.sf-placeholder { font-size: 15px; flex: 1 1 auto; }
+.sf-bar .searchfield-input { height: 36px; border-radius: 10px; padding: 0 var(--s3); }
+.sf-placeholder { font-size: 15px; flex: 1 1 auto; line-height: 1.4; }
+.sf-bar .sf-placeholder { font-size: 13.5px; }
 .sf-kbd {
+  flex: 0 0 auto;
   font-size: 11px; font-weight: 600;
-  padding: 3px 7px; border-radius: 7px;
-  background: var(--surface-2); color: var(--text-3);
+  padding: 2px 6px; border-radius: 6px;
+  background: var(--surface); color: var(--text-3);
+  line-height: 1.5;
 }
 .sf-filters {
   flex: 0 0 auto;
-  width: 48px; height: 48px;
+  width: 46px; height: 46px;
   display: inline-flex; align-items: center; justify-content: center;
-  border-radius: var(--r-md);
-  background: var(--surface);
+  border-radius: 13px;
+  background: var(--surface-2);
   color: var(--text-2);
-  box-shadow: var(--inner-top);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+  transition: transform var(--dur-micro) var(--ease-spring);
 }
+.sf-filters:active { transform: scale(0.95); }
 
 /* ============================ map ============================ */
+/* PHONE: the map runs the full width of the sheet, straight-edged, and the panel
+   below meets it with rounded top corners — the reference's treatment, achieved
+   by adjacency, never by one box sitting on top of another. */
+.pane-map { position: relative; }
 .map-card {
   position: relative;
-  aspect-ratio: 5 / 4;
-  border-radius: var(--r-lg);
-  overflow: clip; /* decorative perspective grid is meant to bleed + clip, never scroll */
+  aspect-ratio: 4 / 3;
+  overflow: clip; /* the decorative perspective grid is meant to bleed + clip */
+  border-radius: 0 0 var(--r-lg) var(--r-lg);
   background: linear-gradient(160deg, var(--map-sky-top), var(--map-sky-bot));
-  box-shadow: var(--shadow-card), var(--inner-top);
-  margin-bottom: var(--s4);
 }
-
-/* live map fills the card; ground color underneath so a slow tile never flashes checkerboard */
 .map-card.map-live { background: var(--map-ground); }
-/* Two-class specificity so this beats maplibre-gl.css's `.maplibregl-map{position:relative}`
-   (equal-specificity + later in cascade would otherwise collapse the container to 0 height). */
+/* Two-class specificity so this beats maplibre-gl.css's `.maplibregl-map{position:relative}`. */
 .map-card .map-canvas { position: absolute; inset: 0; }
 .map-card .maplibregl-canvas { outline: none; }
 
-/* MapLibre attribution — themed, small, always visible (license) */
+.pane-side { position: relative; background: var(--bg); }
+.side-scroll > .side-inner { padding-top: var(--s5); }
+
+/* Where a scrolling column meets the tab bar, the last partially-visible card is
+   necessarily cut by the scroll boundary. A guillotined card edge reads as a bug;
+   a fade reads as "there is more below". Decorative, pointer-transparent, and a
+   pseudo-element, so it adds nothing to the DOM and nothing to the a11y tree. */
+.app::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0;
+  bottom: calc(var(--tab-h) + env(safe-area-inset-bottom, 0px));
+  height: 22px;
+  pointer-events: none;
+  z-index: 3;
+  background: linear-gradient(to bottom, transparent, var(--bg));
+}
+.map-is-expanded::after { display: none; }
+
+/* MapLibre attribution — themed, small, always visible (licence requirement).
+   The map mounts it bottom-right, clear of the control stack's vertical run, so
+   only its inner corner is rounded. */
+.maplibregl-ctrl-bottom-right, .maplibregl-ctrl-bottom-left { z-index: 4; }
 .maplibregl-ctrl-attrib {
   background: var(--glass-strong) !important;
   color: var(--text-2) !important;
-  font: 500 10px/1.4 var(--font);
+  font: 500 10px/1.5 var(--font);
   padding: 2px 7px !important;
-  border-radius: 8px 0 var(--r-lg) 0 !important;
-  max-width: 78%;
+  border-radius: 8px 0 0 0 !important;
+  max-width: 62%;
 }
 .maplibregl-ctrl-attrib a { color: var(--text) !important; }
 .maplibregl-ctrl-attrib-button { filter: invert(0); }
 :root[data-theme="dark"] .maplibregl-ctrl-attrib-button { filter: invert(1) brightness(1.4); }
 
-/* control stack (top-right per the reference) */
+/* control stack: right edge, vertically stacked, inset from the card edge */
 .map-controls {
-  position: absolute; top: var(--s3); right: var(--s3); z-index: 5;
-  display: flex; flex-direction: column; gap: var(--s2); align-items: flex-end;
+  position: absolute; top: var(--s4); right: var(--s3); z-index: 5;
+  display: flex; flex-direction: column; gap: var(--s3); align-items: flex-end;
 }
 .map-zoom {
   display: flex; flex-direction: column;
-  border-radius: 14px; overflow: hidden;
+  border-radius: 13px; overflow: hidden;
   background: var(--glass-strong);
   -webkit-backdrop-filter: blur(20px) saturate(150%); backdrop-filter: blur(20px) saturate(150%);
   box-shadow: var(--shadow-card), var(--inner-top);
 }
 .map-zoom-sep { height: 1px; background: var(--hairline-2); margin: 0 8px; }
 .map-ctrl {
-  width: 44px; height: 44px;
+  width: 42px; height: 42px;
   display: inline-flex; align-items: center; justify-content: center;
   color: var(--text); background: transparent;
   transition: transform var(--dur-micro) var(--ease-spring), color var(--dur-micro) var(--ease-standard);
@@ -199,11 +267,18 @@
 .map-ctrl:active { transform: scale(0.9); }
 .map-ctrl:hover { color: var(--brand); }
 .map-ctrl-solo {
-  border-radius: 14px;
+  border-radius: 13px;
   background: var(--glass-strong);
   -webkit-backdrop-filter: blur(20px) saturate(150%); backdrop-filter: blur(20px) saturate(150%);
   box-shadow: var(--shadow-card), var(--inner-top);
 }
+/* The locate + layers pair reads as one grouped control in the reference. */
+.map-ctrl-solo + .map-ctrl-solo {
+  margin-top: calc(-1 * var(--s3));
+  border-radius: 0 0 13px 13px;
+  box-shadow: inset 0 1px 0 var(--hairline-2), var(--shadow-card);
+}
+.map-controls .map-ctrl-solo:has(+ .map-ctrl-solo) { border-radius: 13px 13px 0 0; }
 
 /* tiles-unavailable honest fallback (never a checkerboard) */
 .map-fallback {
@@ -247,7 +322,7 @@
   100% { opacity: 0; transform: translate(-50%, -50%) scale(1.25); }
 }
 
-/* boarding stop pin + two-line card */
+/* boarding stop pin + two-line MAP marker card (NOT the sidebar stop card) */
 .stop-marker { display: flex; align-items: flex-end; gap: 6px; }
 .stop-pin-dot {
   width: 28px; height: 28px; border-radius: 50% 50% 50% 2px;
@@ -266,9 +341,9 @@
   box-shadow: var(--shadow-card), var(--inner-top);
   max-width: 168px;
 }
-.stop-card b { font-size: 12.5px; font-weight: 700; color: var(--text); line-height: 1.2;
+.stop-card b { font-size: 12.5px; font-weight: 700; color: var(--text); line-height: 1.3;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.stop-card i { font-size: 11px; font-style: normal; color: var(--text-2); line-height: 1.2; }
+.stop-card i { font-size: 11px; font-style: normal; color: var(--text-2); line-height: 1.3; }
 
 /* selected vehicle route badge */
 .map-badge {
@@ -278,19 +353,15 @@
   box-shadow: 0 8px 18px -6px rgba(0, 0, 0, 0.65);
 }
 
-/* fullscreen expand: card grows to viewport, sheet collapses to a bottom strip */
+/* fullscreen expand: the map takes the whole window and the tab bar steps aside */
 .map-card.map-expanded {
-  position: fixed; left: 0; right: 0; top: 0; bottom: 76px; z-index: 60;
+  position: fixed; inset: 0; z-index: 60;
   aspect-ratio: auto; border-radius: 0; margin: 0; box-shadow: none;
 }
-.map-is-expanded .app-main { overflow: hidden; }
+.map-is-expanded .app-body { overflow: hidden; }
 .map-is-expanded .tabbar { display: none; }
-.map-is-expanded .sheet {
-  position: fixed; left: 0; right: 0; bottom: 0; height: 76px; z-index: 61;
-  overflow: hidden; padding: var(--s3) var(--s4);
-  background: var(--bg);
-  box-shadow: 0 -12px 34px -22px rgba(0, 0, 0, 0.7);
-}
+.map-is-expanded .pane-side { display: none; }
+
 .map-grid {
   position: absolute; inset: 0;
   background-image:
@@ -321,139 +392,208 @@
 }
 .map-note { font-size: 14px; font-weight: 600; color: var(--text-2); }
 
-/* ============================ nearby sheet ============================ */
-.sheet { display: flex; flex-direction: column; gap: var(--s5); }
-.nearby-panel { display: flex; flex-direction: column; gap: var(--s5); }
+/* ============================ sections ============================ */
+.nearby-panel { display: flex; flex-direction: column; gap: var(--s4); }
+.gb-section { display: flex; flex-direction: column; }
 
-.section-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--s3); }
-.eyebrow-icon { display: inline-flex; align-items: center; gap: 6px; }
-.eyebrow-date { color: var(--brand); }
+/* The reference sets its labels TIGHT above their content: 8px, not a full gap. */
+.section-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--s3); min-width: 0;
+  margin-bottom: var(--s2);
+}
+.eyebrow-date { color: var(--accent); }
+.section-link {
+  flex: 0 0 auto;
+  font-size: 12.5px; font-weight: 700; line-height: 1.5;
+  color: var(--accent);
+  padding: 2px 0;
+  white-space: nowrap;
+}
+.section-link:hover { text-decoration: underline; }
 
 /* default-location note + feed banner */
 .loc-note, .feed-banner {
   display: flex; align-items: center; gap: var(--s2);
-  padding: 10px var(--s4);
-  border-radius: var(--r-md);
-  font-size: 13px; font-weight: 500;
-  min-width: 0;
+  padding: 9px var(--s4);
+  border-radius: var(--r-sm);
+  font-size: 12.5px; font-weight: 500;
+  min-width: 0; line-height: 1.4;
 }
 .loc-note { background: var(--brand-soft); color: var(--text-2); text-align: left; }
+.loc-note span, .feed-banner span { min-width: 0; overflow-wrap: break-word; }
+.loc-note svg, .feed-banner svg { flex: 0 0 auto; }
 .loc-note:active { transform: scale(0.99); }
 .feed-banner { background: rgba(255, 176, 32, 0.14); color: var(--warn-text); }
 
-/* stop header */
-.stop-header { display: flex; align-items: flex-start; gap: var(--s3); }
-.stop-pin-tile {
+/* ============================ current stop ============================ */
+.stop-head {
+  display: flex; align-items: center; gap: var(--s3);
+  min-width: 0;
+}
+.stop-head-tile {
   flex: 0 0 auto;
-  width: 46px; height: 46px;
+  width: 38px; height: 38px;
   display: inline-flex; align-items: center; justify-content: center;
-  border-radius: var(--r-md);
-  background: var(--brand-soft);
-  color: var(--brand);
+  border-radius: 11px;
+  background: linear-gradient(155deg, var(--brand-strong), var(--brand));
+  color: #fff;
 }
 .stop-head-text { flex: 1 1 auto; min-width: 0; }
-.stop-name { font-size: 22px; font-weight: 800; line-height: 1.2; letter-spacing: -0.02em; margin: 0; }
-.stop-sub { margin: 4px 0 0; font-size: 13px; color: var(--text-2); line-height: 1.35; }
-.stop-dir { color: var(--brand); font-weight: 600; }
+.stop-name {
+  margin: 0;
+  font-size: 20px; font-weight: 800; line-height: 1.3; letter-spacing: -0.02em;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.stop-sub {
+  margin: 3px 0 0; font-size: 13px; color: var(--text-2); line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+/* Each fact is atomic: the line wraps BETWEEN facts, never inside one, so
+   "1 min walk" can never break across lines as "1 min" / "walk". */
+.stop-fact { white-space: nowrap; }
+.stop-dir { color: var(--accent); font-weight: 600; }
 .dot-sep { margin: 0 6px; color: var(--text-3); }
-.stop-head-actions { flex: 0 0 auto; display: flex; gap: var(--s2); }
-.icon-btn {
-  width: 42px; height: 42px;
+
+/* One control, two skins: a bare heart on the sidebar card, a ringed star on the
+   phone sheet. Both are the same button, so it is one thing to a screen reader. */
+/* The reference's phone control: a star inside a purple ring, filled when the stop
+   is saved and outlined when it is not — so the ring is the affordance and the fill
+   still carries the state. */
+.stop-save {
+  flex: 0 0 auto;
+  width: 44px; height: 44px;
   display: inline-flex; align-items: center; justify-content: center;
   border-radius: 50%;
-  background: var(--surface-2);
-  color: var(--text-2);
-  transition: transform var(--dur-micro) var(--ease-spring), color var(--dur-micro) var(--ease-standard);
+  color: var(--accent);
+  background: var(--brand-soft);
+  box-shadow: inset 0 0 0 1.5px var(--brand);
+  transition: transform var(--dur-micro) var(--ease-spring), background var(--dur-micro) var(--ease-standard);
 }
-.icon-btn:active { transform: scale(0.92); }
-.heart-btn[aria-pressed="true"] { color: var(--brand); }
+.stop-save span { display: inline-flex; }
+.stop-save:hover { background: rgba(137, 68, 171, 0.24); }
+.stop-save:active { transform: scale(0.92); }
 
-/* ============================ departure rows ============================ */
+/* ============================ departure cards ============================ */
 .dep-list { display: flex; flex-direction: column; gap: var(--s3); }
 
+/* PHONE: three columns — identity, times, action — plus a full-width evidence row.
+   Every column has a reserved width and the identity column is the only one that
+   flexes, so long French headsigns truncate instead of pushing the action off. */
 .dep-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  column-gap: var(--s3);
+  row-gap: var(--s2);
   background: var(--surface);
-  border-radius: var(--r-md);
-  padding: var(--s4);
+  border-radius: 15px;
+  padding: var(--s3) var(--s3) var(--s3) var(--s4);
   box-shadow: var(--shadow-card), var(--inner-top);
 }
-.dep-top { display: flex; align-items: center; gap: var(--s2); }
-.dep-info {
-  flex: 1 1 auto;
-  min-width: 0;
-  text-align: left;
-  display: flex; flex-direction: column; gap: 3px;
+.dep-info { grid-column: 1; grid-row: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.dep-times { grid-column: 2; grid-row: 1; }
+.dep-action { grid-column: 3; grid-row: 1; }
+.dep-evidence-row { grid-column: 1 / -1; grid-row: 2; }
+
+.dep-id {
+  display: flex; align-items: center; flex-wrap: wrap;
+  gap: 4px var(--s2); min-width: 0;
 }
-.dep-line1 { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
-.dep-long { font-size: 16px; font-weight: 700; color: var(--text); line-height: 1.25; }
-.dep-dest { font-size: 13px; color: var(--text-2); line-height: 1.3; }
-.dep-next { font-size: 12px; color: var(--text-3); line-height: 1.3; }
+/* NO ELLIPSIS on any line that carries a fact. The right-hand columns have
+   reserved widths, so the identity column can never collide with them — it just
+   WRAPS, at word boundaries. A metadata line cut to "South - 310 Spa…" is worse
+   than the same line on two rows, and `break-word` only ever splits a single word
+   that is wider than the whole column, which nothing can help. */
+.dep-route,
+.dep-dest {
+  min-width: 0;
+  overflow-wrap: break-word;
+  font-size: 13.5px; font-weight: 700; color: var(--text); line-height: 1.35;
+}
+.dep-route { flex: 0 1 auto; }
+.dep-dest { flex: 1 1 60px; }
+.dep-arrow { color: var(--text-3); font-size: 13px; line-height: 1.35; flex: 0 0 auto; }
+.dep-next { font-size: 12px; color: var(--text-3); line-height: 1.4; overflow-wrap: break-word; }
 
 .route-badge {
   flex: 0 0 auto;
   display: inline-flex; align-items: center; justify-content: center;
   font-weight: 800;
-  border-radius: 8px;
-  line-height: 1;
+  border-radius: 7px;
+  line-height: 1.3;
 }
-.rb-sm { min-width: 34px; height: 22px; font-size: 12px; padding: 0 6px; }
-.rb-md { min-width: 44px; height: 28px; font-size: 14px; padding: 0 8px; }
-.rb-lg { min-width: 54px; height: 34px; font-size: 17px; padding: 0 10px; }
+.rb-sm { min-width: 34px; height: 20px; font-size: 11px; padding: 0 6px; }
+.rb-md { min-width: 44px; height: 24px; font-size: 13px; padding: 0 7px; }
+.rb-lg { min-width: 54px; height: 32px; font-size: 17px; padding: 0 10px; }
 
 .dep-times {
   flex: 0 0 auto;
-  display: flex; flex-direction: column; align-items: flex-end; gap: 4px;
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  min-width: 58px;
 }
-.dep-min {
-  display: flex; align-items: baseline; gap: 3px;
-  font-size: 27px; font-weight: 800; color: var(--text); line-height: 1.05;
-}
+.dep-min { display: flex; align-items: baseline; gap: 3px; line-height: 1.15; }
+.dep-num { font-size: 25px; font-weight: 800; color: var(--text); }
+.dep-is-live .dep-num { color: var(--live-text); }
 .dep-unit { font-size: 12px; font-weight: 600; color: var(--text-3); }
-.dep-due { font-size: 20px; font-weight: 800; color: var(--live-text); }
-.dep-clock { font-size: 14px; font-weight: 700; color: var(--text); white-space: nowrap; }
+.dep-due { font-size: 19px; font-weight: 800; color: var(--live-text); line-height: 1.3; }
+.dep-clock { font-size: 15px; font-weight: 800; color: var(--text); white-space: nowrap; line-height: 1.3; }
 
-.pill-live { background: rgba(52, 199, 89, 0.16); color: var(--live-text); padding: 3px 9px; font-size: 11px; }
-.pill-sched { background: var(--surface-2); color: var(--text-2); padding: 3px 9px; font-size: 11px; }
-.live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--live); }
+.pill-live { background: rgba(52, 199, 89, 0.16); color: var(--live-text); padding: 2px 9px; font-size: 11px; }
+.pill-sched { background: var(--surface-2); color: var(--text-2); padding: 2px 9px; font-size: 11px; }
+.live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--live); flex: 0 0 auto; }
 
-.dep-action { flex: 0 0 auto; }
-.dep-catch { padding: 8px 12px; font-size: 12.5px; box-shadow: 0 8px 22px -10px var(--brand); }
-.dep-viewroute { padding: 8px 12px; font-size: 12.5px; color: var(--text-2); }
-.dep-action-label { white-space: nowrap; }
+/* The action. Purple and solid when the vehicle is genuinely in the live feed,
+   quiet when the row is schedule-only — the colour carries the same claim the
+   word does. */
+.dep-track {
+  display: inline-flex; align-items: center; justify-content: center;
+  gap: 6px;
+  min-height: 40px; padding: 0 var(--s3);
+  border-radius: 11px;
+  font-size: 13px; font-weight: 700; line-height: 1.4;
+  transition: transform var(--dur-micro) var(--ease-spring), background var(--dur-micro) var(--ease-standard);
+}
+.dep-track:active { transform: scale(0.98); }
+.dep-track svg { flex: 0 0 auto; }
+.dep-track-label { white-space: nowrap; }
+.dep-track-live { background: var(--brand); color: var(--on-brand); }
+.dep-track-live:hover { background: var(--brand-strong); }
+.dep-track-sched { background: var(--surface-2); color: var(--text); box-shadow: inset 0 0 0 1px var(--hairline-2); }
+.dep-track-sched:hover { background: var(--surface); }
 
-/* The evidence row WRAPS. Four things can live here (trust chip, evidence line,
-   leave-by, forecast) across three locales at 390px — wrapping is what guarantees
-   they can never collide or clip, in any combination. */
+/* The evidence row WRAPS: four things can live here across three locales at
+   390px, and wrapping is what guarantees they can never collide or clip. */
 .dep-evidence-row {
   display: flex; align-items: center; flex-wrap: wrap;
   gap: 6px var(--s2);
-  margin-top: 10px;
+  padding-top: 2px;
   min-width: 0;
 }
 .evidence-chip {
-  display: inline-flex; align-items: center;
   flex: 1 1 auto;
-  font-size: 12px; color: var(--text-2);
-  line-height: 1.4;
-  text-align: left; min-width: 0;
+  font-size: 11.5px; color: var(--text-3);
+  line-height: 1.5;
+  text-align: left; min-width: 0; overflow-wrap: break-word;
 }
 .evidence-thin { color: var(--text-3); }
 .leaveby-chip {
   flex: 0 0 auto;
-  font-size: 12px; font-weight: 600;
-  color: var(--brand);
+  font-size: 11.5px; font-weight: 600;
+  color: var(--accent);
   background: var(--brand-soft);
-  padding: 3px 9px; border-radius: var(--r-pill);
-  line-height: 1.4;
+  padding: 2px 9px; border-radius: var(--r-pill);
+  line-height: 1.5;
 }
 
 /* trust grade chip — tap to expand its receipts */
 .grade-chip {
   flex: 0 0 auto;
   display: inline-flex; align-items: center; justify-content: center;
-  min-width: 24px; height: 24px; padding: 0 6px;
-  border-radius: 8px;
-  font-size: 13px; font-weight: 800; line-height: 1.4;
+  min-width: 22px; height: 22px; padding: 0 6px;
+  border-radius: 7px;
+  font-size: 12px; font-weight: 800; line-height: 1.5;
   transition: transform var(--dur-micro) var(--ease-spring);
 }
 .grade-chip:active { transform: scale(0.92); }
@@ -464,7 +604,7 @@
 .grade-detail {
   flex: 1 0 100%;
   margin: 2px 0 0;
-  font-size: 12px; line-height: 1.45; color: var(--text-2);
+  font-size: 12px; line-height: 1.5; color: var(--text-2);
 }
 
 /* ghost-forecast chip — always its own line, so it can never crowd the evidence */
@@ -473,11 +613,48 @@
   display: flex; align-items: flex-start; gap: 6px;
   margin: 2px 0 0; padding: 6px 10px;
   border-radius: var(--r-sm);
-  font-size: 12px; font-weight: 600; line-height: 1.4;
+  font-size: 12px; font-weight: 600; line-height: 1.45;
 }
-.forecast-chip svg { flex: 0 0 auto; margin-top: 1px; }
+.forecast-chip svg { flex: 0 0 auto; margin-top: 2px; }
 .forecast-elevated { background: rgba(255, 176, 32, 0.14); color: var(--warn-text); }
 .forecast-high { background: rgba(255, 69, 58, 0.14); color: var(--danger-text); }
+
+/* ============================ saved places ============================ */
+.saved-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.saved-row { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
+.saved-open {
+  flex: 1 1 auto; min-width: 0;
+  display: flex; align-items: center; gap: var(--s3);
+  padding: var(--s2) 0;
+  text-align: left;
+  min-height: 48px;
+}
+.saved-tile {
+  flex: 0 0 auto;
+  width: 34px; height: 34px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text-2);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+}
+.saved-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.saved-title { font-size: 14.5px; font-weight: 700; color: var(--text); line-height: 1.35; overflow-wrap: break-word; }
+.saved-sub { font-size: 12px; color: var(--text-3); line-height: 1.4; overflow-wrap: break-word; }
+.saved-star {
+  flex: 0 0 auto;
+  width: 40px; height: 40px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  color: var(--text-3);
+  transition: transform var(--dur-micro) var(--ease-spring), color var(--dur-micro) var(--ease-standard);
+}
+.saved-star:active { transform: scale(0.92); }
+.saved-star.is-saved { color: var(--accent); }
+.saved-empty {
+  margin: 0; padding: var(--s3) 0 var(--s2);
+  font-size: 13px; line-height: 1.5; color: var(--text-3);
+}
 
 /* ============================ honest state cards ============================ */
 .state-card {
@@ -497,21 +674,21 @@
   margin-bottom: var(--s1);
 }
 .state-down .state-glyph { background: rgba(255, 176, 32, 0.15); color: var(--warn); }
-.state-title { font-size: 17px; font-weight: 700; margin: 0; line-height: 1.3; }
-.state-body { font-size: 14px; color: var(--text-2); margin: 0; line-height: 1.45; max-width: 34ch; }
+.state-title { font-size: 17px; font-weight: 700; margin: 0; line-height: 1.35; }
+.state-body { font-size: 14px; color: var(--text-2); margin: 0; line-height: 1.5; max-width: 34ch; }
 
 .placeholder-view {
-  min-height: 46vh;
+  min-height: 40vh;
   display: flex; align-items: center; justify-content: center;
   padding: var(--s6) 0;
 }
 .state-placeholder { max-width: 380px; }
 
 /* ============================ alerts tab ============================ */
-.alerts-panel { display: flex; flex-direction: column; gap: var(--s6); }
+.alerts-panel { display: flex; flex-direction: column; gap: var(--s5); }
 .alerts-head { display: flex; flex-direction: column; gap: 4px; }
-.alerts-title { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.25; margin: 0; }
-.alerts-sub { margin: 0; font-size: 14px; line-height: 1.45; color: var(--text-2); max-width: 40ch; }
+.alerts-title { font-size: 24px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.3; margin: 0; }
+.alerts-sub { margin: 0; font-size: 14px; line-height: 1.5; color: var(--text-2); max-width: 40ch; }
 .alerts-section { display: flex; flex-direction: column; }
 .alerts-updated { color: var(--text-3); text-transform: none; letter-spacing: 0; font-weight: 500; }
 
@@ -530,62 +707,77 @@
 }
 .gc-label {
   font-size: 11px; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase;
-  color: var(--text-3); line-height: 1.4;
+  color: var(--text-3); line-height: 1.5;
 }
-.gc-nums { display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px 6px; line-height: 1.35; }
+.gc-nums { display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px 6px; line-height: 1.4; }
 .gc-nums b { font-size: 20px; font-weight: 800; }
 .gc-ghost { color: var(--ghost); }
 .gc-cancel { color: var(--danger-text); }
 .gc-unit { font-size: 11px; font-weight: 600; color: var(--text-3); margin-right: var(--s2); }
 
-/* ghost event card — the reference's red-tinted alert card */
+/* ============================ the alert card ============================ */
+/* The reference's red card: warning glyph in a soft red disc, three text lines,
+   and a full-width outlined action indented to the text column. */
 .ghost-list { display: flex; flex-direction: column; gap: var(--s3); }
 .ghost-card {
-  display: flex; flex-direction: column; gap: var(--s2);
-  padding: var(--s4);
-  border-radius: var(--r-md);
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s3);
+  padding: var(--s4) var(--s4) var(--s3);
+  border-radius: 15px;
   background:
-    linear-gradient(180deg, rgba(255, 69, 58, 0.1), rgba(255, 69, 58, 0.045)),
+    linear-gradient(180deg, rgba(255, 69, 58, 0.11), rgba(255, 69, 58, 0.05)),
     var(--surface-solid);
-  box-shadow: 0 0 0 1px rgba(255, 69, 58, 0.32), var(--shadow-card);
+  box-shadow: 0 0 0 1px rgba(255, 69, 58, 0.3), var(--shadow-card);
 }
-.ghost-card-head { display: flex; align-items: center; gap: var(--s3); min-width: 0; }
 .ghost-glyph {
   flex: 0 0 auto;
-  width: 38px; height: 38px; border-radius: var(--r-sm);
+  width: 40px; height: 40px; border-radius: 50%;
   display: inline-flex; align-items: center; justify-content: center;
-  background: rgba(255, 69, 58, 0.16);
+  background: rgba(255, 69, 58, 0.14);
   color: var(--danger-text);
 }
+/* The text column: three claim lines, then the full-width action across it. */
+.ghost-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .ghost-card .ge-claim {
   margin: 0; min-width: 0;
-  font-size: 15px; font-weight: 700; line-height: 1.35;
+  font-size: 13.5px; font-weight: 700; line-height: 1.45;
   color: var(--danger-text);
 }
-.ge-time { color: var(--text); }
-.ghost-card-route { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
-.ghost-dest { font-size: 14px; font-weight: 600; color: var(--text); line-height: 1.35; min-width: 0; }
-.ghost-next { margin: 0; font-size: 13px; color: var(--text-2); line-height: 1.4; }
+.ge-time { color: var(--text); margin-right: 6px; }
+.ghost-card-route {
+  display: flex; align-items: center; gap: var(--s2); min-width: 0;
+}
+.ghost-card-route .route-badge {
+  background: rgba(255, 69, 58, 0.16) !important;
+  color: var(--danger-text) !important;
+  font-size: 11px; min-width: 0; height: 19px; padding: 0 6px;
+}
+.ghost-dest { font-size: 13px; font-weight: 600; color: var(--text); line-height: 1.4; min-width: 0; overflow-wrap: break-word; }
+.ghost-next { grid-column: 2; grid-row: 3; margin: 0; font-size: 12.5px; color: var(--text-2); line-height: 1.45; }
 .ghost-detected {
-  margin: 0; display: flex; align-items: center; gap: 6px; min-width: 0;
-  font-size: 12px; color: var(--text-3); line-height: 1.4;
+  grid-column: 2; grid-row: 4;
+  margin: 2px 0 0; display: flex; align-items: center; gap: 6px; min-width: 0;
+  font-size: 11.5px; color: var(--text-3); line-height: 1.45;
 }
 .ghost-detected svg { flex: 0 0 auto; }
 .ghost-alt {
-  margin-top: var(--s1);
-  min-height: 44px; padding: 10px var(--s4);
-  border-radius: var(--r-sm);
-  background: rgba(255, 69, 58, 0.1);
-  box-shadow: inset 0 0 0 1px rgba(255, 69, 58, 0.38);
+  grid-column: 2; grid-row: 5;
+  width: 100%;
+  margin-top: var(--s3);
+  min-height: 40px; padding: 8px var(--s4);
+  border-radius: 10px;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px rgba(255, 69, 58, 0.5);
   color: var(--danger-text);
-  font-size: 14px; font-weight: 700; line-height: 1.4;
+  font-size: 13px; font-weight: 700; line-height: 1.45;
   transition: background var(--dur-micro) var(--ease-standard), transform var(--dur-micro) var(--ease-spring);
 }
-.ghost-alt:hover { background: rgba(255, 69, 58, 0.16); }
+.ghost-alt:hover { background: rgba(255, 69, 58, 0.12); }
 .ghost-alt:active { transform: scale(0.99); }
 .ghost-window-note {
   margin: var(--s3) 0 0;
-  font-size: 12px; line-height: 1.5; color: var(--text-3);
+  font-size: 12px; line-height: 1.55; color: var(--text-3);
 }
 
 /* ghost feed empty state + voxel mascot */
@@ -639,11 +831,11 @@
 :root[data-theme="light"] .tone-access .alert-glyph { color: #0058b0; }
 
 .alert-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
-.alert-heading { margin: 0; font-size: 15px; font-weight: 700; line-height: 1.35; color: var(--text); }
-.alert-text { margin: 0; font-size: 14px; line-height: 1.5; color: var(--text-2); overflow-wrap: anywhere; }
+.alert-heading { margin: 0; font-size: 15px; font-weight: 700; line-height: 1.4; color: var(--text); }
+.alert-text { margin: 0; font-size: 14px; line-height: 1.55; color: var(--text-2); overflow-wrap: anywhere; }
 .alert-access {
   margin: 2px 0 0; display: flex; align-items: center; gap: 6px;
-  font-size: 12px; font-weight: 600; line-height: 1.4; color: var(--you);
+  font-size: 12px; font-weight: 600; line-height: 1.45; color: var(--you);
 }
 :root[data-theme="light"] .alert-access { color: #0058b0; }
 .alert-access svg { flex: 0 0 auto; }
@@ -654,42 +846,48 @@
 }
 .alert-affects {
   font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
-  color: var(--text-3); line-height: 1.5;
+  color: var(--text-3); line-height: 1.6;
 }
 .alert-route-chip {
   padding: 2px 8px; border-radius: 7px;
   background: var(--surface-2); color: var(--text-2);
-  font-size: 12px; font-weight: 700; line-height: 1.5;
+  font-size: 12px; font-weight: 700; line-height: 1.6;
 }
-.alert-more { font-size: 12px; font-weight: 600; color: var(--text-3); line-height: 1.5; }
+.alert-more { font-size: 12px; font-weight: 600; color: var(--text-3); line-height: 1.6; }
 .alert-skeleton { height: 92px; border-radius: var(--r-md); }
 
 /* ============================ tab bar ============================ */
+/* PHONE: an opaque bar at the foot of the app, OUTSIDE the scrolling region, so
+   content is clipped above it and never painted underneath. */
 .tabbar {
   flex: 0 0 auto;
   display: flex;
   align-items: stretch;
   height: calc(var(--tab-h) + env(safe-area-inset-bottom, 0px));
   padding-bottom: env(safe-area-inset-bottom, 0px);
-  border-radius: 0;
+  background: var(--side-bg);
+  box-shadow: inset 0 1px 0 var(--hairline);
 }
 .tab {
   flex: 1 1 0;
+  min-width: 0;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 3px;
+  padding: 0 4px;
   color: var(--text-3);
   transition: color var(--dur-micro) var(--ease-standard), transform var(--dur-micro) var(--ease-spring);
 }
 .tab:active { transform: translateY(1px); }
 .tab-icon { position: relative; display: inline-flex; }
-.tab-label { font-size: 11px; font-weight: 600; }
-.tab-active { color: var(--brand); }
+.tab-label { font-size: 11px; font-weight: 600; line-height: 1.45; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab-active { color: var(--accent); }
 /* unread dot — only painted when the agency actually has active alerts */
 .tab-dot {
-  position: absolute; top: -1px; right: -2px;
+  position: absolute; top: -1px; right: -3px;
   width: 8px; height: 8px; border-radius: 50%;
   background: var(--danger);
-  box-shadow: 0 0 0 2px var(--bg);
+  box-shadow: 0 0 0 2px var(--side-bg);
 }
 
 /* ============================ settings sheet ============================ */
@@ -710,17 +908,17 @@
 }
 .sheet-grip { width: 40px; height: 4px; border-radius: 999px; background: var(--hairline-2); margin: 0 auto var(--s3); }
 .sheet-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--s4); }
-.sheet-title { font-size: 20px; font-weight: 800; margin: 0; }
+.sheet-title { font-size: 20px; font-weight: 800; margin: 0; line-height: 1.35; }
 .sheet-close { min-height: 38px; padding: 8px 16px; }
 .settings-body { display: flex; flex-direction: column; gap: var(--s5); overflow-y: auto; }
 
 .set-row { display: flex; align-items: center; justify-content: space-between; gap: var(--s4); }
-.set-label { font-size: 15px; font-weight: 600; color: var(--text); }
+.set-label { font-size: 15px; font-weight: 600; color: var(--text); line-height: 1.4; }
 .segmented { display: inline-flex; background: var(--surface-2); border-radius: var(--r-sm); padding: 3px; gap: 2px; }
 .seg {
   padding: 7px 13px; border-radius: 8px;
   font-size: 13px; font-weight: 600; color: var(--text-2);
-  white-space: nowrap;
+  white-space: nowrap; line-height: 1.4;
   transition: background var(--dur-micro) var(--ease-standard), color var(--dur-micro) var(--ease-standard);
 }
 .seg-on { background: var(--brand); color: var(--on-brand); }
@@ -738,16 +936,17 @@
   transition: transform var(--dur-micro) var(--ease-spring);
 }
 .switch-on .switch-knob { transform: translateX(20px); }
-.settings-privacy { font-size: 12px; color: var(--text-3); line-height: 1.5; margin: var(--s2) 0 0; }
+.settings-privacy { font-size: 12px; color: var(--text-3); line-height: 1.55; margin: var(--s2) 0 0; }
 
 /* ============================ catch mode ============================ */
-/* Mobile: the sheet fills the screen (align-items:stretch beats the scrim's
-   flex-end). Desktop turns it into a centred floating card — see the media query. */
 .catch-scrim { align-items: stretch; }
+/* Deliberately NOT .glass — translucency over the 0.45 scrim drops --text-3 under AA. */
 .catch-sheet {
   width: 100%;
   display: flex; flex-direction: column; min-height: 0;
   border-radius: 0;
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-float), var(--inner-top);
   padding: calc(env(safe-area-inset-top, 0px) + var(--s5)) var(--s5) calc(var(--s6) + env(safe-area-inset-bottom, 0px));
   animation: sheet-up var(--dur-reveal) var(--ease-out) both;
 }
@@ -756,8 +955,9 @@
   gap: var(--s3); margin-bottom: var(--s5);
 }
 .catch-id { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
-.catch-dest { font-size: 14px; font-weight: 600; color: var(--text-2); line-height: 1.35; }
-.catch-close { flex: 0 0 auto; min-height: 38px; padding: 8px 16px; }
+.catch-dest { font-size: 14px; font-weight: 600; color: var(--text-2); line-height: 1.4; }
+.catch-close { flex: 0 0 auto; min-height: 44px; padding: 10px 16px; }
+.catch-body:focus-visible { outline-offset: -2px; }
 
 .catch-body { display: flex; flex-direction: column; gap: var(--s5); overflow-y: auto; }
 
@@ -770,8 +970,6 @@
 .catch-detail { margin: 0; font-size: 16px; line-height: 1.5; color: var(--text-2); }
 .catch-retry { margin-top: var(--s2); }
 
-/* Verdict tone. The three degraded states stay in body colour on purpose: they
-   are not alarms, they are the absence of a claim. */
 .verdict-comfortable .catch-headline { color: var(--live-text); }
 .verdict-tight .catch-headline { color: var(--warn-text); }
 .verdict-missed .catch-headline { color: var(--danger-text); }
@@ -792,35 +990,38 @@
   background: var(--brand-soft); color: var(--brand);
 }
 .cev-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-/* Wrapping, never truncating: every line here is a claim's receipt, and half a
-   receipt in French at 390px is worse than two lines. */
-.cev-line { margin: 0; font-size: 14px; font-weight: 700; line-height: 1.4; color: var(--text); overflow-wrap: anywhere; }
-.cev-sub { margin: 0; font-size: 12px; line-height: 1.45; color: var(--text-2); overflow-wrap: anywhere; }
-.catch-basis { margin: 0; font-size: 12px; line-height: 1.55; color: var(--text-3); }
+/* Wrapping, never truncating: every line here is a claim's receipt. */
+.cev-line { margin: 0; font-size: 14px; font-weight: 700; line-height: 1.45; color: var(--text); overflow-wrap: anywhere; }
+.cev-sub { margin: 0; font-size: 12px; line-height: 1.5; color: var(--text-2); overflow-wrap: anywhere; }
+.catch-basis { margin: 0; margin-top: auto; padding-top: var(--s5); font-size: 12px; line-height: 1.55; color: var(--text-3); }
 
 /* ============================ about & credits ============================ */
-.about-sheet { max-height: 92vh; }
+.about-sheet {
+  max-height: 92vh;
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-float), var(--inner-top);
+}
+.about-sheet .sheet-close { min-height: 44px; }
 .about-body { display: flex; flex-direction: column; gap: var(--s5); overflow-y: auto; }
+.about-body:focus-visible { outline-offset: -2px; }
 .abt-section { display: flex; flex-direction: column; gap: var(--s2); }
 .abt-h {
   margin: 0;
   font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
-  color: var(--text-3); line-height: 1.5;
+  color: var(--text-3); line-height: 1.6;
 }
 .abt-lede { margin: 0; font-size: 16px; font-weight: 600; line-height: 1.5; color: var(--text); }
-.abt-p { margin: 0; font-size: 14px; line-height: 1.55; color: var(--text-2); overflow-wrap: anywhere; }
+.abt-p { margin: 0; font-size: 14px; line-height: 1.6; color: var(--text-2); overflow-wrap: anywhere; }
 .abt-b { color: var(--text); font-weight: 700; }
-.abt-note { margin: 0; font-size: 12px; line-height: 1.55; color: var(--text-3); overflow-wrap: anywhere; }
-.abt-built { margin: 0; font-size: 15px; font-weight: 700; color: var(--text); line-height: 1.45; }
+.abt-note { margin: 0; font-size: 12px; line-height: 1.6; color: var(--text-3); overflow-wrap: anywhere; }
+.abt-built { margin: 0; font-size: 15px; font-weight: 700; color: var(--text); line-height: 1.5; }
 .abt-warn { display: flex; align-items: flex-start; gap: 6px; color: var(--warn-text); }
 .abt-warn svg { flex: 0 0 auto; margin-top: 3px; }
-/* The licence's own required wording, set apart so it reads as a quotation of the
-   licence rather than as our prose. */
 .abt-attrib {
   margin: 0; padding: 10px var(--s4);
   border-radius: var(--r-sm);
   background: var(--surface-2); color: var(--text);
-  font-size: 12.5px; font-weight: 600; line-height: 1.5;
+  font-size: 12.5px; font-weight: 600; line-height: 1.55;
   overflow-wrap: anywhere;
 }
 
@@ -833,11 +1034,10 @@
   box-shadow: var(--shadow-card), var(--inner-top);
   min-width: 0;
 }
-/* Five figures in a two-up grid: the last one takes the full width rather than
-   leaving a hole. */
 .abt-stat:last-child { grid-column: 1 / -1; }
-.abt-stat-num { font-size: 20px; font-weight: 800; line-height: 1.3; color: var(--text); }
-.abt-stat-from { font-size: 11px; line-height: 1.45; color: var(--text-3); }
+.abt-stat-num { font-size: 20px; font-weight: 800; line-height: 1.35; color: var(--text); }
+.abt-stat-none { font-size: 20px; font-weight: 500; color: var(--text-3); }
+.abt-stat-from { font-size: 11px; line-height: 1.5; color: var(--text-3); }
 .abt-stat-skeleton { height: 84px; border-radius: var(--r-md); }
 
 .set-link { width: 100%; min-height: 44px; text-align: left; color: var(--text-2); }
@@ -846,7 +1046,7 @@
 /* ============================ offline ============================ */
 .state-offline .state-glyph { background: rgba(255, 69, 58, 0.14); color: var(--danger-text); }
 /* Must come after .state-body: same specificity, later wins. */
-.state-fine { font-size: 12.5px; line-height: 1.5; color: var(--text-3); }
+.state-fine { font-size: 12.5px; line-height: 1.55; color: var(--text-3); }
 
 /* ============================ skeletons ============================ */
 .stophead-skeleton { height: 56px; border-radius: var(--r-md); }
@@ -864,17 +1064,133 @@
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes sheet-up { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
 
-/* ============================ desktop ============================ */
-@media (min-width: 768px) {
-  .only-mobile { display: none; }
-  .only-desktop { display: block; }
+/* ======================================================================== */
+/* ============================ DESKTOP SPLIT ============================= */
+/* ======================================================================== */
+@media (min-width: 880px) {
+  /* Utility, so it must win over whatever the element's own rule sets. */
+  .only-mobile { display: none !important; }
 
-  .topbar { position: sticky; top: 0; z-index: 10; }
-  .app-main { padding: var(--s6) var(--s6) var(--s8); }
-  .app-col { max-width: 600px; }
-  .map-card { aspect-ratio: 16 / 9; }
-  .tabbar { justify-content: center; gap: var(--s10); }
-  .tab { flex: 0 0 96px; }
+  /* A two-column split with no gap: sidebar left, map bleeding to the window's
+     right and bottom edges. The tab bar is absolutely placed at the foot of the
+     sidebar (see below), and .pane-side reserves exactly its height, so the
+     sidebar's scrolling region ends where the tab bar begins. */
+  .app-body {
+    display: grid;
+    grid-template-columns: var(--side-w) minmax(0, 1fr);
+    /* minmax(0,1fr), not the implicit `auto`: an auto row takes its base size from
+       the sidebar's content, which would push the row past the container and let
+       `overflow:hidden` clip instead of letting .side-scroll scroll. */
+    grid-template-rows: minmax(0, 1fr);
+    overflow: hidden;
+  }
+  .pane-side {
+    grid-column: 1; grid-row: 1;
+    display: flex; flex-direction: column;
+    min-height: 0;
+    padding-bottom: var(--tab-clear);
+    background: var(--side-bg);
+    border-radius: 0;
+    box-shadow: inset -1px 0 0 var(--hairline);
+  }
+  .side-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .side-scroll::-webkit-scrollbar { width: 0; height: 0; }
+  .side-inner { padding: var(--s4) var(--s4) var(--s5); max-width: none; }
+  .side-scroll > .side-inner { padding-top: var(--s4); }
+
+  .pane-map { grid-column: 2; grid-row: 1; min-width: 0; }
+  .map-card {
+    position: absolute; inset: 0;
+    aspect-ratio: auto;
+    border-radius: 0;
+    margin: 0;
+    box-shadow: none;
+  }
+  .maplibregl-ctrl-attrib { border-radius: 8px 0 0 0 !important; max-width: 46%; }
+
+  /* Tab bar: inside the sidebar, at its foot, full sidebar width — not floating. */
+  .tabbar {
+    position: absolute;
+    left: 0; bottom: 0;
+    width: var(--side-w);
+    z-index: 6;
+    box-shadow: inset 0 1px 0 var(--hairline), inset -1px 0 0 var(--hairline);
+  }
+  /* The fade belongs to the sidebar's scroll edge, not the whole window. */
+  .app::after {
+    right: auto;
+    width: var(--side-w);
+    background: linear-gradient(to bottom, transparent, var(--side-bg));
+  }
+
+  .nearby-panel { gap: var(--s5); }
+  .section-head { margin-bottom: var(--s2); }
+
+  /* CURRENT STOP is a card on the sidebar. */
+  .stop-head {
+    padding: var(--s3);
+    border-radius: 14px;
+    background: var(--surface);
+    box-shadow: var(--shadow-card), var(--inner-top);
+  }
+  .stop-name { font-size: 15.5px; font-weight: 700; letter-spacing: -0.01em; }
+  .stop-sub { font-size: 12.5px; margin-top: 2px; }
+  .stop-save {
+    width: 34px; height: 34px;
+    color: var(--text-3);
+    background: none;
+    box-shadow: none;
+  }
+  .stop-save:hover { color: var(--accent); background: none; }
+  .stop-save.is-saved { color: var(--accent); }
+
+  /* Departure card: identity block + right-hand times, then a FULL-WIDTH action
+     bar across the foot. */
+  .dep-card {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    padding: var(--s4);
+    row-gap: var(--s2);
+  }
+  .dep-info { grid-column: 1; grid-row: 1; gap: 2px; }
+  .dep-times { grid-column: 2; grid-row: 1; align-items: flex-end; gap: var(--s2); }
+  .dep-evidence-row { grid-column: 1 / -1; grid-row: 2; }
+  .dep-action { grid-column: 1 / -1; grid-row: 3; }
+
+  /* The destination takes its own line under badge + route name — and it is the
+     card's focal line, so it WRAPS instead of ellipsising. Nothing is cut. */
+  .dep-id { gap: 3px var(--s2); }
+  .dep-route { font-size: 13px; font-weight: 500; color: var(--text-2); }
+  .dep-arrow { display: none; }
+  .dep-dest {
+    flex: 1 0 100%;
+    font-size: 16.5px; font-weight: 800; letter-spacing: -0.01em; line-height: 1.3;
+  }
+  .dep-num { font-size: 27px; }
+  .dep-clock { font-size: 17px; }
+
+  .dep-track {
+    width: 100%;
+    justify-content: flex-start;
+    min-height: 40px;
+    padding: 0 var(--s3);
+    background: var(--surface-2);
+    color: var(--text);
+    box-shadow: inset 0 0 0 1px var(--hairline);
+    border-radius: 10px;
+  }
+  .dep-track-label { flex: 1 1 auto; max-width: none; text-align: left; }
+  .dep-track svg:last-child { color: var(--text-3); }
+  .dep-track-live { background: var(--surface-2); color: var(--text); }
+  .dep-track-live:hover { background: var(--brand-soft); color: var(--accent); }
+  .dep-track-sched:hover { background: var(--surface); }
 
   /* Catch stops being a full-screen sheet and becomes a floating card. */
   .catch-scrim { align-items: center; }
@@ -884,5 +1200,40 @@
     border-radius: var(--r-lg);
     padding: var(--s5) var(--s6) var(--s6);
   }
-  .catch-headline { font-size: 36px; }
+  .catch-headline { font-size: 34px; }
+
+  .alerts-title { font-size: 21px; }
+  .placeholder-view { min-height: 32vh; }
+}
+
+/* ======================================================================== */
+/* ============================ PHONE ONLY ================================ */
+/* ======================================================================== */
+/* `not all and (min-width: …)` rather than a max-width with a fractional epsilon:
+   the two queries are then exact complements and there is no sliver of width where
+   both the desktop and the phone variant of a control could render at once. */
+@media not all and (min-width: 880px) {
+  /* Utility, so it must win over whatever the element's own rule sets. */
+  .only-desktop { display: none !important; }
+
+  /* THE scroll container on a phone is the whole column. It ends above the tab
+     bar (a flex sibling of .app-body), and carries the tab clearance as bottom
+     padding so the last card can always be scrolled fully clear of it. */
+  .app-body {
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .app-body::-webkit-scrollbar { width: 0; height: 0; }
+  .side-scroll { overflow: visible; }
+  /* No --tab-clear here: the tab bar is a flex SIBLING of .app-body, so it is
+     already outside the scroll region and content can never reach under it.
+     Adding the bar's height again would leave 62px of dead space under the last
+     card. This is breathing room, not clearance. */
+  .side-inner { padding-bottom: var(--s6); }
+
+  /* Keep the header, the map and the list on one column at tablet widths, so the
+     three do not disagree about where the page's left edge is. */
+  .mobile-top, .pane-map, .side-inner { max-width: 620px; margin-inline: auto; }
 }

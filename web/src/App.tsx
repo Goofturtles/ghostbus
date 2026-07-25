@@ -1,16 +1,18 @@
-import { useEffect, useState, lazy, Suspense } from 'react';
+import { useEffect, useState, useCallback, lazy, Suspense } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { DepartureDto } from '@shared/types';
 import { useStore } from './store';
 import { useLive } from './hooks/useLive';
+import { useMedia, DESKTOP_QUERY } from './hooks/useMedia';
 import { TopBar, MobileTopStrip } from './components/TopBar';
 import { TabBar } from './components/TabBar';
 import { NearbyPanel } from './components/NearbyPanel';
 import { AlertsPanel } from './components/AlertsPanel';
+import { SavedPanel } from './components/SavedPlaces';
 import { SettingsSheet } from './components/SettingsSheet';
 import { AboutSheet } from './components/AboutSheet';
 import { CatchView } from './components/CatchView';
-import { RouteIcon, BookmarkIcon, LayersIcon } from './components/icons';
+import { RouteIcon, LayersIcon } from './components/icons';
 
 // The real map (maplibre-gl) is code-split so it never lands in the initial JS
 // budget — it loads after first paint. The styled placeholder is the fallback.
@@ -49,51 +51,69 @@ export default function App() {
   const setTab = useStore((s) => s.setTab);
   const mapExpanded = useStore((s) => s.mapExpanded);
   const start = useLive((s) => s.start);
+  const isDesktop = useMedia(DESKTOP_QUERY);
 
   useEffect(() => start(), [start]);
 
   // The departure the rider is trying to catch. Identity only — CatchView re-reads
   // the live numbers off the board on every refresh, so this never goes stale.
   const [catching, setCatching] = useState<DepartureDto | null>(null);
+  // Stable so CatchView's focus-management effect never re-runs on an App render.
+  const closeCatch = useCallback(() => setCatching(null), []);
 
   const openRoute = () => setTab('plan');
+
+  // On the desktop split the map is the right-hand half of the app and stays
+  // mounted across tab changes. On a phone it is a card inside the nearby
+  // column, so it mounts and unmounts with that tab exactly as before.
+  const showMap = isDesktop || tab === 'nearby';
 
   return (
     <div className={`app ${mapExpanded ? 'map-is-expanded' : ''}`}>
       <h1 className="sr-only">{t('brand.ghost')}{t('brand.bus')} — {t('tagline')}</h1>
-      <div className="only-desktop"><TopBar /></div>
-      <div className="only-mobile"><MobileTopStrip /></div>
+      <TopBar />
 
-      <main className="app-main scroll" aria-label={t(`nav.${tab}`)}>
-        <div className="app-col">
-          {tab === 'nearby' && (
-            <div className="reveal">
-              <Suspense fallback={<MapPlaceholder />}>
-                <MapCard />
-              </Suspense>
-              <div className="sheet">
-                <NearbyPanel onOpen={openRoute} onCatch={setCatching} />
-              </div>
+      <div className="app-body">
+        <MobileTopStrip />
+
+        {showMap && (
+          <div className="pane-map">
+            <Suspense fallback={<MapPlaceholder />}>
+              <MapCard />
+            </Suspense>
+          </div>
+        )}
+
+        <div className="pane-side">
+          <main className="side-scroll" aria-label={t(`nav.${tab}`)}>
+            <div className="side-inner">
+              {tab === 'nearby' && (
+                <div className="reveal">
+                  <NearbyPanel onOpen={openRoute} onCatch={setCatching} />
+                </div>
+              )}
+              {tab === 'plan' && (
+                <div className="reveal">
+                  <PlaceholderView icon={<RouteIcon width={26} height={26} />} title={t('plan.title')} body={t('plan.body')} />
+                </div>
+              )}
+              {tab === 'saved' && (
+                <div className="reveal"><SavedPanel /></div>
+              )}
+              {tab === 'alerts' && (
+                <div className="reveal">
+                  <AlertsPanel />
+                </div>
+              )}
             </div>
-          )}
-          {tab === 'plan' && (
-            <PlaceholderView icon={<RouteIcon width={26} height={26} />} title={t('plan.title')} body={t('plan.body')} />
-          )}
-          {tab === 'saved' && (
-            <PlaceholderView icon={<BookmarkIcon width={26} height={26} />} title={t('saved.title')} body={t('saved.body')} />
-          )}
-          {tab === 'alerts' && (
-            <div className="reveal">
-              <AlertsPanel />
-            </div>
-          )}
+          </main>
         </div>
-      </main>
+      </div>
 
       <TabBar />
       <SettingsSheet />
       <AboutSheet />
-      {catching && <CatchView dep={catching} onClose={() => setCatching(null)} />}
+      {catching && <CatchView dep={catching} onClose={closeCatch} />}
     </div>
   );
 }

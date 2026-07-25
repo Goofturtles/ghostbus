@@ -4,6 +4,8 @@ import { useLive, liveNow, selectedNearbyStop } from '@/hooks/useLive';
 import { StopHeader } from './StopHeader';
 import { DepartureRow } from './DepartureRow';
 import { OfflineCard } from './OfflineCard';
+import { GhostEventCard } from './AlertsPanel';
+import { SavedPlacesSection } from './SavedPlaces';
 import { LocateIcon, WarningIcon } from './icons';
 import { fmtServiceDate } from '@/lib/format';
 
@@ -34,6 +36,7 @@ export function NearbyPanel({ onCatch, onOpen }: {
   const healthError = useLive((s) => s.healthError);
   const geoStatus = useLive((s) => s.geoStatus);
   const online = useLive((s) => s.online);
+  const ghosts = useLive((s) => s.ghosts);
   const requestLocation = useLive((s) => s.requestLocation);
   const stop = selectedNearbyStop();
   const distanceM = stop?.distanceM;
@@ -78,29 +81,44 @@ export function NearbyPanel({ onCatch, onOpen }: {
   const rows = byRoute(arr.departures);
   const nextRows = nextService ? byRoute(nextService.departures).slice(0, 6) : [];
 
+  // The reference puts an alert card straight under the departures. Ours is a real
+  // ghost event off the live feed, and only one that touches a route on THIS board
+  // — a cancellation three neighbourhoods away is not this stop's news. No match,
+  // no card; nothing here is ever synthesised to fill the slot.
+  const boardRoutes = new Set(arr.departures.map((d) => d.routeId).filter(Boolean));
+  const localGhost = ghosts?.events.find((e) => e.routeId && boardRoutes.has(e.routeId)) ?? null;
+
   return (
     <div className="nearby-panel">
       {geoStatus === 'default' && (
         <button className="loc-note" onClick={requestLocation}>
           <LocateIcon width={15} height={15} />
-          <span className="truncate">{t('empty.defaultLocation')}</span>
+          <span>{t('empty.defaultLocation')}</span>
         </button>
       )}
 
       {healthError && (
         <div className="feed-banner" role="status">
           <WarningIcon width={15} height={15} aria-hidden />
-          <span className="truncate">{t('status.feedDownGeneric')}</span>
+          <span>{t('status.feedDownGeneric')}</span>
         </div>
       )}
 
-      <section aria-label={t('sections.currentStop')}>
-        <StopHeader arr={arr} distanceM={distanceM} />
+      <section className="gb-section" aria-labelledby="gb-stop-head">
+        <div className="section-head only-desktop">
+          <span className="eyebrow" id="gb-stop-head">{t('sections.currentStop')}</span>
+        </div>
+        <StopHeader
+          arr={arr}
+          distanceM={distanceM}
+          headsigns={(arr.departures.length > 0 ? arr.departures : nextService?.departures ?? [])
+            .map((d) => d.directionLabel)}
+        />
       </section>
 
-      <section aria-label={t('sections.nearbyDepartures')}>
-        <div className="section-head">
-          <span className="eyebrow eyebrow-icon"><LocateIcon width={13} height={13} />{t('sections.nearbyDepartures')}</span>
+      <section className="gb-section" aria-labelledby="gb-dep-head">
+        <div className="section-head only-desktop">
+          <span className="eyebrow" id="gb-dep-head">{t('sections.nearbyDepartures')}</span>
         </div>
 
         {rows.length > 0 ? (
@@ -128,10 +146,16 @@ export function NearbyPanel({ onCatch, onOpen }: {
         )}
       </section>
 
+      {localGhost && (
+        <section className="gb-section" aria-label={t('sections.ghosts')}>
+          <GhostEventCard event={localGhost} />
+        </section>
+      )}
+
       {rows.length === 0 && nextRows.length > 0 && (
-        <section aria-label={t('sections.nextService')}>
+        <section className="gb-section" aria-labelledby="gb-next-head">
           <div className="section-head">
-            <span className="eyebrow">{t('sections.nextService')}</span>
+            <span className="eyebrow" id="gb-next-head">{t('sections.nextService')}</span>
             <span className="eyebrow eyebrow-date">{fmtServiceDate(nextRows[0].first.scheduledMs)}</span>
           </div>
           <div className="dep-list" role="list">
@@ -146,6 +170,8 @@ export function NearbyPanel({ onCatch, onOpen }: {
           </div>
         </section>
       )}
+
+      <SavedPlacesSection />
     </div>
   );
 }

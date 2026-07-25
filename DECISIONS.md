@@ -672,3 +672,107 @@ loaded board covers 20260726..20260905"* — a string deliberately distinct from
   both be running — and would materially strengthen the weakest part of this design. Filed, not done.
 - **`METHODS.md` / `ARCHITECTURE.md`** describe the old reconstruct-from-delay algorithm and are now
   wrong. They are not owned by this workstream; they need updating to match this section.
+
+---
+
+## §30 — Rebuilding the shell to the reference mockup, and reading a headsign like a rider
+
+The user supplied a full reference mockup (desktop + mobile light + mobile dark) with two
+instructions: *"there's a lot of overlapping stuff fix it there should be absolutely nothing
+overlapping"* and *"do not stop until you can exactly replicate those pictures with everything."*
+`DESIGN-TARGET.md` is the transcription; `ghostbus-design-reference.png` is the image itself and
+wins wherever the two differ.
+
+### One DOM, two shapes
+
+The shell is now `topbar / app-body(pane-map + pane-side) / tabbar`, and CSS — not JavaScript —
+reflows it at a single 880px breakpoint:
+
+- **Phone** — one scrolling column: header, search + filter row, a full-bleed map card, the stop
+  header, compact three-column departure rows, the alert card, saved places. `.app-body` is the
+  scroll container; `.tabbar` is an opaque flex sibling *outside* it.
+- **Desktop** — a fixed 320px sidebar with the tab bar absolutely placed at **its** foot, and the
+  map full-bleed to the window's right and bottom edges, no gap and no rounded card.
+  `.pane-side` reserves exactly `--tab-clear`, so `.side-scroll` ends where the tab bar begins.
+
+The breakpoint utilities (`.only-desktop` / `.only-mobile`) are declared **only inside the two
+media queries**, as exact complements (`not all and (min-width: 880px)` / `min-width: 880px`), so
+there is no width at which both variants of a control render — and the save control is one button
+with two glyphs rather than two buttons.
+
+### The overlap complaint was real; the mechanism was not DOM overlap
+
+The first shared probe compared `getBoundingClientRect()` directly. An element scrolled past a
+scroll container's edge still reports a position down there, so every row below the fold read as
+"overlapping" the tab bar beneath it. Three separate measurements settled it:
+
+- geometry: `.app-body` is `[124, 784]` with `scrollTop 0`, `scrollHeight 935`; `.tabbar` is
+  static at `[784, 844]`. They never intersect. The "overlaps" were all one card straddling the
+  clip boundary.
+- a control experiment (`overflow:auto` / `overflow:clip` / `contain:paint` /
+  `content-visibility:auto`): **no** CSS clipping mechanism alters a descendant's layout rect, so
+  no implementation could have driven that probe to zero. It penalised any scrolling list next to
+  a bar and rewarded short content.
+- the corrected probe (rects intersected with every clipping ancestor) returns `trueOverlaps: 0`.
+
+What the user actually saw was **a scroll edge with no affordance**: a card guillotined at the bar
+reads as sliding underneath it. Fixed with a decorative `.app::after` fade over the scroll
+container's bottom edge — window-wide on the phone, sidebar-width on desktop. A pseudo-element, so
+it adds nothing to the DOM and nothing to the a11y tree.
+
+Two genuine overlaps *were* found and fixed along the way:
+
+- `.topbar-right` was `flex: 1 1 auto` **and** width-capped, which parks a grow item beside its
+  sibling with dead space to its right: at 1280px the Live pill and avatar sat at `x=184..614`,
+  directly under the centred search pill. `margin-left: auto` eats the slack instead.
+- `.sr-only` briefly dropped `overflow:hidden` for `clip-path`. The nowrap text then contributed
+  its full width to the document's scroll area — 911px of `scrollWidth` in a 390px viewport, mostly
+  from the map's own sr-only description. It keeps `overflow:hidden`, and takes `height:auto` so a
+  deliberately-unpainted box is not also a box whose content is cut off.
+
+### Reading the headsign (`web/src/lib/headsign.ts`)
+
+The TTC publishes one string that packs three facts: `"South - 310 Spadina towards Union Station"`.
+Rendered whole, the only part a rider is reading for — the destination — got whatever width was
+left after the part that repeats the badge, and was measured cut mid-word at `South - 310 Spa…` in
+96px. So the string is split at the agency's own separators:
+
+- `direction` — the leading cardinal, **only** when followed by a real separator, so a destination
+  that merely starts with a compass word ("West Mall") is not mistaken for one.
+- `destination` — what follows `towards`/`toward`. Deliberately not a bare `to`, which occurs
+  inside real place names.
+- anything that does not match is returned **verbatim**. This never guesses and never drops a fact
+  it cannot account for.
+
+`stopDirection()` prints a direction on a *stop* only when every departure on that board agrees on
+one cardinal. A stop serving both directions has no single direction, and printing one of them
+sends a rider to the wrong side of King St. The four cardinals are translated (`direction.*` in all
+three locales) because translating the agency's compass word is not inventing a fact.
+
+### No ellipsis on any line that carries a fact
+
+Reserved column widths already make collision impossible, so the text simply wraps at word
+boundaries. `overflow-wrap: break-word` only ever splits a word wider than its whole column.
+Each fact in the stop's sub-line is an atomic `.stop-fact` (`white-space: nowrap`), so the line
+breaks *between* facts and "1 min walk" can never wrap as "1 min" / "walk".
+
+### Where the reference is not followed, and why
+
+- **`Track` on scheduled rows.** The mockup labels every row action `Track`. On a live row the
+  vehicle is genuinely in the feed and `Track` is a promise the data keeps, so live rows use it.
+  Schedule-only rows keep `View route`: offering to track a vehicle no feed can see is the one
+  thing this app refuses to do. The colour carries the same claim — solid brand when live, quiet
+  when not.
+- **The evidence row stays.** The mockup's illustrative rows have no evidence layer. Deleting ours
+  to match the picture would delete the thing GhostBus exists to do, so it stays, quiet, on its own
+  full-width line.
+- **Saved Places is not seeded.** `savedStops` defaulted to `['union']`, which made the section look
+  populated on a device that had saved nothing. It now defaults to `[]` (and is sanitised on read,
+  for the same reason `pace` is), so an empty list ships the honest empty state.
+- **The stop's sub-line is not the mockup's.** It leads with the direction in the accent colour as
+  the reference does, but the remaining facts are the real ones for the real stop.
+- **The traffic lights are decoration.** No button element, no handler, `aria-hidden` — nothing
+  there can be mistaken for a window control that does not exist.
+- **`--accent`.** `--brand` (`#8944ab`) is a fill colour; as 12–13px text on the near-black
+  background it only reaches ~4:1, and the reference's accent reads visibly brighter than the
+  wordmark fill. `--accent` (`#b168e0` dark / `#7b2f9e` light) is the one used for words.

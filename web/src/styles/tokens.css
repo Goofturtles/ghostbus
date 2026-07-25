@@ -33,8 +33,15 @@
   /* Radii */
   --r-sm: 10px; --r-md: 16px; --r-lg: 22px; --r-pill: 980px;
 
-  --tab-h: 60px;
-  --topbar-h: 58px;
+  --tab-h: 62px;
+  --topbar-h: 60px;
+  /* Desktop split: a fixed sidebar, the map takes everything else. The reference
+     window puts the sidebar at ~30% of a ~1020px window — i.e. ~310px — and calls
+     it fixed, so it stays 320px at every desktop width instead of tracking vw. */
+  --side-w: 320px;
+  /* Bottom inset the scrolling regions must clear so nothing can hide behind the
+     tab bar. One definition, used by every scroll container. */
+  --tab-clear: calc(var(--tab-h) + env(safe-area-inset-bottom, 0px));
 
   /* Fonts — system stack only, zero webfont downloads. */
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
@@ -48,9 +55,16 @@
   color-scheme: dark;
   --bg: #0b0e1a;
   --bg-deep: #070912;
+  /* The desktop sidebar reads one step deeper than the cards it holds, exactly as
+     in the reference: cards float on it rather than merging with it. */
+  --side-bg: #0c0f1c;
   --surface: rgba(24, 28, 44, 0.72);
   --surface-solid: #171b2b;
   --surface-2: rgba(30, 35, 54, 0.6);
+  /* Text-safe accent. --brand (#8944ab) is a fill colour: as 12–13px text on the
+     near-black background it only reaches ~4:1, and the reference's accent reads
+     visibly brighter than the wordmark fill. This is the one used for words. */
+  --accent: #b168e0;
   --glass: rgba(20, 24, 40, 0.66);
   --glass-strong: rgba(20, 24, 40, 0.82);
   --hairline: rgba(255, 255, 255, 0.06);
@@ -81,6 +95,8 @@
   color-scheme: light;
   --bg: #eef0f5;
   --bg-deep: #e4e7ef;
+  --side-bg: #f4f5f9;
+  --accent: #7b2f9e;
   --surface: rgba(255, 255, 255, 0.86);
   --surface-solid: #ffffff;
   --surface-2: rgba(255, 255, 255, 0.7);

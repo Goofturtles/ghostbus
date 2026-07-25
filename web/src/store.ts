@@ -21,6 +21,10 @@ function ls<T>(key: string, fallback: T): T {
     return fallback;
   }
 }
+/** Always a list of stop ids. Anything else in `gb.saved` is discarded. */
+function savedIds(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+}
 function save(key: string, v: unknown) {
   try {
     localStorage.setItem(key, JSON.stringify(v));
@@ -84,7 +88,13 @@ export const useStore = create<State>((set, get) => ({
   largerText: ls('gb.largerText', false),
   highContrast: ls('gb.highContrast', false),
   voice: ls('gb.voice', false),
-  savedStops: ls<string[]>('gb.saved', ['union']),
+  // No seed. Saved Places is a list of stops the rider actually starred; a
+  // pre-filled 'union' made the section look populated on a device that had
+  // saved nothing, which is exactly the kind of decorative fiction this app
+  // does not ship. Empty means empty, and the UI says so.
+  // Sanitised for the same reason `pace` is: localStorage is writable by anything,
+  // and Saved Places now maps over this array on first paint.
+  savedStops: savedIds(ls<unknown>('gb.saved', [])),
   settingsOpen: false,
   aboutOpen: false,
   searchOpen: false,

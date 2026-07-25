@@ -46,7 +46,10 @@ function claimText(t: ReturnType<typeof useTranslation>['t'], event: GhostEventD
   return t(ghostCopyKey(event.kind), { time: fmtClock(event.scheduledStartMs) });
 }
 
-function GhostEventCard({ event }: { event: GhostEventDto }) {
+/** The reference's red alert card. Exported because Nearby shows one too — the
+ *  mockup places it directly under the departures — and both must be the same
+ *  card built from the same real ghost event, not a second lookalike. */
+export function GhostEventCard({ event }: { event: GhostEventDto }) {
   const { t } = useTranslation();
   useTick(30_000);
   const arrivals = useLive((s) => s.arrivals);
@@ -91,26 +94,30 @@ function GhostEventCard({ event }: { event: GhostEventDto }) {
         claim: claimText(t, event),
       })}
     >
-      <div className="ghost-card-head">
-        <span className="ghost-glyph" aria-hidden><WarningIcon width={20} height={20} /></span>
+      {/* The reference's shape: the glyph is a sibling of the text column, not a
+          row inside it, so the three claim lines and the full-width action all
+          share one left edge. */}
+      <span className="ghost-glyph" aria-hidden><WarningIcon width={20} height={20} /></span>
+
+      <div className="ghost-body">
         <ClaimLine event={event} />
+
+        <div className="ghost-card-route">
+          <RouteBadge color={event.color} short={short} size="sm" />
+          {destination && <span className="ghost-dest">{destination}</span>}
+        </div>
+
+        {nextTracked && (
+          <p className="ghost-next">{t('ghost.nextTracked', { time: fmtClock(nextTracked.ms) })}</p>
+        )}
+
+        <p className="ghost-detected">
+          <ClockIcon width={13} height={13} aria-hidden />
+          <span>{detected}</span>
+        </p>
+
+        <button className="ghost-alt" onClick={viewAlternatives}>{t('alert.viewAlternatives')}</button>
       </div>
-
-      <div className="ghost-card-route">
-        <RouteBadge color={event.color} short={short} size="sm" />
-        {destination && <span className="ghost-dest truncate">{destination}</span>}
-      </div>
-
-      {nextTracked && (
-        <p className="ghost-next">{t('ghost.nextTracked', { time: fmtClock(nextTracked.ms) })}</p>
-      )}
-
-      <p className="ghost-detected">
-        <ClockIcon width={13} height={13} aria-hidden />
-        <span className="truncate">{detected}</span>
-      </p>
-
-      <button className="ghost-alt" onClick={viewAlternatives}>{t('alert.viewAlternatives')}</button>
     </article>
   );
 }
