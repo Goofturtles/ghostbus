@@ -45,13 +45,20 @@ const SHELL_URLS = [
 ];
 
 /*
- * The production server (server/src/api.ts) answers ANY non-/api/ 404 with
- * index.html at HTTP 200 text/html, so that deep links reach the SPA router.
- * That means a request for a hashed asset that is missing — a half-finished
- * deploy, a rolled-back build — comes back "successful" with an HTML body.
- * Caching that under a .js URL would permanently poison the cache: hashed URLs
- * are cache-first and never revalidated, so the app would execute HTML forever.
- * Any response that looks like the SPA fallback is therefore refused.
+ * Defence in depth against caching an HTML document under an asset URL.
+ *
+ * This guard was written when the production server answered ANY non-/api/ 404
+ * with index.html at HTTP 200 text/html — so a request for a missing hashed
+ * asset (a half-finished deploy, a rolled-back build) came back "successful"
+ * with an HTML body. Hashed URLs are cache-first and never revalidated, so
+ * caching that would have made the app execute HTML forever.
+ *
+ * That server bug is FIXED: server/src/api.ts now 404s /assets/* and known
+ * asset extensions, and serves the shell only for genuine navigations
+ * (regression tests cover it in server/src/api.test.ts). The guard stays
+ * anyway — it costs one header check, and it is the last line of defence if
+ * that handler ever regresses or a proxy in front of us invents its own error
+ * page. Do not remove it on the grounds that the server is now well-behaved.
  */
 function isSpaFallback(res) {
   const type = res.headers.get('content-type') || '';
