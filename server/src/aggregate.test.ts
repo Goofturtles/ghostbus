@@ -16,6 +16,7 @@ async function freshDb(): Promise<Db> {
   });
   const db: Db = {
     driver: 'pglite',
+    closed: false, // this fixture is torn down with the test, never mid-query
     async query(sql, params) { return norm(await pg.query(sql, params as unknown[])) as Result<never>; },
     async transaction(fn) {
       return await pg.transaction(async (tx) => fn({

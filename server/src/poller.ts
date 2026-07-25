@@ -27,6 +27,7 @@
 
 import GtfsRealtimeBindings from 'gtfs-realtime-bindings';
 import type { Db } from './db.ts';
+import { isDbClosed } from './db.ts';
 import { activeServiceIds, type CalendarRow, type CalendarDateRow } from './gtfs.ts';
 import { torontoDay, torontoMidnightEpoch, torontoYmd, serviceYmd } from './tz.ts';
 import { presentInt, presentStr } from './pb.ts';
@@ -767,7 +768,12 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
     lastStaticLoadAt = Date.now();
     lastStaticLoadYmd = torontoYmd(lastStaticLoadAt);
     // Build the (heavy) join index in the background so start() returns fast.
-    buildIndex().catch((e) => console.error('[poller] join index build failed:', e));
+    buildIndex().catch((e) => {
+      // A shutdown mid-build is expected, not a failure: the index takes ~109 s and the
+      // process can be stopped at any point inside it. Anything else is a real error.
+      if (isDbClosed(e)) console.log('[poller] join index build aborted: shutting down');
+      else console.error('[poller] join index build failed:', e);
+    });
   }
 
   function scheduleNext(cycle: number): void {

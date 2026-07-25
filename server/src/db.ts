@@ -31,7 +31,22 @@ export interface Db extends Queryable {
   driver: 'pg' | 'pglite';
   transaction<T>(fn: (tx: Queryable) => Promise<T>): Promise<T>;
   close(): Promise<void>;
+  /** True once close() has been called. Long-running background work (the pattern
+   *  index takes ~109 s over Neon) polls this so it can abort quietly on shutdown
+   *  instead of throwing "Cannot use a pool after calling end on the pool". */
+  readonly closed: boolean;
 }
+
+/** Thrown by query() after close(). Distinguishable from a real database failure so
+ *  callers can treat a shutdown as a benign abort rather than an error worth logging. */
+export class DbClosedError extends Error {
+  constructor() {
+    super('database closed');
+    this.name = 'DbClosedError';
+  }
+}
+export const isDbClosed = (e: unknown): boolean =>
+  e instanceof DbClosedError || (e instanceof Error && /pool after calling end/i.test(e.message));
 
 let envLoaded = false;
 function loadEnvOnce(): void {
@@ -54,14 +69,17 @@ function makePg(connectionString: string): Db {
     connectionString,
     max: 4, // Neon free tier: keep the pool small.
   });
+  let closed = false;
   const wrap = (c: pg.PoolClient | pg.Pool): Queryable => ({
     async query(sql, params) {
+      if (closed) throw new DbClosedError();
       const r = await c.query(sql, params as unknown[]);
       return { rows: r.rows, rowCount: r.rowCount ?? r.rows.length };
     },
   });
   return {
     driver: 'pg',
+    get closed() { return closed; },
     query: wrap(pool).query,
     async transaction(fn) {
       const client = await pool.connect();
@@ -77,7 +95,12 @@ function makePg(connectionString: string): Db {
         client.release();
       }
     },
-    async close() { await pool.end(); },
+    async close() {
+      // Flip the flag BEFORE ending the pool so in-flight background work (the pattern
+      // index) sees the shutdown on its next page and aborts quietly.
+      closed = true;
+      await pool.end();
+    },
   };
 }
 
@@ -92,9 +115,12 @@ async function makePglite(): Promise<Db> {
     rows: r.rows as Record<string, unknown>[],
     rowCount: Math.max(r.affectedRows ?? 0, r.rows.length),
   });
+  let closed = false;
   return {
     driver: 'pglite',
+    get closed() { return closed; },
     async query(sql, params) {
+      if (closed) throw new DbClosedError();
       return norm(await client.query(sql, params as unknown[])) as Result<never>;
     },
     async transaction(fn) {
@@ -106,7 +132,10 @@ async function makePglite(): Promise<Db> {
         });
       });
     },
-    async close() { await client.close(); },
+    async close() {
+      closed = true; // see the pg branch: background work polls this to abort quietly
+      await client.close();
+    },
   };
 }
 

@@ -17,6 +17,7 @@
 
 import { createHash } from 'node:crypto';
 import type { Db } from './db.ts';
+import { DbClosedError } from './db.ts';
 
 export interface StaticPattern {
   patternId: string;
@@ -125,6 +126,10 @@ export async function buildPatternIndex(db: Db, agency: string, boardTag: string
 
   let cursor = '';
   for (;;) {
+    // This loop pages through 2.15M stop_times and takes ~109 s over Neon, so it
+    // routinely outlives a Ctrl-C. Check for shutdown between pages and abort quietly
+    // rather than letting the next query throw "pool after calling end".
+    if (db.closed) throw new DbClosedError();
     const page = await db.query<RawRow>(
       `SELECT st.trip_id, t.route_id, t.direction_id, t.service_id,
               st.stop_sequence, st.stop_id, st.arrival_s, st.departure_s
