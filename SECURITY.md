@@ -134,7 +134,17 @@ Production-only (`npm audit --omit=dev`): **12 high**. So the common "they're al
 dev-only" defence does **not** apply here, and claiming it would be false. The
 breakdown, by root cause:
 
-### 5.1 Fastify 4.x — 12 of the 12 production advisories trace to one pin
+### 5.1 Fastify 4.x — 10 of the 12 production advisories trace to one pin
+
+> **Correction (2026-07-25, re-verified with `npm audit --omit=dev --json`).** An earlier
+> version of this file said all 12 traced to the Fastify pin. That is wrong, and it matters:
+> someone acting on it would upgrade Fastify, re-run the audit, and still find two. The real
+> split is **10 through the Fastify chain** and **2 through a separate path** —
+> `gtfs-realtime-bindings → protobufjs-cli → glob`, which this file already documents
+> correctly in §5.2. The heading contradicted its own next section. Several advisories share
+> a root (`brace-expansion → minimatch → glob`) that surfaces in *both* trees, which is how
+> the miscount happened. Upgrading Fastify is still the single highest-value change, but it
+> resolves 10, not 12.
 
 `fastify@4.29.1` and its dependency tree (`find-my-way`, `fast-json-stringify`,
 `fast-uri`, `@fastify/ajv-compiler`, `@fastify/fast-json-stringify-compiler`,
