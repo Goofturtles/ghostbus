@@ -1,6 +1,6 @@
 # GhostBus — demo video script
 
-**Target runtime: 2:45. Hard ceiling: 3:00.**
+**Target runtime: 2:50. Hard ceiling: 3:00.**
 Captioned. Clean audio. No music bed under narration (or −24 LUFS if used).
 
 Narration is written to be spoken at ~150 words per minute. Each beat lists its word
@@ -9,9 +9,14 @@ budget; if a take runs long, cut words, not the honesty caveats.
 > **Read the pre-flight checklist at the bottom before you record anything.** Several shots
 > here are only legal to film if a specific condition is true on the day, and this repo moved
 > under the script while it was being written — features landed, copy changed, and the central
-> finding was re-framed once. Every such shot carries its condition and a documented honest
+> finding was re-framed twice. Every such shot carries its condition and a documented honest
 > fallback. Shooting the preferred take when its condition is false would be the exact failure
 > this project exists to argue against.
+>
+> **Last verified 2026-07-25 15:11 ET** against the production database and the source. Two
+> changes since the previous pass, both in Beat 5 and P-4: the zero-delay rows are **purged**
+> (`trip_delay_obs` holds 0 rows, so the "every row is zero" shot no longer exists to film),
+> and `server/src/join.ts` is **deleted** — do not name it, draw it, or point a camera at it.
 
 ---
 
@@ -23,12 +28,16 @@ budget; if a take runs long, cut words, not the honesty caveats.
 | 2 | The one-liner | 0:10 | 0:20 | 10s |
 | 3 | Live core loop, real timestamp on screen | 0:20 | 1:00 | 40s |
 | 4 | A forecast chip and its evidence line | 1:00 | 1:25 | 25s |
-| 5 | Receipts — open data, and the bug we caught in ourselves | 1:25 | 2:05 | 40s |
-| 6 | What's built vs what's designed | 2:05 | 2:15 | 10s |
-| 7 | Architecture | 2:15 | 2:30 | 15s |
-| — | Close | 2:30 | 2:45 | 15s |
+| 5 | Receipts — open data, and the bug we caught in ourselves | 1:25 | 2:10 | 45s |
+| 6 | What's built vs what's designed | 2:10 | 2:20 | 10s |
+| 7 | Architecture | 2:20 | 2:35 | 15s |
+| — | Close | 2:35 | 2:50 | 15s |
 
-Total 2:45, leaving 15s of headroom under the 3:00 ceiling.
+Total 2:50, leaving 10s of headroom under the 3:00 ceiling. Beat 5 grew by 5s on 2026-07-25:
+the delay-field finding now has a resolution to state (the artifact rows purged, the circular
+join deleted, a real measurement engine in its place, currently refusing to publish), and
+leaving that out would have made the beat an unresolved confession rather than a correction.
+If a take runs long, take the time back from Beat 3, not from here.
 
 ---
 
@@ -74,8 +83,9 @@ Screen capture of the running app, desktop dark theme, exactly the state in
 `screenshots/phase4/desktop-dark-nearby.png`.
 
 1. (0:20) The Nearby view. Map card, every TTC vehicle in the viewport drawn as a voxel
-   sprite (roughly 15 in this frame; the collector tracks ~1,500 fleet-wide per cycle —
-   **do not say "1,500" over a shot showing 15**), the **You** beacon with
+   sprite (roughly 15 in this frame; the collector tracked 1,190-1,232 fleet-wide per cycle on
+   2026-07-25 mid-afternoon, and more at peak — **read the count off the log on shoot day, and
+   do not say a fleet-wide number over a shot showing 15**), the **You** beacon with
    "You · 1 min walk", the boarding-stop pin, the beaded walk path.
 2. (0:28) **Click the `Live` pill, then push in on the freshness stamp it opens.** The
    stamp lives inside the pill's popover (`web/src/components/Primitives.tsx`) and is in
@@ -115,11 +125,11 @@ Screen capture of the running app, desktop dark theme, exactly the state in
 > **CONDITIONAL BEAT. Read this before shooting.**
 > A Ghost Forecast chip only renders when a `(route, hour-of-week)` cell clears
 > `GHOST_RISK_MIN_N = 8` scheduled trips inside hours the collector demonstrably watched
-> **and** the ghost rate exceeds 8% (`server/src/api.ts`). As of 2026-07-24 the ghost
-> table holds **zero rows** — the loaded GTFS board does not activate until **2026-07-26**,
-> so nothing has been due, so nothing can have gone missing. There is no honest forecast
-> chip to film today. Shoot **Take A** only if the condition below is met; otherwise shoot
-> **Take B**, which is always legal and is arguably the better beat for this audience.
+> **and** the ghost rate exceeds 8% (`server/src/api.ts`). Queried 2026-07-25 15:11 ET: the
+> `ghosts` table holds **zero rows** — the loaded GTFS board does not activate until
+> **2026-07-26**, so nothing has been due, so nothing can have gone missing. There is no honest
+> forecast chip to film today. Shoot **Take A** only if the condition below is met; otherwise
+> shoot **Take B**, which is always legal and is arguably the better beat for this audience.
 
 ### Take A — only if a chip is rendering from real rows
 
@@ -164,7 +174,7 @@ Then a two-up: the UI on the left, `server/src/eta.ts` on the right with
 
 ---
 
-## Beat 5 — Receipts, and the bug we caught in ourselves (1:25–2:05, 81 words ≈ 32s)
+## Beat 5 — Receipts, and the bug we caught in ourselves (1:25–2:10, 104 words ≈ 42s)
 
 **On-screen action**
 1. (1:25) Split screen: the Toronto Open Data page for *TTC Routes and Schedules* on the
@@ -178,16 +188,27 @@ Then a two-up: the UI on the left, `server/src/eta.ts` on the right with
    ```
 3. (1:45) Cut to a two-line code inset: `if (delay != null) { … }` with a caption reading
    *"proto2 optional int32, default 0"*. This is the actual bug, in one frame.
-4. (1:55) Cut to a `psql`/script window: every row in `trip_delay_obs`, one distinct value
-   of `delay_s`, and that value is zero.
+4. (1:55) Cut to the running collector's log and hold on the suppression line, which is a live
+   shot as of 2026-07-25:
+   ```
+   SUPPRESSED (boardActive): no calendar-active schedule for 20260725;
+   the loaded board covers 20260726..20260905
+   ```
+   **Do not plan the old shot here** — an earlier version of this script called for a `psql`
+   window showing every row in `trip_delay_obs` with one distinct `delay_s` of zero. Those rows
+   were purged; the table holds **0 rows** and that shot no longer exists. `SELECT count(*)`
+   returning `0` is a weak frame on camera; the suppression string is the strong one, because
+   it shows the system refusing in words rather than merely being empty.
 
 **Narration**
 > "Everything here is open data — Toronto's published schedule, Toronto's published
 > realtime feed, no keys, no scraping. Which is how we found this. The TTC never sends the
 > delay field at all. But it's an optional integer that defaults to zero, so our decoder
 > answered zero, twenty-three thousand times, and our null check waved every one of them
-> through. Three hundred thousand observations that said 'exactly on time' and measured
-> nothing. A correct-looking null check turned missing data into confident data."
+> through. Three hundred thousand observations that measured nothing. A correct-looking null
+> check turned missing data into confident data. We deleted them all, and the join that
+> depended on them. It measures against our own schedule now — and until Sunday's board
+> activates, it publishes nothing, and says why."
 
 **B-roll / capture notes**
 - **Run the probe live.** A pre-recorded terminal is worth a fraction of a live one to this
@@ -202,21 +223,26 @@ Then a two-up: the UI on the left, `server/src/eta.ts` on the right with
 - The terminal must not show `DATABASE_URL`. `.data/feedprobe.cjs` reads only the public
   feed, but the DB script in step 3 reads `.env` — scrub the frame or pipe through a
   wrapper that prints only the aggregate row. See pre-flight rule P-6.
-- On-screen caption over step 4: `SELECT count(*), count(DISTINCT delay_s) FROM trip_delay_obs`
-  → a row count beside a distinct count of **1**. **Run the query live and read what it
-  returns**, because the count moves: it peaked at 312,696, was purged to 947, and is
-  refilling. The distinct count of one is the part that does not move.
-- **Status check before you record.** At 2026-07-24 22:02 ET: the purge **has** run, and the
-  code fix **has not** — `server/src/poller.ts` still reads the defaulted `delay`, so the
-  table is refilling with zeros. `README.md` describes the purge and the fix together in the
-  past tense; only the purge half is true. Before shooting, re-check both, and narrate
-  whichever is true on the day. **Do not say "and we fixed it" until `poller.ts` computes
-  delay as predicted-minus-our-own-scheduled-time and a fresh query shows more than one
-  distinct value.** See pre-flight rule P-4.
+- **A stronger offline proof than the database shot, if you want a fourth frame.** The wire-level
+  round-trip in `server/src/pb.test.ts` (*"THE ROOT CAUSE"*): `StopTimeEvent.create({time:123})`
+  encodes to **2 bytes** and decodes with `hasOwn(delay) === false`; add an explicit `delay: 0`
+  and it encodes to **4 bytes** with `hasOwn(delay) === true`. Run `npm test` on camera and hold
+  on that test name. It proves the zero was manufactured by our decoder and never on the wire,
+  and unlike the live probe it does not depend on the TTC being up on shoot day.
+- **Status check before you record — this note has been wrong before, so re-verify it.**
+  Verified 2026-07-25 15:11 ET against the production database and the source:
+  - the guard **is** fixed (`server/src/pb.ts`, own-property reads; commit `f54b1cd`);
+  - `trip_delay_obs`, `agg_delay` and `agg_delay_route` all hold **0 rows**;
+  - `join.ts` is **deleted** and a five-stage delay engine replaced it;
+  - the engine is **suppressing every cycle** on its `boardActive` gate and naming the reason.
+
+  So "and we fixed it" is now sayable, and "and it's measuring real buses" is **not** — the
+  engine has never measured one, because the board does not activate until 2026-07-26.
+  Narrate the correction, not a capability. See pre-flight rule P-4.
 
 ---
 
-## Beat 6 — What's built vs what's designed (2:05–2:15, 24 words ≈ 10s)
+## Beat 6 — What's built vs what's designed (2:10–2:20, 24 words ≈ 10s)
 
 **On-screen action**
 Tap through the app's own tabs on mobile. `Plan` shows the app's real placeholder copy:
@@ -241,11 +267,11 @@ Tap through the app's own tabs on mobile. `Plan` shows the app's real placeholde
 
 ---
 
-## Beat 7 — Architecture (2:15–2:30, 36 words ≈ 14s)
+## Beat 7 — Architecture (2:20–2:35, 36 words ≈ 14s)
 
 **On-screen action**
 One diagram, animated in three strokes:
-`TTC GTFS-realtime ×3 → poller (45s, in-process) → memory: live vehicles │ Postgres: distilled observations, alerts, ghosts → Fastify API → React SPA`
+`TTC GTFS-realtime ×3 → poller (45s, in-process) → delay engine: pattern index → stop crosswalk → origin lock → settle → gates → memory: live vehicles │ Postgres: settled observations, alerts, ghosts, the engine's own evidence trail → Fastify API → React SPA`
 Then a one-second cut to `render.yaml` showing a single `type: web` service.
 
 **Narration**
@@ -255,18 +281,22 @@ Then a one-second cut to `render.yaml` showing a single `type: web` service.
 
 **B-roll / capture notes**
 - Draw the diagram fresh; do not screenshot a whiteboard.
+- The five engine stages are five real files — `patterns.ts`, `xwalk.ts`, `bind.ts`,
+  `delay.ts`, `gates.ts` — and a judge may open any of them. Label the stroke with the file
+  names if it fits. **Do not draw a box labelled `join.ts`**: it was the first attempt and it
+  is deleted (`DECISIONS.md` §12, superseded, and §29).
 - Optional one-frame flash of `screenshots/phase4/desktop-light-fullscreen.png` to prove
   the light theme is a real second theme and not an inverted filter.
 
 ---
 
-## Close (2:30–2:45, 34 words ≈ 14s)
+## Close (2:35–2:50, 34 words ≈ 14s)
 
 **On-screen action**
 Return to the live app, wide. Wordmark lower third. Repo URL and `README.md` on screen —
 it now exists, alongside `ARCHITECTURE.md`, `METHODS.md`, `SECURITY.md`, `CREDITS.md`,
 `DECISIONS.md`, `TOOLKIT.md` and `BLOCKERS.md`. Name a file on camera only after you have
-seen it; this list was accurate at 2026-07-24 22:05 and the repo was moving fast.
+seen it; this list was accurate at 2026-07-25 15:11 and the repo was moving fast.
 
 **Narration**
 > "GhostBus doesn't need the agency to admit a bus was cancelled. It watches the schedule,
@@ -296,17 +326,24 @@ Tick every line before the first take. Anything unticked is a reshoot, not a fix
 - [ ] **P-3.** No `DEMO` badge anywhere in a shot where the narration says "live". Demo Mode
       is all-or-nothing per process (`server/src/demo.ts`): once a process serves one demo
       byte it is a demo process for its whole lifetime, and every result is labelled.
-      **As of 2026-07-24 there is no Demo Mode footage to shoot at all** — the recorder and
-      replay source are written and unit-tested but the module wires into nothing (its own
-      header says so), and no web component consumes the `status.demoBadge` string. If it
+      **Re-checked 2026-07-25: there is still no Demo Mode footage to shoot at all** — the
+      recorder and replay source are written and unit-tested but the module wires into nothing
+      (`grep demo server/src/poller.ts` returns nothing), and no web component consumes the
+      `status.demoBadge` string; it exists only in the three locale files. If it
       has been wired by shoot day, the amber `DEMO` badge and the recorded-notice must be
       visible for the entire duration of any demo footage and the narration must say
       "recorded", never "live".
-- [ ] **P-4.** No claim that the zero-delay data was purged and recomputed unless you have
-      confirmed it **both** in `server/src/poller.ts` and by querying the database on shoot
-      day. As of 2026-07-24 21:50 the fix is **specified, not merged**, and the table held
-      **306,091 rows, every one `delay_s = 0`** — still growing. Note that `METHODS.md` §3.3
-      already states the purge as done; the database disagrees. Trust the database.
+- [ ] **P-4.** Two separate claims here; keep them apart, because an earlier draft of this
+      script did not. **(a) "We found it, purged it and replaced it"** — verified true on
+      2026-07-25 15:11 ET: the presence-aware guard is merged (`server/src/pb.ts`, commit
+      `f54b1cd`), `trip_delay_obs` / `agg_delay` / `agg_delay_route` hold **0 rows**, and
+      `join.ts` is deleted in favour of the delay engine. Re-confirm with a query on shoot day
+      anyway. **(b) "It now measures how late Toronto's buses are"** — **not true yet, do not
+      say it.** The engine's `boardActive` gate fails every cycle (the loaded board covers
+      `20260726..20260905`), its crosswalk coverage is 33.6% against a required 50%, and it has
+      never produced a delay row for a real trip. If you are shooting on or after 2026-07-26,
+      re-check both gates before upgrading the claim — and if rows exist, read the actual
+      `count(*)` and a real percentile off screen rather than describing them.
 - [ ] **P-5.** No forecast chip, trust grade, or Ghost Feed row on camera unless it renders
       from **real data** at shoot time. These were in active development while this script was
       written and the ground shifted mid-draft: the PWA (manifest, icons, service worker,
