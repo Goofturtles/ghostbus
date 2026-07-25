@@ -798,7 +798,13 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
   // (a directory that actually contains index.html) instead of assuming one path.
   const webDist = DIST_CANDIDATES.find((dir) => existsSync(join(dir, 'index.html'))) ?? null;
   if (webDist) {
-    await app.register(fastifyStatic, { root: webDist, wildcard: false });
+    // `wildcard: true` (the default) resolves each request against the filesystem at
+    // request time. The previous `wildcard: false` enumerated the bundle *once at
+    // startup*, so every hashed asset written by a later `vite build` 404'd into the SPA
+    // fallback and the page booted to a blank screen — the exact failure this endpoint
+    // exists to prevent. A missing file still falls through to the not-found handler
+    // below, which is what serves the SPA shell for client-side routes.
+    await app.register(fastifyStatic, { root: webDist });
   }
   app.setNotFoundHandler((req, reply) => {
     if (req.url.startsWith('/api/')) return reply.code(404).send({ error: 'not found' });
