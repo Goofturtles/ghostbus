@@ -94,6 +94,16 @@ database, not by us.
 
 ## 8. Delay observations — what counts as an honest observation
 
+> **SUPERSEDED (2026-07-25) — see §29 and METHODS.md §3.5.** The *instinct* below was right and
+> is worth preserving: "we do not synthesize a delay from predicted-time-minus-static when only
+> a time is present — that would be an assumption dressed up as a measurement." That rule is now
+> **exactly inverted**, and the inversion is the whole finding. Requiring an "explicit `delay`"
+> was not a safeguard, because protobuf.js answers `0` for a field the feed never sent, so the
+> requirement passed on 100% of events and recorded a fabrication. Meanwhile
+> predicted-minus-our-own-scheduled is not an assumption at all: both sides are published data.
+> The honest rule is now `delay_s = event_epoch_s − sched_epoch_s`, with `sched_epoch_s` from
+> our own seeded `stop_times` and nothing reconstructed from the feed.
+
 From the TripUpdates feed, a `trip_delay_obs` row is written only when:
 - the stop has been **passed** (its `stop_sequence` is behind the vehicle's
   `current_stop_sequence`, or its predicted event time is already in the past), **and**
@@ -146,6 +156,23 @@ eviction, bogus-delay drop.
 
 ## 12. Identity join — DEVIATION from the literal `(route_id, start_date, start_time)` key
 
+> **SUPERSEDED (2026-07-25) — see §29 and §33.** This decision was genuinely made and is left
+> here unedited, because the record of *why* we believed it is worth more than a tidy document.
+> Two things in the text below are now known to be false:
+>
+> 1. **"an explicit `delay` … per StopTimeUpdate"** — the TTC publishes **no `delay` field at
+>    all**. Own-property census: 0 of 23,476 StopTimeEvents. Protobuf.js materialises the
+>    proto2 default on the decoded message's prototype, so it *reads* as `0` and we recorded it
+>    as a measurement 314,742 times. See BLOCKERS.md entry 6 and METHODS.md §4.
+> 2. **"The pure claim logic lives in `server/src/join.ts`"** — `join.ts` and `join.test.ts`
+>    were **deleted** in commit `65e3843`. With `delay` always `0`, the reconstruction
+>    `scheduled = predicted − delay` collapses to `scheduled = predicted`; the join was
+>    comparing the feed's predictions against themselves, which is why its measured rate was 0%.
+>
+> What replaced it: `patterns.ts` → `xwalk.ts` → `bind.ts` → `delay.ts` → `gates.ts`, wired by
+> `engine.ts`. Scheduled time now comes **only** from our own seeded `stop_times`, and no code
+> path may reconstruct one from the realtime feed.
+
 The spec's proposed join key could not be built as written because **the TTC RT feed
 provides neither `start_time` nor `start_date`** — both are empty strings on every entity
 (measured, all 1200 vehicles / 1876 trip updates). What the feed does carry, measured live:
@@ -172,6 +199,19 @@ are the same board period. The pure claim logic lives in `server/src/join.ts` an
   calendar-active, due set.
 
 ## 13. Measured live join rate = 0% right now — the honest reason (clock vs board offset)
+
+> **PARTLY SUPERSEDED (2026-07-25) — see §29 and §33.** The clock-vs-board reasoning below is
+> correct and still holds: the loaded board covers `20260726..20260905`, there is no
+> calendar-active service today, so there are 0 due trips and an honest 0 ghosts.
+>
+> **The attribution of the 0% join rate was wrong.** We had the right number and the wrong
+> explanation. The join reconstructed `scheduled = predicted − delay`; the feed sends no
+> `delay`; protobuf.js supplied `0`; the expression was `scheduled = predicted`. The 0% was a
+> property of that arithmetic, not of the clock offset and not of the `trip_id` mismatch. Both
+> of those are real problems — they are simply not what produced *that* zero. The final
+> paragraph's prediction ("`predicted − delay` equals the loaded `departure_s` by definition
+> and the join becomes near-exact") would therefore **never** have come true. `join.ts` is
+> deleted; there is no join rate to measure any more, only a binding rate.
 
 The machine clock is **2026-07-24 (Fri)** but this TTC GTFS feed's calendar validity is
 **2026-07-26 … 2026-09-05** — the schedule board begins two days in the *future*. Consequences,
@@ -1044,3 +1084,136 @@ framing, which also proves the extrusions are live in production rather than a d
     this stop is "No departures in the next 90 minutes" followed by the genuine next scheduled
     service. The reference's `7 min` / `9 min` / `Trip cancelled 7:26 PM` are illustrative and
     were not reproduced; a board was not invented to make a screenshot match a mockup.
+
+---
+
+## §33 — Two of our own audits were weaker than their names, and only one is fixed
+
+Found on 2026-07-25 while fact-checking `METHODS.md` line by line against the source. Recorded
+here at this length because the failure class is the same one as §29's, pointed at the honesty
+machinery rather than at the product — and because it is the second time this project has
+caught itself asserting something it had not verified.
+
+### What was wrong
+
+The learned stop crosswalk (`xwalk.ts`) is an **inference**. Nothing about it is measured
+ground truth; stop identity is guessed from geometry and then propagated transitively. An
+inference stack is only trustworthy if it carries tests that are able to fail, so the design
+gave it two falsifiable self-audits, and `gates.ts` turns each into a publication gate. Both,
+as wired in `runCycle`, were narrower than their names:
+
+1. **`monotonicity` could not fail, on any input.** The audit is meant to catch a crosswalk that
+   maps two realtime stops onto static stops that are out of order — the falsifiable property
+   lives on the **static** side, where an error shows up as the static sequence going backwards
+   while the realtime sequence goes forwards. `runCycle` passed
+   `[...b.tracked.keys()].sort((a, c) => a - c)`: the binding's own **realtime** sequences,
+   ascending by construction. `monotonicityViolations` was comparing a sorted list against
+   itself and returning 0 violations always. The `monotonicity` gate and the `xwalk.unhealthy`
+   flag could never trip on it.
+2. **`crossRouteAgreement` audits geometry only.** `runCycle` builds its per-route map
+   exclusively from `geoAnchors`. Propagated entries — which METHODS.md correctly calls "the
+   multiplier" and which are the majority of confirmed crosswalk rows — are not covered. The
+   reported ~93.8–93.9% is an accuracy estimate for the geometric anchors, not for the
+   crosswalk as a whole.
+
+Neither was publishing a wrong number. Both were **audits that would not have caught the error
+they exist to catch**, which for this project is a worse defect than a missing feature: the
+product's entire claim is that its refusals are mechanical rather than aspirational.
+
+### Decision 1 — fix the monotonicity wiring, and prove the fix by making the gate fail
+
+`crosswalkedStaticSeqs` (`xwalk.ts`) now resolves each tracked realtime stop, **in realtime
+order**, to the static `stop_sequence` the crosswalk claims for it on the bound static pattern,
+and `runCycle` feeds that to the audit.
+
+Two deliberate leniencies, so that a reported violation is always a real one rather than a
+modelling artifact:
+
+- **Loops get the benefit of the doubt.** A static pattern can visit the same stop twice
+  (turnbacks, on-street terminals). Where a stop has several occurrences we take the earliest
+  one that still increases — the choice that maximises the remaining options — so a violation is
+  reported only when **no** monotone assignment exists at all.
+- **Unknowable stops are skipped, not counted as disorder.** Stops the crosswalk cannot name,
+  and stops it names that are not on this pattern, are omitted. An absent identity is not
+  evidence of disorder, and an off-pattern named stop is the per-trip consistency gate's
+  business in `delay.ts`, which is stricter and voids the whole trip.
+
+Only entries that could actually back a published row are audited, so the gate covers exactly
+the crosswalk the product would be relying on. The regression test is named for what it
+guarantees — `xwalk.test.ts`, **"REGRESSION (BLOCKERS 17): the monotonicity gate can actually
+fail"** — because the property under test is not "the gate returns 0" but "the gate is capable
+of returning non-zero."
+
+### Decision 2 — do NOT quietly widen cross-route agreement, and do not restate its number
+
+The tempting fix is to build the per-route map from the whole crosswalk instead of from
+`geoAnchors`. It is not being done under time pressure, for one reason: geometric anchors are
+**independent** observations of the same physical stop from different routes, so their
+agreement is genuine corroboration. Propagated entries are **derived** — two routes can agree
+because they inherited the same identity from a common ancestor resolution, not because they
+independently measured it. Widening the input without first establishing independence would
+turn a weak-but-honest audit into a strong-looking circular one, which is the §29 failure mode
+wearing a different hat.
+
+Until that is worked out, the correct action is disclosure, not a number that looks better:
+**the 93.9% is labelled as a geometric-anchor figure everywhere it appears** — `METHODS.md`
+§3.3e, `BLOCKERS.md` entry 17 (still OPEN), and `DEVPOST.md`. A reader who checks will find the
+label before they find the limitation.
+
+### The pattern this makes twice
+
+| | §29 (the delay=0 bug) | §33 (the audit gap) |
+|---|---|---|
+| What was well-designed | The evidence gates: `n ≥ 8`, `n ≥ 20`, trust-grade tiers | The audits: falsifiable by construction, no ground truth needed |
+| What was actually true | They were gating an input that was unanimously meaningless | One was fed the wrong side of the comparison; one covers a minority of its subject |
+| What caught it | Re-measuring a believed-true assumption against the live wire | Re-reading a believed-true document against the source |
+| What did **not** catch it | Every unit test, every build report, the type system | The gate's own output, which read "healthy" |
+
+The common cause is not carelessness in either case — both were competent implementations of
+correct designs. It is that **a system cannot audit its own inputs from the inside.** The only
+thing that has worked twice is going back out to the source of truth (the wire, the code) and
+re-deriving something already believed. That is a process claim, and this table is the evidence
+for it.
+
+---
+
+## §34 — A calendar-active day with no seeded trips must not read as a clean day
+
+Landed in the engine on 2026-07-25 (commit `e749a75`), recorded here because that commit's own
+message says it belongs in this file and the engine workstream does not own it.
+
+**The hole.** `seed_toronto.ts` loads `calendar` and `calendar_dates` whole, but filters `trips`
+and `stop_times` through a rolling `GHOSTBUS_SEED_WINDOW_DAYS` window measured from the *seed
+date* rather than from the *loaded board's* validity span. Those are different windows, so the
+calendar can declare a service active on a date for which we hold no trips at all.
+
+**The measurement.** Re-checked against both the database and the extracted feed: **7 of this
+board's 42 days** are in that state.
+
+| Dates | Service | Trips published | Trips loaded |
+|---|---|---|---|
+| 2026-08-01, -08, -15, -22, -29, 2026-09-05 (the six Saturdays) | 2 | 32,874 | **0** |
+| 2026-08-03 (civic holiday; `calendar_dates` switches service 1 off) | 4 | 31,295 | **0** |
+
+The remaining 35 days match the feed exactly, so the seeded board is not thin anywhere else.
+Services 6702/6703/6704 carry no weekday flags and no `calendar_dates` rows and are never active
+in the **feed** either — that gap is not ours.
+
+**Why this needed a gate and not just a bug report.** On those seven days the engine passed
+`boardActive`, found zero due trips, and wrote zero ghosts and zero delays — producing output
+**identical** to a day on which the TTC ran a flawless service. That is the §29 failure in its
+purest form: a zero that means *we don't know* rendering as a zero that means *nothing went
+wrong*. For an accountability product, that specific confusion is the worst one available,
+because it errs toward exonerating the agency using our own missing data as the evidence.
+
+**The decision.** Add a `boardIntegrity` gate (`gates.ts`) that fires when the calendar
+activates a service for the date and the loaded board holds no trips for it, with a reason
+string that names the hole. `patterns.ts` gains `tripsByService` to answer the question.
+
+**What this deliberately does NOT do.** It does not repair the seed, and it must not be
+described as having done so. The seeding fix belongs in `seed_toronto.ts`: the trip/stop_time
+filters must be derived from the loaded board's own validity span
+(`min(start_date)..max(end_date)`), or at minimum unioned with it, so that a service the
+calendar declares can never lack its trips. Filed as `BLOCKERS.md` entry 9, still **OPEN**.
+Suppressing a misleading day is a smaller claim than fixing it, and only the smaller claim is
+true.
