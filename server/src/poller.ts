@@ -30,7 +30,7 @@ import type { Db } from './db.ts';
 import { isDbClosed } from './db.ts';
 import { activeServiceIds, type CalendarRow, type CalendarDateRow } from './gtfs.ts';
 import { torontoDay, torontoMidnightEpoch, torontoYmd, serviceYmd } from './tz.ts';
-import { presentInt, presentStr } from './pb.ts';
+import { presentInt, presentStr, presentFloat } from './pb.ts';
 import { createDelayEngine, type DelayEngineStats, type EngineVehicle, type EngineTripUpdate, type EngineStopUpdate } from './engine.ts';
 import type { FeedId, FeedStatusKind } from '../../shared/types.ts';
 
@@ -56,17 +56,11 @@ const MASS_GHOST_ROUTE_MIN_DUE = 4;    // per-route breaker only applies once a 
 const GHOST_CONFIRM_MISSES = 2;        // a trip must be absent this many consecutive cycles before it's a ghost
 const STATIC_RELOAD_MS = 6 * 3_600_000; // reload calendar/trips/index every 6h (and on service-day rollover)
 
-// ---------- protobuf numeric coercion ----------
-function toNum(v: unknown): number | null {
-  if (v == null) return null;
-  if (typeof v === 'number') return v;
-  if (typeof v === 'bigint') return Number(v);
-  if (typeof v === 'object' && v !== null && typeof (v as { toNumber?: unknown }).toNumber === 'function') {
-    return (v as { toNumber: () => number }).toNumber();
-  }
-  const n = Number(v as number);
-  return Number.isNaN(n) ? null : n;
-}
+// ---------- protobuf field coercion ----------
+// `toNum` used to live here. It coerced whatever a field read as, which on proto2 includes
+// the materialised default of a field that was never sent. Its last two callers (the map's
+// vehicle timestamp and an alert's active period) now go through pb.ts, which answers the
+// presence question first; nothing should reintroduce a presence-blind numeric read.
 function enumName(enumObj: Record<string, number>, val: number | null | undefined): string | null {
   if (val == null) return null;
   for (const [k, v] of Object.entries(enumObj)) if (v === val) return k;
@@ -343,19 +337,35 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
   }
 
   // ---------- per-poll processing ----------
+  /**
+   * The map's vehicle DTO. Every optional scalar goes through pb.ts for the same reason
+   * the delay path does: GTFS-realtime is proto2, so `v.position.bearing` reads 0 and
+   * `v.timestamp` reads 0 for a producer that never sent them, and a `!= null` test cannot
+   * tell "reported" from "never reported". Reading a materialised default as a measurement
+   * is the exact mistake that produced 314,742 information-free delay observations
+   * (BLOCKERS 6); it costs a wrong sprite rotation here rather than a wrong statistic, but
+   * the rule is the same everywhere or it is not a rule.
+   *
+   * An absent bearing therefore stays NULL rather than becoming 0 (due north): the map
+   * already falls back to the bearing implied by the vehicle's own movement.
+   */
   function processVehicles(msg: FeedMessage, vehicleTripIds: Set<string>, cycle: number): number {
     let n = 0;
     for (const e of msg.entity) {
       const v = e.vehicle;
       if (!v?.position) continue;
       n++;
-      const vid = v.vehicle?.id ?? e.id;
-      const tripId = v.trip?.tripId ?? null;
-      const seq = v.currentStopSequence && v.currentStopSequence > 0 ? v.currentStopSequence : null;
-      const ts = (toNum(v.timestamp) ?? Math.floor(Date.now() / 1000)) * 1000;
-      const heading = v.position.bearing != null ? Number(v.position.bearing) : null;
-      const speedMs = v.position.speed != null ? Number(v.position.speed) : null;
-      positions.set(vid, { id: vid, tripId, routeId: v.trip?.routeId ?? null, seq, lat: v.position.latitude, lon: v.position.longitude, heading, speedMs, ts, cycleSeen: cycle });
+      const vid = presentStr(v.vehicle, 'id') ?? e.id;
+      const tripId = presentStr(v.trip, 'tripId');
+      const seqOnWire = presentInt(v, 'currentStopSequence');
+      const seq = seqOnWire != null && seqOnWire > 0 ? seqOnWire : null;
+      const tsS = presentInt(v, 'timestamp');
+      // Absent means "we do not know when this ping was taken", so the fallback is now —
+      // reading the proto2 default made it 1970-01-01 and the fallback unreachable.
+      const ts = (tsS ?? Math.floor(Date.now() / 1000)) * 1000;
+      const heading = presentFloat(v.position, 'bearing');
+      const speedMs = presentFloat(v.position, 'speed');
+      positions.set(vid, { id: vid, tripId, routeId: presentStr(v.trip, 'routeId'), seq, lat: v.position.latitude, lon: v.position.longitude, heading, speedMs, ts, cycleSeen: cycle });
       let buf = ring.get(vid);
       if (!buf) { buf = []; ring.set(vid, buf); }
       buf.push({ lat: v.position.latitude, lon: v.position.longitude, ts });
@@ -510,10 +520,14 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
       const cause = enumName(transit_realtime.Alert.Cause as unknown as Record<string, number>, al.cause);
       const header = translated(al.headerText);
       const description = translated(al.descriptionText);
+      // TimeRange.start/end are proto2 optional uint64: an open-ended period reads 0 and
+      // would be published as a real window starting 1970-01-01. Absent stays null.
       const period = al.activePeriod?.[0];
-      const activeStart = period?.start != null ? new Date((toNum(period.start) ?? 0) * 1000).toISOString() : null;
-      const activeEnd = period?.end != null ? new Date((toNum(period.end) ?? 0) * 1000).toISOString() : null;
-      const informed = (al.informedEntity ?? []).map((ie) => ({ routeId: ie.routeId ?? null, stopId: ie.stopId ?? null, tripId: ie.trip?.tripId ?? null, agencyId: ie.agencyId ?? null }));
+      const startS = presentInt(period, 'start');
+      const endS = presentInt(period, 'end');
+      const activeStart = startS == null ? null : new Date(startS * 1000).toISOString();
+      const activeEnd = endS == null ? null : new Date(endS * 1000).toISOString();
+      const informed = (al.informedEntity ?? []).map((ie) => ({ routeId: presentStr(ie, 'routeId'), stopId: presentStr(ie, 'stopId'), tripId: presentStr(ie.trip, 'tripId'), agencyId: presentStr(ie, 'agencyId') }));
       const text = `${header ?? ''} ${description ?? ''}`;
       const isAccessibility = effect === 'ACCESSIBILITY_ISSUE' || /elevator|escalator|wheelchair|accessib/i.test(text);
       await db.query(

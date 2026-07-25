@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import GtfsRealtimeBindings from 'gtfs-realtime-bindings';
-import { present, presentInt, presentStr } from './pb.ts';
+import { present, presentInt, presentStr, presentFloat } from './pb.ts';
 
 const { transit_realtime } = GtfsRealtimeBindings;
 
@@ -72,6 +72,49 @@ test('TripDescriptor directionId/startDate/startTime default to 0 and empty stri
 
   const withDir = roundTrip(TD as never, { tripId: 'x', directionId: 0 });
   assert.equal(presentInt(withDir.decoded, 'directionId'), 0);
+});
+
+test('REGRESSION (BLOCKERS 16): Position.bearing/speed default to 0, i.e. due north and stopped', () => {
+  // The map path used `v.position.bearing != null ? Number(...) : null`, which is true for
+  // every vehicle on the feed whether or not the producer sent a bearing — so a vehicle
+  // that never reported a heading rendered pointing due north, indistinguishable from one
+  // genuinely heading north. Same class of mistake as the delay field above; the cost here
+  // is a wrong sprite rotation rather than a wrong statistic, which is not a reason to
+  // keep it.
+  const P = transit_realtime.Position;
+  const bare = roundTrip(P as never, { latitude: 43.7, longitude: -79.4 });
+  assert.equal((bare.decoded as { bearing: number }).bearing, 0, 'the trap: reads as due north');
+  assert.equal((bare.decoded as { speed: number }).speed, 0, 'the trap: reads as stationary');
+  assert.notEqual((bare.decoded as { bearing: number }).bearing, null,
+    'so a != null test cannot reject it');
+  assert.equal(presentFloat(bare.decoded, 'bearing'), null);
+  assert.equal(presentFloat(bare.decoded, 'speed'), null);
+
+  // A vehicle that really is pointing north, or really is stopped, must survive as 0.
+  const explicit = roundTrip(P as never, { latitude: 43.7, longitude: -79.4, bearing: 0, speed: 0 });
+  assert.equal(presentFloat(explicit.decoded, 'bearing'), 0);
+  assert.equal(presentFloat(explicit.decoded, 'speed'), 0);
+  const moving = roundTrip(P as never, { latitude: 43.7, longitude: -79.4, bearing: 271.5, speed: 8.25 });
+  assert.ok(Math.abs((presentFloat(moving.decoded, 'bearing') ?? 0) - 271.5) < 0.01);
+  assert.ok(Math.abs((presentFloat(moving.decoded, 'speed') ?? 0) - 8.25) < 0.01);
+});
+
+test('REGRESSION (BLOCKERS 16): an absent VehiclePosition.timestamp is not 1970', () => {
+  // `toNum(v.timestamp) ?? Date.now()/1000` never reached its fallback: an absent
+  // timestamp decodes as 0, which is a number, so the ping was dated 1970-01-01.
+  const V = transit_realtime.VehiclePosition;
+  const bare = roundTrip(V as never, {});
+  assert.equal(Number((bare.decoded as { timestamp: unknown }).timestamp), 0);
+  assert.equal(presentInt(bare.decoded, 'timestamp'), null, 'so the "unknown -> now" fallback can fire');
+  const stamped = roundTrip(V as never, { timestamp: 1_800_000_000 });
+  assert.equal(presentInt(stamped.decoded, 'timestamp'), 1_800_000_000);
+
+  // TimeRange (an alert's active period) has the same shape: an open-ended window would
+  // otherwise be published as one starting 1970-01-01.
+  const range = roundTrip(transit_realtime.TimeRange as never, {});
+  assert.equal(presentInt(range.decoded, 'start'), null);
+  assert.equal(presentInt(range.decoded, 'end'), null);
+  assert.equal(presentInt(roundTrip(transit_realtime.TimeRange as never, { start: 5 }).decoded, 'start'), 5);
 });
 
 test('presentInt handles protobufjs Long-like objects and rejects junk', () => {
