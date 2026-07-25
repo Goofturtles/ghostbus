@@ -15,7 +15,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 // worker refused the text/html MIME type, and the whole map died in production while
 // dev (which serves maplibre from source, next to its real worker) kept working.
 // `?worker&url` makes Rollup bundle the worker (plus maplibre-gl-shared.mjs, which it
-// imports) into a real hashed chunk and hands us its URL. See DECISIONS §29.
+// imports) into a real hashed chunk and hands us its URL. See DECISIONS §28.
 import maplibreWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import type { VehicleDto, RouteShapeResponse } from '@shared/types';
 import { api, type Bbox } from '@/lib/api';
@@ -174,7 +174,7 @@ export default function MapCard() {
     });
     // Name the failure we actually observed. If the map never even finished loading,
     // the tile server is not the story — blaming it sent a whole phase chasing tiles
-    // while the real fault was a worker that would not start. See DECISIONS §29.
+    // while the real fault was a worker that would not start. See DECISIONS §28.
     failTimerRef.current = window.setTimeout(() => {
       if (tilesOkRef.current) return;
       setMapFailure(styleOkRef.current ? 'tiles' : 'engine');

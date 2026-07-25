@@ -444,3 +444,77 @@ stops it from becoming permanent.
 **What this does NOT give you.** Shell survival only. The app's data-offline story — a cached schedule
 slice so a cold offline start can show *something* honest about when buses are meant to run — is a
 separate, unbuilt tier. Nothing in this layer may be read as offline live data.
+
+## 28. The map was dead in every production build (worker emit, SPA fallback, error storm)
+
+**Measured, not inferred.** A real `npx vite build` + `npm start` + Chromium load showed: canvas and WebGL
+context present, no basemap, no vehicles, the "Map tiles unavailable — showing list only" fallback, and
+**528 identical console errors** on a cold load (`The source 'vehicles' does not exist in the map's style.`
+from `setFeatureState`). Every screenshot in this repo was taken against `vite dev`, where the bug does
+not exist, so the failure shipped invisibly through several phases. §27 already flagged the worker 404 as
+a §26 correction; this section is the root cause and the fix.
+
+**Root cause.** maplibre-gl v6 does not let a bundler see its worker. It resolves the URL at *runtime*:
+
+```js
+let e = import.meta.url;
+let t = e.endsWith('-dev.mjs') ? 'maplibre-gl-worker-dev.mjs' : 'maplibre-gl-worker.mjs';
+return new URL(`./${t}`, e).href;
+```
+
+A bare `new URL(..., import.meta.url)` that is never passed to `new Worker()` at the same site is invisible
+to Rollup, so `vite build` emitted no worker at all. In the built bundle `import.meta.url` is
+`/assets/MapCard-<hash>.js`, so maplibre asked the server for `/assets/maplibre-gl-worker.mjs` — which does
+not exist. The SPA fallback answered it `200 text/html`, the module worker refused the MIME type, tile
+processing never started, `map.on('load')` never fired, and the app's tile-failure fallback misreported
+the cause. Dev worked because Vite serves maplibre from `node_modules` right next to its real worker file.
+
+**`optimizeDeps.exclude` was NOT implicated.** It was the leading suspect (added in §26 for a dev-only
+worker 404) but `optimizeDeps` is a dev-server dep-optimizer setting; it has no effect on the production
+emit. Verified against the built output and left untouched — removing it would have re-broken dev without
+fixing prod.
+
+**Fix 1 — emit the worker and tell maplibre where it is.** `MapCard.tsx` imports the worker through
+`?worker&url`, which makes Rollup bundle it (inlining `maplibre-gl-shared.mjs`, which the worker imports —
+this is why simply copying the 19 KB worker file would not have worked) into a real hashed chunk, and hands
+that URL to the supported `maplibregl.setWorkerUrl()`. `vite.config.ts` sets `worker.format: 'es'` because
+maplibre constructs the worker with `{ type: 'module' }` and the Vite default of `iife` would not survive
+that. Chosen over vendoring maplibre's dist files into `public/` because the worker then tracks the
+installed version automatically instead of silently going stale on the next upgrade. No new dependency.
+
+**Fix 2 — the SPA fallback must stop lying.** `server/src/api.ts` answered *every* non-`/api/` miss with
+`index.html` at 200. Paths under `/assets/` or carrying a known asset extension now return a real 404;
+the shell is served only for genuine GET/HEAD navigations (no file extension, or `Accept: text/html`).
+Asset-ness is tested *before* `Accept` so a browser navigating straight to a dead bundle URL still gets the
+404 rather than a reassuring page. This matters beyond the map: per §27 the service worker would otherwise
+have cached an HTML document under an immutable hashed `.js` URL permanently. `wildcard: true` is
+untouched — the §26 regression (stale startup enumeration) does not come back, and real assets still serve
+with correct content types.
+
+**Fix 3 — the error storm was a real race, not just fallout.** It survived Fix 1. The 5s poll and the first
+geo recenter (`easeTo` → `moveend` → `scheduleFetch`) both reach `ingest()` well before `load` installs the
+`vehicles` source, and a theme swap drops that source mid-animation. Because the rAF loop writes
+feature-state *per vehicle per frame*, one early poll became hundreds of errors. All vehicle writes now go
+through one `vehSource()` guard: `ingest()` drops the tick silently (the next poll rebuilds the fleet) and
+the rAF loop re-checks every frame and stops instead of erroring.
+
+**Fix 3b — say what actually failed.** The fallback blamed the tile server for a failure it had never
+observed, and that misdirection is exactly what hid the worker bug. The component now tracks whether the
+style ever loaded and distinguishes `'tiles'` (style up, vector source never usable) from `'engine'` (the
+map never loaded at all). The tile server was independently cleared: `fetch('https://tiles.openfreemap.org/
+styles/liberty')` and `/planet` both returned 200 from the failing page.
+
+**Outstanding — one string, owned by the i18n team.** `'engine'` currently borrows `map.loading`, the only
+existing key that makes no false claim about cause. It needs `map.engineUnavailable` in all three locales
+(Dict parity is compiler-enforced, so en cannot be edited alone). Proposed EN: *"Map can't load right
+now — the list below is still live."* There is a TODO at the fallback render site in `MapCard.tsx`.
+
+**Proof.** Production build served by `npm start`: `/` 200 html; `/api/health` 200 json; hashed `.js` 200
+`application/javascript`; hashed `.css` 200 `text/css`; `/assets/nonexistent-abc123.js` **404**;
+`/assets/maplibre-gl-worker.mjs` (the old guess) **404**; the emitted worker 200 `application/javascript`.
+Chromium against that build: basemap renders, attribution present, 16 tile requests / 0 failures, worker
+loaded from `/assets/maplibre-gl-worker-<hash>.js`, 68 vehicles in view of 1,352 fleet-wide, and
+**0 console errors** (from 528). Same probe against `vite dev`: also 0 errors — the guard fixed the race in
+dev too. Screenshot: `screenshots/prod/map-production-build.png`. Initial-load gzip is unchanged by this
+work (97.9 KB against a 550 KB budget): the worker is a lazy sibling of the already-lazy MapCard chunk, and
+`maplibre` appears zero times in the initial chunk.

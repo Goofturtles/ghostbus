@@ -22,7 +22,7 @@ export default defineConfig({
   },
   // maplibre-gl v6 builds its worker with `new Worker(url, { type: 'module' })`,
   // so the chunk we hand it via `?worker&url` (MapCard.tsx) must be ESM — the
-  // Vite default of 'iife' would be loaded as a module and blow up. See DECISIONS §29.
+  // Vite default of 'iife' would be loaded as a module and blow up. See DECISIONS §28.
   worker: {
     format: 'es',
   },

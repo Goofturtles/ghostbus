@@ -42,7 +42,7 @@ const DIST_CANDIDATES = [
 ];
 
 // A missing file must 404, never fall through to the SPA shell. Answering a hashed
-// `.js` URL with `200 text/html` is how a dead map hid for a whole phase (DECISIONS §29),
+// `.js` URL with `200 text/html` is how a dead map hid for a whole phase (DECISIONS §28),
 // and the service worker would happily cache that HTML under the immutable asset URL
 // forever. Anything that looks like a file gets a real 404; only navigations get the shell.
 const ASSET_EXT_RE = /\.(js|mjs|cjs|css|map|json|webmanifest|wasm|png|jpe?g|gif|svg|webp|avif|ico|woff2?|ttf|otf|eot|txt|xml)$/i;
