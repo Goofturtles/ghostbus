@@ -91,7 +91,9 @@ export default function MapCard() {
   const arrivals = useLive((s) => s.arrivals);
 
   const [selected, setSelected] = useState<VehicleDto | null>(null);
-  const [tilesFailed, setTilesFailed] = useState(false);
+  // 'tiles'  = the style started but the vector source never became usable.
+  // 'engine' = the map itself never finished loading (worker/style init failure).
+  const [mapFailure, setMapFailure] = useState<'tiles' | 'engine' | null>(null);
   const [vehCount, setVehCount] = useState(0);
 
   // ---- imperative state kept off the React render path ----
@@ -110,6 +112,7 @@ export default function MapCard() {
   const centeredOnGeo = useRef(false);
   const routeGeoRef = useRef<RouteShapeResponse | null>(null);
   const tilesOkRef = useRef(false);
+  const styleOkRef = useRef(false);
   const failTimerRef = useRef<number | null>(null);
   const themeInitedRef = useRef(false);
   const selectedRef = useRef<VehicleDto | null>(null);
@@ -167,13 +170,20 @@ export default function MapCard() {
     // shows only if the vector source never becomes usable within a grace window; it
     // clears whenever the source (re)loads. Never a checkerboard (ground color shows through).
     map.on('sourcedata', (e) => {
-      if (e.sourceId === 'omt' && e.isSourceLoaded) { tilesOkRef.current = true; setTilesFailed(false); }
+      if (e.sourceId === 'omt' && e.isSourceLoaded) { tilesOkRef.current = true; setMapFailure(null); }
     });
-    failTimerRef.current = window.setTimeout(() => { if (!tilesOkRef.current) setTilesFailed(true); }, 9000);
+    // Name the failure we actually observed. If the map never even finished loading,
+    // the tile server is not the story — blaming it sent a whole phase chasing tiles
+    // while the real fault was a worker that would not start. See DECISIONS §29.
+    failTimerRef.current = window.setTimeout(() => {
+      if (tilesOkRef.current) return;
+      setMapFailure(styleOkRef.current ? 'tiles' : 'engine');
+    }, 9000);
     map.on('movestart', (e: { originalEvent?: unknown }) => { if (e.originalEvent) userMoved.current = true; });
     map.on('moveend', () => scheduleFetch());
 
     map.on('load', () => {
+      styleOkRef.current = true;
       installLayers(map, theme);
       fetchVehicles();
     });
@@ -213,6 +223,17 @@ export default function MapCard() {
   }, []);
 
   // ============================ install sources/layers/images ============================
+  /** The one precondition every vehicle write shares: a live map whose style still holds
+   *  the `vehicles` source. It is absent before `load` fires (the first geo recenter fires
+   *  `moveend` -> a fetch well before then), across a `setStyle` swap, and permanently if
+   *  the style never initialises at all. Without this, each of those windows turned into
+   *  hundreds of console errors per second from setFeatureState. */
+  function vehSource(map: maplibregl.Map | null): maplibregl.GeoJSONSource | null {
+    if (!map || !map.style) return null;
+    try { return (map.getSource('vehicles') as maplibregl.GeoJSONSource | undefined) ?? null; }
+    catch { return null; }
+  }
+
   function ensureSprite(map: maplibregl.Map, kind: VehicleKind, color: string) {
     const id = spriteId(kind, color);
     if (map.hasImage(id)) return;
@@ -285,11 +306,12 @@ export default function MapCard() {
     // re-apply live data after a style swap
     applyRoute(map);
     applyWalk(map);
-    (map.getSource('vehicles') as maplibregl.GeoJSONSource | undefined)?.setData(vehFCRef.current);
+    vehSource(map)?.setData(vehFCRef.current);
     restoreFeatureStates(map);
   }
 
   function restoreFeatureStates(map: maplibregl.Map) {
+    if (!vehSource(map)) return;
     // `sel` lives in feature properties (survives setData); only `op` is feature-state.
     for (const f of vehFCRef.current.features) {
       map.setFeatureState({ source: 'vehicles', id: (f.properties as { id: string }).id }, { op: 1 });
@@ -358,7 +380,10 @@ export default function MapCard() {
 
   // ============================ ingest + animate ============================
   function ingest(vehicles: VehicleDto[]) {
-    const map = mapRef.current!;
+    const map = mapRef.current;
+    // No usable style yet (or ever): drop this tick silently. `vehFCRef`/`anims` stay
+    // empty, so the next poll after the source appears rebuilds the whole fleet.
+    if (!map || !vehSource(map)) return;
     const now = performance.now();
     const anims = animsRef.current;
     const seen = new Set<string>();
@@ -422,7 +447,7 @@ export default function MapCard() {
       vehFCRef.current.features = kept;
     }
 
-    (map.getSource('vehicles') as maplibregl.GeoJSONSource | undefined)?.setData(vehFCRef.current);
+    vehSource(map)?.setData(vehFCRef.current);
     startRaf();
     updateBadge();
   }
@@ -436,8 +461,12 @@ export default function MapCard() {
 
   function startRaf() {
     if (rafRef.current != null) return;
-    const map = mapRef.current!;
     const tick = () => {
+      // Re-checked every frame, not just at start: a theme swap drops the source
+      // mid-animation, and this loop writes feature-state per vehicle per frame.
+      const map = mapRef.current;
+      const src = vehSource(map);
+      if (!map || !src) { rafRef.current = null; return; }
       const now = performance.now();
       let active = false;
       for (const a of animsRef.current.values()) {
@@ -452,7 +481,7 @@ export default function MapCard() {
           else { map.setFeatureState({ source: 'vehicles', id: (a.feat.properties as { id: string }).id }, { op: 1 }); a.fadeStart = 0; }
         }
       }
-      (map.getSource('vehicles') as maplibregl.GeoJSONSource | undefined)?.setData(vehFCRef.current);
+      src.setData(vehFCRef.current);
       updateBadge();
       if (active) { rafRef.current = requestAnimationFrame(tick); }
       else { rafRef.current = null; }
@@ -470,7 +499,7 @@ export default function MapCard() {
     const prev = selectedRef.current?.id;
     if (prev && prev !== v.id) setSelProp(prev, false);
     setSelProp(v.id, true);
-    (map.getSource('vehicles') as maplibregl.GeoJSONSource | undefined)?.setData(vehFCRef.current);
+    vehSource(map)?.setData(vehFCRef.current);
     setSelected(v);
     const a = animsRef.current.get(v.id);
     const c: LngLat = a ? [a.toLon, a.toLat] : [v.lon, v.lat];
@@ -480,7 +509,7 @@ export default function MapCard() {
   function deselect() {
     const map = mapRef.current!;
     const prev = selectedRef.current?.id;
-    if (prev) { setSelProp(prev, false); (map.getSource('vehicles') as maplibregl.GeoJSONSource | undefined)?.setData(vehFCRef.current); }
+    if (prev) { setSelProp(prev, false); vehSource(map)?.setData(vehFCRef.current); }
     setSelected(null);
     badgeMarker.current?.remove(); badgeMarker.current = null;
   }
@@ -663,10 +692,15 @@ export default function MapCard() {
         {selected ? t('map.selectedVehicle', { route: selected.shortName ?? selected.routeId ?? '—' }) : ''}
       </p>
 
-      {tilesFailed && (
+      {mapFailure && (
         <div className="map-fallback" role="status">
           <span className="map-fallback-glyph" aria-hidden><LayersIcon width={20} height={20} /></span>
-          <span>{t('map.tilesUnavailable')}</span>
+          {/* 'tiles' is the only failure `map.tilesUnavailable` actually describes. For an
+              engine failure it would be a guess dressed as a diagnosis, so fall back to the
+              neutral 'map.loading' until a truthful key exists in all three locales.
+              TODO(i18n, owner: orchestrator): add `map.engineUnavailable` to en/frCA/es —
+              EN: "Map can't load right now — the list below is still live." */}
+          <span>{t(mapFailure === 'tiles' ? 'map.tilesUnavailable' : 'map.loading')}</span>
         </div>
       )}
 
