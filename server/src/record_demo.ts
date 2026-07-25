@@ -34,9 +34,12 @@
 import { gzipSync } from 'node:zlib';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
+import GtfsRealtimeBindings from 'gtfs-realtime-bindings';
 import { torontoParts } from './tz.ts';
 import type { FeedId } from '../../shared/types.ts';
+
+const { transit_realtime } = GtfsRealtimeBindings;
 
 // Duplicated from poller.ts on purpose: poller.ts does not export FEEDS, and importing it
 // would drag the database layer into a script that must run with no database at all.
@@ -49,6 +52,7 @@ const FEED_IDS: FeedId[] = ['vehicles', 'trips', 'alerts'];
 
 const DEFAULT_MINUTES = 10;
 const DEFAULT_CADENCE_MS = 45_000;      // production poll cadence
+const MIN_CADENCE_MS = 5_000;           // politeness floor for a public agency feed
 const REQUEST_TIMEOUT_MS = 10_000;      // same timeout the live poller uses
 const SIZE_WARN_BYTES = 25 * 1024 * 1024;
 
@@ -164,6 +168,18 @@ export async function captureFrame(
     }
     const buf = Buffer.from(await res.arrayBuffer());
     const at = Date.now();
+    // Sanity-decode before accepting the frame. A 200 carrying an HTML error page or a
+    // captive-portal interstitial would otherwise be recorded as healthy and only blow up
+    // at replay, long after the buses have stopped running. The decoded value is
+    // discarded — we store the raw bytes, this is purely a guard on fixture integrity.
+    try {
+      transit_realtime.FeedMessage.decode(buf);
+    } catch (e) {
+      return {
+        ...base(at), ok: false, httpStatus: res.status, byteLength: buf.length, payloadBase64: null,
+        error: `HTTP ${res.status} but body is not GTFS-realtime (${e instanceof Error ? e.message : String(e)})`,
+      };
+    }
     return {
       ...base(at),
       ok: true,
@@ -233,11 +249,21 @@ export function buildManifest(
 
 // ---------- CLI ----------
 
-function flag(name: string, fallback: number): number {
+function argValue(name: string): string | null {
   const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
-  if (!hit) return fallback;
-  const n = Number(hit.slice(name.length + 3));
-  return Number.isFinite(n) && n > 0 ? n : fallback;
+  if (!hit) return null;
+  const v = hit.slice(hit.indexOf('=') + 1).trim();
+  return v === '' ? null : v;
+}
+
+function flag(name: string, fallback: number, min: number): number {
+  const raw = argValue(name);
+  if (raw === null) return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < min) {
+    throw new Error(`--${name}=${raw} is invalid (must be a number >= ${min})`);
+  }
+  return n;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -249,18 +275,29 @@ function mb(bytes: number): string {
 }
 
 async function main(): Promise<void> {
-  const minutes = flag('minutes', DEFAULT_MINUTES);
-  const cadenceMs = flag('cadence-ms', DEFAULT_CADENCE_MS);
+  const minutes = flag('minutes', DEFAULT_MINUTES, 0.01);
+  // Floor the cadence at 5s: this recorder points at a public agency feed, and a typo
+  // like --cadence-ms=0.5 would otherwise hammer the TTC with millions of requests.
+  const cadenceMs = flag('cadence-ms', DEFAULT_CADENCE_MS, MIN_CADENCE_MS);
   const durationMs = minutes * 60_000;
   // Frame at t=0, then every cadence, for as long as the next one still fits the window.
   const cycles = Math.floor(durationMs / cadenceMs) + 1;
 
   const captureStartMs = Date.now();
-  const outArg = process.argv.find((a) => a.startsWith('--out='));
   const outPath = resolve(
     process.cwd(),
-    outArg ? outArg.slice(6) : `fixtures/ttc-demo-${torontoSlug(captureStartMs)}.json.gz`,
+    argValue('out') ?? `fixtures/ttc-demo-${torontoSlug(captureStartMs)}.json.gz`,
   );
+  // The manifest sidecar must never collide with the bundle: a naive
+  // `outPath.replace(/\.json\.gz$/, ...)` is a no-op for an --out that does not end in
+  // .json.gz, which would overwrite ten minutes of capture with a 1 KB manifest.
+  const sidecarPath = `${outPath.replace(/\.json\.gz$/, '')}.manifest.json`;
+  if (sidecarPath === outPath) throw new Error(`--out=${outPath} collides with its manifest sidecar`);
+
+  // Fail fast on an unwritable destination rather than at minute 10 with the capture
+  // already in hand and nowhere to put it.
+  mkdirSync(dirname(outPath), { recursive: true });
+  writeFileSync(sidecarPath, `{"status":"capture in progress","startedAt":${JSON.stringify(new Date(captureStartMs).toISOString())}}\n`);
 
   console.log('GhostBus Demo Mode recorder');
   console.log(`  start    ${torontoStamp(captureStartMs)}  (${new Date(captureStartMs).toISOString()})`);
@@ -290,19 +327,17 @@ async function main(): Promise<void> {
   const json = Buffer.from(JSON.stringify(bundle), 'utf8');
   const gz = gzipSync(json, { level: 9 });
 
-  mkdirSync(dirname(outPath), { recursive: true });
   writeFileSync(outPath, gz);
   // Sidecar: the manifest alone, uncompressed, so the provenance of the fixture is
   // readable (and diffable in git) without inflating a multi-megabyte bundle.
-  const sidecar = outPath.replace(/\.json\.gz$/, '.manifest.json');
-  writeFileSync(sidecar, `${JSON.stringify(manifest, null, 2)}\n`);
+  writeFileSync(sidecarPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
   console.log('');
   console.log(`  frames         ${frames.length} (${frames.filter((f) => f.ok).length} ok, ${frames.filter((f) => !f.ok).length} failed)`);
   console.log(`  raw payloads   ${mb(manifest.totalPayloadBytes)}`);
   console.log(`  json bundle    ${mb(json.length)}`);
   console.log(`  gzipped file   ${mb(gz.length)}  -> ${outPath}`);
-  console.log(`  manifest       ${sidecar}`);
+  console.log(`  manifest       ${sidecarPath}`);
   console.log(`  window         ${manifest.captureStartToronto} .. ${manifest.captureEndToronto}`);
   if (gz.length > SIZE_WARN_BYTES) {
     console.warn(`  WARNING: fixture exceeds ${mb(SIZE_WARN_BYTES)} — reduce --minutes before committing.`);
@@ -310,6 +345,8 @@ async function main(): Promise<void> {
 }
 
 // Only run when executed directly, so the helpers above stay importable by tests.
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// Path comparison (not URL string comparison) matches aggregate.ts and is not tripped up
+// by Windows drive-letter casing.
+if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
   main().catch((e) => { console.error('recorder FAILED:', e); process.exit(1); });
 }
