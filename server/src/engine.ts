@@ -1017,10 +1017,15 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
 
     // (f) gates, evaluated BEFORE anything is written.
     const boardMedian = med(firstStopResids.map(Math.abs));
+    // A service can be calendar-active on a date whose trips were never seeded — see the
+    // boardIntegrity gate and BLOCKERS 9.
+    let activeServiceTripCount = 0;
+    for (const s of inp.activeServices) activeServiceTripCount += index.tripsByService.get(s) ?? 0;
     const gate = evaluateGates({
       boardActive: stats.boardActive,
       boardTag,
       serviceDate: inp.serviceDate,
+      activeServiceTripCount,
       boardAgreementMedianResidS: boardMedian,
       xwalkOccurrenceCoverage: stats.xwalk.occurrenceCoverage,
       crossRouteAgreement: cra.rate,

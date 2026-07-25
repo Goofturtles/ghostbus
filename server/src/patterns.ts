@@ -54,6 +54,14 @@ export interface PatternIndex {
   routeStops: Map<string, StopPoint[]>;
   stopsByTrip: Map<string, string>;
   serviceByTrip: Map<string, string>;
+  /**
+   * service_id -> how many static trips we actually hold for it. The `calendar` table is
+   * seeded whole while `trips` is seeded through a window, so a service can be
+   * calendar-ACTIVE on a date and still have no trips loaded — see BLOCKERS 9, where six
+   * Saturdays and the civic holiday resolve to exactly that. Without this count the engine
+   * cannot tell "nothing was late" from "we hold no schedule for this date".
+   */
+  tripsByService: Map<string, number>;
   tripIds: Set<string>;
   builtAtMs: number;
   elapsedMs: number;
@@ -120,7 +128,7 @@ export async function buildPatternIndex(db: Db, agency: string, boardTag: string
     boardTag,
     patterns: new Map(), byRoute: new Map(), slotsByPattern: new Map(), slotsByTrip: new Map(),
     maxLenByRoute: new Map(), medianHeadwayS: new Map(), routeStops: new Map(),
-    stopsByTrip: new Map(), serviceByTrip: new Map(), tripIds: new Set(),
+    stopsByTrip: new Map(), serviceByTrip: new Map(), tripsByService: new Map(), tripIds: new Set(),
     builtAtMs: Date.now(), elapsedMs: 0,
   };
 
@@ -230,6 +238,7 @@ export function foldTrip(idx: PatternIndex, rows: readonly RawRow[]): void {
   idx.slotsByTrip.set(head.trip_id, slot);
   idx.stopsByTrip.set(head.trip_id, patternId);
   idx.serviceByTrip.set(head.trip_id, serviceId);
+  idx.tripsByService.set(serviceId, (idx.tripsByService.get(serviceId) ?? 0) + 1);
   idx.tripIds.add(head.trip_id);
 }
 
@@ -239,7 +248,7 @@ export function emptyPatternIndex(boardTag = '?..?'): PatternIndex {
     boardTag,
     patterns: new Map(), byRoute: new Map(), slotsByPattern: new Map(), slotsByTrip: new Map(),
     maxLenByRoute: new Map(), medianHeadwayS: new Map(), routeStops: new Map(),
-    stopsByTrip: new Map(), serviceByTrip: new Map(), tripIds: new Set(),
+    stopsByTrip: new Map(), serviceByTrip: new Map(), tripsByService: new Map(), tripIds: new Set(),
     builtAtMs: 0, elapsedMs: 0,
   };
 }

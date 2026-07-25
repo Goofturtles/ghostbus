@@ -19,6 +19,8 @@ export interface GateInput {
   boardActive: boolean;
   boardTag: string;
   serviceDate: number;
+  /** static trips the loaded board actually holds for those calendar-active services. */
+  activeServiceTripCount: number;
   /** median |first_stop_resid_s| over the most recent bindings, or null when there are none. */
   boardAgreementMedianResidS: number | null;
   /** share of StopTimeUpdate OCCURRENCES (not distinct stops) that resolve through the crosswalk. */
@@ -48,6 +50,20 @@ export function evaluateGates(i: GateInput): GateResult {
   if (!i.boardActive) {
     return fail('boardActive',
       `no calendar-active schedule for ${i.serviceDate}; the loaded board covers ${i.boardTag}`);
+  }
+  // BOARD INTEGRITY. The calendar can declare a service active on a date for which we hold
+  // no trips at all: `calendar` and `calendar_dates` are seeded whole while `trips` is
+  // seeded through a rolling window, so seven of this board's 42 days — six Saturdays on
+  // service 2 and the civic holiday on service 4 — are calendar-active and completely
+  // empty (BLOCKERS 9). Without this gate those days pass `boardActive`, produce zero due
+  // trips, zero ghosts and zero delays, and render as a clean day. "We hold no schedule
+  // for this date" and "nothing went wrong" are opposite statements and must not look
+  // alike. This does not repair the seed; it stops the hole from reading as good news.
+  if (i.boardActive && i.activeServiceTripCount === 0) {
+    return fail('boardIntegrity',
+      `the calendar activates service for ${i.serviceDate}, but the loaded board (${i.boardTag}) ` +
+      `holds no trips for it — that date was not seeded, so silence here would mean missing data, ` +
+      `not an on-time service`);
   }
   if (i.xwalkOccurrenceCoverage < MIN_XWALK_OCCURRENCE_COVERAGE) {
     return fail('xwalkOccurrenceCoverage',

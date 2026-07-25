@@ -8,6 +8,7 @@ function gi(over: Partial<GateInput> = {}): GateInput {
     boardActive: true,
     boardTag: '20260726..20260905',
     serviceDate: 20260803,
+    activeServiceTripCount: 29_870,
     boardAgreementMedianResidS: 20,
     xwalkOccurrenceCoverage: 0.7,
     crossRouteAgreement: 0.95,
@@ -77,6 +78,28 @@ test('the inactive board is reported ahead of every downstream symptom', () => {
     boardActive: false, xwalkOccurrenceCoverage: 0, crossRouteAgreement: 0, monotonicityViolationRate: 1,
   }));
   assert.equal(r.failed, 'boardActive');
+});
+
+test('REGRESSION (BLOCKERS 9): a calendar-active date with no seeded trips is not silence', () => {
+  // Measured on the seeded board: seven of its 42 days are calendar-active and hold zero
+  // trips — 2026-08-01/08/15/22/29 and 09-05 on service 2 (32,874 trips in the published
+  // feed, none loaded) and 2026-08-03 on service 4 (31,295 in the feed, none loaded),
+  // because `calendar` is seeded whole while `trips` is seeded through a 7-day window.
+  // Those days used to pass every gate and emit nothing, which is indistinguishable from
+  // a day on which nothing went wrong.
+  const blank = evaluateGates(gi({ serviceDate: 20260801, activeServiceTripCount: 0 }));
+  assert.equal(blank.publish, false);
+  assert.equal(blank.failed, 'boardIntegrity');
+  assert.match(blank.reason ?? '', /20260801/);
+  assert.match(blank.reason ?? '', /not seeded/);
+  // It must not be confusable with the inactive-board case, which is a different fact.
+  assert.notEqual(blank.failed, 'boardActive');
+
+  // A date with no calendar-active service at all is still reported as such, not as a
+  // seeding hole — there is nothing missing on a day the agency runs no service.
+  assert.equal(evaluateGates(gi({ boardActive: false, activeServiceTripCount: 0 })).failed, 'boardActive');
+  // And a properly seeded day is unaffected.
+  assert.equal(evaluateGates(gi({ activeServiceTripCount: 1 })).publish, true);
 });
 
 test('REGRESSION (BLOCKERS 17): a bad crosswalk trips the monotonicity gate end to end', () => {
