@@ -17,15 +17,15 @@ Last reconciled against the source tree, the production database and the running
 | 6 | RESOLVED in code, data purged | The feed publishes no `delay` field at all |
 | 7 | OPEN, mitigated | Realtime and static `stop_id` are disjoint namespaces |
 | 8 | OPEN (feed limitation) | `TripDescriptor` carries no start time, date or direction |
-| 9 | OPEN, filed, not fixed | The seeded board has no Saturday trips |
-| 10 | OPEN (blocking today) | Crosswalk coverage is below its own publication gate |
-| 11 | OPEN (blocking every restart) | The learned crosswalk is not restored across restarts |
+| 9 | OPEN in the seed, GATED in the engine | The seeded board has no Saturday trips |
+| 10 | RESOLVED (gate unchanged, learning fixed) | Crosswalk coverage is below its own publication gate |
+| 11 | RESOLVED for the crosswalk, OPEN for the anchors | The learned crosswalk is not restored across restarts |
 | 12 | OPEN (new risk) | Ghost detection now inherits every binding refusal |
 | 13 | OPEN, filed | `/api/health` does not surface the delay engine's own stats |
 | 14 | OPEN (structural) | No end-to-end accuracy validation is possible before 2026-07-26 |
 | 15 | NOTE | Route 501 hits the RT pattern cap every cycle |
-| 16 | OPEN | The proto2 default trap still applies on the map's vehicle path |
-| 17 | OPEN | The two crosswalk self-audits are narrower than their gate names |
+| 16 | RESOLVED in code; measured latent, not active | The proto2 default trap still applies on the map's vehicle path |
+| 17 | RESOLVED for monotonicity, OPEN for cross-route | The two crosswalk self-audits are narrower than their gate names |
 
 ---
 
@@ -244,7 +244,7 @@ wire. Direction must be inferred from the stop pattern and must never be read fr
 
 ---
 
-## 9. OPEN, filed, NOT fixed (`seed_toronto.ts` is not owned by this workstream) — the seeded board is missing Saturdays and the civic holiday
+## 9. OPEN in the seed, GATED in the engine (`seed_toronto.ts` is not owned by this workstream) — the seeded board is missing Saturdays and the civic holiday
 
 **The symptom.** `calendar` contains service_id `'2'` with `sat = true`, but **zero trips
 reference it**. Trips per service in the seeded board: `1` = 38,112 (Mon–Fri), `3` = 29,870
@@ -285,9 +285,38 @@ in the delay engine can or should paper over it.
 
 *Verified 2026-07-25 against both the seeded database and `.data/gtfs/extracted/{calendar,calendar_dates,trips}.txt`.*
 
+### Re-verified independently, day by day, and the dates above are exactly right
+
+Replaying `activeServiceIds` over all 42 board days against the seeded tables and against the
+raw feed files side by side: **7 blank days** — 2026-08-01, 08-08, 08-15, 08-22, 08-29 and
+09-05 (service `2`: **32,874** trips published, **0** loaded) and 2026-08-03 (service `4`:
+**31,295** published, **0** loaded, with service `1` removed by `calendar_dates` that day). The
+other **35 days match the published feed exactly** — the seeded board is not thin anywhere
+else, only absent on those seven. Services `6702`/`6703`/`6704` are never active in the FEED
+either, so that part of the shortfall is not ours.
+
+### What was done in the engine, and what was not
+
+Those seven days used to pass `boardActive`, produce zero due trips, zero ghosts and zero
+delays, and render **identically to a day on which nothing went wrong** — a zero meaning "we
+have no schedule" wearing the costume of a zero meaning "nothing was late", which for an
+accountability product is the worst confusion available. A `boardIntegrity` gate (`gates.ts`)
+now fires when the calendar activates a service for the date and the loaded board holds no
+trips for it, and names the hole in its reason string. `patterns.ts` gains `tripsByService` to
+answer the question.
+
+**That is a smaller claim than a fix, and only the smaller claim is true.** The seeding fix
+belongs in `seed_toronto.ts`: `tripRows` and `stopTimeRows` filter on the services active in
+the next `GHOSTBUS_SEED_WINDOW_DAYS` (default 7) days *from the seed date*, while `calendar`
+and `calendar_dates` are loaded whole — two different windows over the same board. The filter
+must be derived from the loaded board's own validity span
+(`min(start_date)..max(end_date)` across `calendar`), or at minimum unioned with it, so that a
+service the calendar declares active can never lack its trips. Until that runs, this entry
+stays OPEN.
+
 ---
 
-## 10. OPEN — the learned crosswalk is below its own publication gate
+## 10. RESOLVED — the crosswalk was below its own publication gate, and the gate was not the problem
 
 New entry, 2026-07-25. `evaluateGates` requires
 `xwalkOccurrenceCoverage ≥ MIN_XWALK_OCCURRENCE_COVERAGE = 0.50` — the share of realtime
@@ -306,18 +335,83 @@ report `xwalkOccurrenceCoverage` rather than `boardActive` as the reason. This i
 behaving correctly, but it means the board activating on 2026-07-26 is **not by itself
 sufficient** for the engine to start emitting, and any plan that assumes it is will be wrong.
 
-**Whether 0.50 is reachable at all on this feed is now genuinely in doubt.** Fifteen cycles
-of plateau is not proof — new stop identities are still being confirmed each cycle, just
-slowly, and the run started from an empty crosswalk (entry 11) — but the curve is flat, not
-climbing, and the gate is 13 points away. If it does not clear, the honest options are to
-find the coverage that is being lost (a large share of `StopTimeUpdate` occurrences name
-stops the geometry has never anchored) or to justify a different threshold on evidence
-rather than on convenience. Lowering the gate to fit the measurement would be exactly the
-move this project exists not to make.
+**It got worse before it was understood.** By cycle 75 of the same run coverage read **30.9%**
+and by cycle 87 **30.6%**: the curve was not flat, it was descending, while the crosswalk was
+still notionally learning. A metric that falls as evidence accumulates is not a plateau, it is
+a leak.
+
+### Diagnosis, 2026-07-25 — measured, not inferred
+
+Decomposing one live trips snapshot (**23,636 `StopTimeUpdate` occurrences**) against the
+persisted crosswalk gives the whole loss, by name:
+
+| share | occurrences | bucket |
+|---:|---:|---|
+| 43.2% | 10,212 | `candidate` — has an identity, blocked only by the two-pattern promotion rule |
+| **35.6%** | **8,417** | **covered** |
+| 13.5% | 3,185 | `confirmed` but confidence < 0.60, source `geo` |
+| 4.0% | 939 | `conflicted` |
+| 2.6% | 625 | no crosswalk entry at all (328 distinct rt stops) |
+| 1.1% | 258 | `confirmed` but confidence < 0.60, source `propagated` |
+
+Almost none of that is a shortage of evidence. Two rules were **discarding** it.
+
+**1. Corroboration lowered confidence.** A geometric anchor *overwrote* a propagated entry,
+and geometry carries a residual penalty (`1 - resid/60`) that propagation does not — while
+`nearestStopOnRoute` accepts anchors out to 80 m. So any geometric residual over 24 m is
+permanently under the 0.60 floor whatever the vote count, and a stop propagation supported at
+0.85 dropped to 0.33 the moment a vehicle was seen 40 m from it **while agreeing about which
+stop it was**. Two lines of evidence yielding less than one is incoherent. In the database:
+1,018 of 1,535 geometric entries have a residual over 20 m, and 522 of those are capped below
+0.50 by arithmetic alone. `corroboratedConfidence` now takes the best of the *agreeing*
+sources, which admits nothing either source would have refused on its own.
+
+**2. Promotion forgot what it had already seen.** `distinctPatterns` was recounted every cycle
+from the patterns resolved in *that* cycle, so a stop confirmed by two agreeing patterns fell
+back to `candidate` when one of them went off shift — 03:00 unlearning what 08:00 established.
+The oscillation is visible directly in the log (confirmed 3,043 -> 3,031 -> 3,019 -> 3,025 ->
+3,042 over five consecutive cycles). Agreement is now accumulated, keyed by **static** pattern
+id so an RT pattern's content-hash rename cannot let one line of evidence corroborate itself
+twice, and restored from the database on a warm start.
+
+### Result — the gate was right
+
+Measured against the live feeds, with `MIN_XWALK_OCCURRENCE_COVERAGE` **unchanged at 0.50**:
+
+| | cycle 1 | after 10 cycles | direction |
+|---|---:|---:|---|
+| before (running collector, same wall clock) | 0.0% | 30.9% at cycle 75 | **falling** |
+| after | **49.1%** | **51.7%** | **rising** |
+
+A second run: 49.3% -> 50.7% over six cycles. The binding gate is now `boardActive` rather
+than `xwalkOccurrenceCoverage` — the crosswalk is no longer what stands between this engine
+and its first published number.
+
+### What was deliberately NOT done
+
+The 43.2% `candidate` bucket is blocked by the two-independent-patterns rule alone, and 4,066
+of those 4,686 entries already clear the confidence floor. Admitting them would have been the
+single largest coverage win available, and it was **not taken**. The evidence for it was a
+held-out-geometry experiment — withhold a fifth of the geometric anchors, let propagation
+predict those stops, compare against the measurement withheld — which returned **88.57%
+agreement for one-pattern identities (n=140) against 80.70% for two-or-more (n=57)**. That
+says the rule buys no accuracy. But the withheld "truth" is itself a nearest-stop match, and
+its disagreements are overwhelmingly *adjacent platform ids at one intersection*
+(`1037` vs `1036`, `2034` vs `2033`, `8349` vs `8348`), so the experiment cannot distinguish
+"propagation is wrong" from "the geometric answer picked the other side of the street".
+Loosening a promotion rule on evidence that weak, to raise a number, is the move this file
+exists to prevent. The rule stands and the experiment is recorded so the next person starts
+from it rather than from scratch.
+
+**Caveat on all of the above.** The Neon free-tier data-transfer quota was exhausted by the
+repeated 2.15M-row pattern-index rebuilds these measurements required (each run rebuilds the
+index in ~120 s), which also **stopped the collector at cycle 88**. The after-numbers therefore
+rest on two runs of 10 and 6 cycles, not on a long soak. They are consistent with each other
+and both are rising, but they are short.
 
 ---
 
-## 11. OPEN — the learned crosswalk is written to Postgres but never read back
+## 11. RESOLVED for `rt_stop_xwalk`, OPEN for the rest — the learned crosswalk was written to Postgres and never read back
 
 New entry, 2026-07-25. `rt_stop_anchor`, `rt_stop_xwalk`, `rt_stop_xwalk_votes`,
 `rt_pattern`, `rt_trip_binding` and `sched_slot_claim` are written by `engine.ts` and
@@ -333,9 +427,52 @@ minutes at a 45 s cadence before the crosswalk can back anything at all, and lon
 could clear the gate in entry 10.
 
 On a free hosting tier that spins the service down after inactivity, this compounds: a
-deployment that restarts more often than its warm-up period publishes nothing, ever. Loading
-the crosswalk from `rt_stop_xwalk` at boot (scoped by `board_tag`) is the obvious fix and has
-not been done.
+deployment that restarts more often than its warm-up period publishes nothing, ever.
+
+### FIXED 2026-07-25 for `rt_stop_xwalk`
+
+`loadCrosswalk()` (`engine.ts`) restores the crosswalk at boot, scoped by `board_tag`, and
+only when the in-memory crosswalk is genuinely cold — a periodic same-board reload must not
+stomp on fresher state with the row we ourselves wrote. Three merge properties, each with a
+regression test in `engine.test.ts`:
+
+1. **A restored row is not an observation.** It seeds `xwalkVotes` with the persisted count;
+   the usual `+1` fires only when the identity is actually re-derived. Crediting a vote for
+   reading a row would let an entry climb the confidence ladder by restarting the process.
+2. **New evidence can still overturn it.** The loaded stop id is seeded into
+   `xwalkProposals`, so a later cycle proposing a different static stop marks the rt stop
+   conflicted exactly as it would have within one process. Without that seeding a
+   contradiction would silently overwrite — the one outcome the conflict machinery exists to
+   prevent.
+3. **A restored `conflicted` entry stays conflicted**, at confidence 0, and out of the
+   propagation seed.
+
+**Measured cold start, before and after.** Before: occurrence coverage **0.0% on cycle 1** and
+for the following ~9 cycles, first usable crosswalk at cycle 11 — roughly **8 minutes** at the
+45 s cadence. After, against the live feeds with the production crosswalk in place: *"restored
+8,214 crosswalk entries for 20260726..20260905 (2,550 usable for a delay row, 171 conflicted)
+— warm start"*, and **cycle-1 coverage 49.1%** (a second run: 8,230 entries, 49.3%). The
+warm-up is **zero cycles**.
+
+### STILL OPEN — the other five tables
+
+`rt_stop_anchor`, `rt_stop_xwalk_votes`, `rt_pattern`, `rt_trip_binding` and
+`sched_slot_claim` are still written and never read.
+
+`rt_stop_anchor` matters most, and restoring it was **built, measured and then reverted**
+rather than shipped. The accumulated geometric centroids are the crosswalk's strongest
+evidence, and without them a restarted process also computes cross-route agreement over a
+handful of stops — measured at **75% (3 of 4)** on a cold 6-cycle run, which would fail its own
+85% gate on pure noise. But restoring 4,559 anchors surfaced ~330 fresh contradictions between
+measured geometry and the restored propagated crosswalk, and occurrence coverage read **44.6%
+rising to 45.3% over six cycles** instead of 49.1% rising to 51.7% — i.e. below the publish
+gate. Those contradictions may be geometry correctly retiring stale propagated identities, or
+they may be stale anchors (the table is not board-scoped and the centroids never decay). **The
+longer run that would have settled it could not be completed: the Neon free-tier data-transfer
+quota was exhausted by the repeated 2.15M-row pattern-index rebuilds these experiments
+required, which also stopped the collector at cycle 88.** Shipping a change whose only
+measurement puts the engine below its own publish gate, on the strength of "it would probably
+have recovered", is precisely the move this file exists to prevent. It is filed here instead.
 
 ---
 
@@ -422,7 +559,7 @@ genuinely fragmenting, has not been determined.
 
 ---
 
-## 16. OPEN — the proto2 default trap still applies on the map's vehicle path
+## 16. RESOLVED in code — and the trap was latent, not active
 
 New entry, 2026-07-25. Entry 6's rule — every optional scalar goes through `pb.ts` — holds
 for everything the delay engine consumes (`engineVehicles`, `processTripUpdates`). It does
@@ -440,30 +577,85 @@ is sprite rotation and a speed readout. It is filed anyway, because "we fixed th
 is exactly the kind of claim that should be true everywhere it is stated, and because the
 fix is mechanical.
 
+### FIXED 2026-07-25, and the entry above overstated the live impact
+
+`processVehicles` and `processAlerts` now read every optional scalar through `pb.ts`. An absent
+bearing stays **null** rather than becoming 0, which the map already handles — `MapCard.tsx`
+falls back to the bearing implied by the vehicle's own movement. `toNum`, which coerced
+whatever a field read as without asking whether it was sent, had no callers left and is
+deleted. Two wire-level round-trip regressions in `pb.test.ts` pin `Position.bearing`,
+`Position.speed`, `VehiclePosition.timestamp` and `TimeRange.start/end`.
+
+**Own-property census over three live snapshots**, and it corrects this entry:
+
+| field | absent on the wire | of |
+|---|---:|---|
+| `Position.bearing` | **0** | 1,224 / 1,236 / 1,246 vehicles with a position |
+| `Position.speed` | **0** | same |
+| `VehiclePosition.timestamp` | **0** | same |
+| `VehiclePosition.currentStopSequence` | 270, 262 | 1,236 / 1,246 (21.8%, 21.0%) |
+| `Alert.activePeriod` | 36 of 36 carry none | 36 alerts |
+
+So **no live vehicle is currently rendering a fabricated due-north heading**: the TTC publishes
+bearing, speed and timestamp for every vehicle it publishes a position for. The one field that
+genuinely is absent a fifth of the time, `currentStopSequence`, was already handled correctly
+by the old `> 0` guard. Two further defaults *were* reachable and are now closed —
+`timestamp` reading 0 dated a ping 1970-01-01 and made the intended "unknown -> now" fallback
+unreachable, and an alert with an open-ended active period would have been published as one
+starting 1970-01-01, though no live alert carries an `activePeriod` at all.
+
+The fix is therefore **the rule holding everywhere it is stated**, not a wrong number removed.
+Recorded at this length because the original entry asserted a live symptom ("renders pointing
+due north") that the measurement does not support, and a corrected finding is worth more than
+a confirmed one.
+
 ---
 
-## 17. OPEN — the two crosswalk self-audits are narrower than their gate names
+## 17. RESOLVED for monotonicity, OPEN for cross-route — the two crosswalk self-audits were narrower than their gate names
 
 New entry, 2026-07-25. `METHODS.md` §3.3e presents cross-route agreement and monotonicity as
 the crosswalk's falsifiable audits. As wired in `runCycle`, both are narrower than that:
 
-- **Monotonicity cannot currently fail.** The gate is meant to catch a crosswalk that maps
-  two realtime stops onto static stops that are out of order. `runCycle` passes
+- **Monotonicity could not fail. FIXED 2026-07-25.** The gate is meant to catch a crosswalk
+  that maps two realtime stops onto static stops that are out of order. `runCycle` passed
   `[...b.tracked.keys()].sort((a, c) => a - c)` — the binding's **realtime** stop sequences,
-  already sorted ascending — so `monotonicityViolations` compares a strictly increasing
-  sequence against itself and always returns 0. The `monotonicity` gate (`gates.ts`) and the
-  `xwalk.unhealthy` flag can never trip on it. It needs the **static** sequences the
-  crosswalk resolved those stops to.
-- **Cross-route agreement audits geometry only.** `runCycle` builds its per-route map
-  exclusively from `geoAnchors`, so the propagated entries — which are the bulk of the
-  crosswalk (2,148 of 2,693 confirmed rows in the database) and which `METHODS.md` calls
-  "the multiplier" — are never checked by it. The 93.8% is a geometric-anchor figure.
+  already sorted ascending — so `monotonicityViolations` compared a strictly increasing
+  sequence against itself and always returned 0. The `monotonicity` gate (`gates.ts`) and the
+  `xwalk.unhealthy` flag could never trip on it.
 
-Together these mean the system currently has **one** working falsifiable accuracy estimate,
-covering a minority of its own crosswalk, and it audits stop identity rather than trip
-identity. Neither is a wrong number being published — both are audits that would not catch
-the error they exist to catch. That is a worse failure for this project than a missing
-feature, which is why it is filed at this priority.
+  `crosswalkedStaticSeqs` (`xwalk.ts`) now resolves each tracked realtime stop, in realtime
+  order, to the **static** `stop_sequence` the crosswalk claims for it on the bound static
+  pattern, and `runCycle` feeds the audit that. Loops get the benefit of the doubt (the
+  earliest occurrence that still increases is chosen, so a violation is reported only when no
+  monotone assignment exists), and unnameable or off-pattern stops are skipped rather than
+  counted as disorder. Two regression tests pin it: one asserts the OLD input returns 0 on a
+  deliberately inverted crosswalk, the other drives crosswalk -> static sequences ->
+  `evaluateGates` end to end and asserts `failed === 'monotonicity'`.
+
+  **Run against live data (2026-07-25).** The gate itself runs over bindings and there are
+  none yet, so the audit was run over the closest available proxy — every resolved RT pattern
+  in `rt_pattern`, read through the live `rt_stop_xwalk` against the static pattern it
+  resolved to. **3 violations in 3,939 audited patterns = 0.08%**, against a 5% limit; 1,201
+  patterns had fewer than two usable crosswalked stops and were not judged. The same input
+  under the old wiring: **0 of 5,140, by construction.**
+
+  The three are real and all on **route 25**. Two of them are two distinct realtime stop ids
+  resolving to the *same* static stop (a repeated static sequence, e.g. `…47, 47, 49, 49…`),
+  which is a genuine crosswalk error rather than an ordering artifact. A non-zero count is a
+  finding, not a failure: the gate now measures something, and what it measures is small.
+- **Cross-route agreement audits geometry only. STILL OPEN.** `runCycle` builds its per-route
+  map exclusively from `geoAnchors`, so the propagated entries — which are the bulk of the
+  crosswalk (2,148 of 2,693 confirmed rows when this was written) and which `METHODS.md` calls
+  "the multiplier" — are never checked by it. The 93.8% is a geometric-anchor figure.
+  Deliberately not widened: see DECISIONS §33, which explains why feeding derived entries into
+  an independence-assuming audit would make it look stronger while being circular.
+
+Together these meant the system had **no** working falsifiable audit able to fail, and one
+narrow one that could. It now has two, one of them still covering a minority of its own
+crosswalk, and both audit stop identity rather than trip identity. Neither was a wrong number
+being published — both were audits that would not catch the error they exist to catch. That is
+a worse failure for this project than a missing feature, which is why it was filed at this
+priority.
 
 ---
 

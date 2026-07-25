@@ -1224,3 +1224,173 @@ filters must be derived from the loaded board's own validity span
 calendar declares can never lack its trips. Filed as `BLOCKERS.md` entry 9, still **OPEN**.
 Suppressing a misleading day is a smaller claim than fixing it, and only the smaller claim is
 true.
+
+---
+
+## §35 — The crosswalk plateau was a leak, and the gate that was suspected of being wrong was right
+
+Written 2026-07-25, the day before the static board activates. §33 covers the monotonicity
+audit and §34 the blank-service-day gate; this section covers the other three findings from
+the same pass — the cold start, the coverage plateau, and the map's decoder — and one
+operational consequence of measuring them.
+
+### The suspicion, and why it was the wrong one
+
+`BLOCKERS.md` entry 10 recorded crosswalk occurrence coverage stuck at 36.5–37.2% against a
+`MIN_XWALK_OCCURRENCE_COVERAGE` of 0.50, and asked the obvious question: is 0.50 simply the
+wrong number for this feed? That framing is dangerous, because it puts the gate on trial when
+the gate is the only thing standing between a thin crosswalk and a published delay. Reaching
+for the threshold first is how a project talks itself into shipping.
+
+So the threshold was left alone and the **metric** was taken apart instead. Two things fell
+out immediately, and neither is about where the line is drawn.
+
+**First: the curve was not flat, it was descending.** 36.4% at cycle 40, 30.9% at cycle 75,
+30.6% at cycle 87. A learning system whose coverage *falls* while it accumulates evidence is
+not plateauing. It is losing something it already had.
+
+**Second: decomposing 23,636 live `StopTimeUpdate` occurrences showed the loss was not a
+shortage of evidence.** 43.2% of occurrences resolved to an entry that had an identity and was
+blocked only by a promotion rule; another 13.5% resolved to an entry that was `confirmed` and
+under the confidence floor. Only 2.6% named a stop the system had never seen at all.
+
+### The two leaks
+
+**Corroboration was lowering confidence.** A geometric anchor *overwrote* a propagated entry
+outright. Geometry carries a residual factor, `1 - resid/60`, that propagation does not — and
+`nearestStopOnRoute` accepts anchors out to 80 m. The arithmetic follows: any residual over
+24 m caps confidence below the 0.60 usability floor no matter how many cycles corroborate it.
+So a stop that propagation supported at 0.85 fell to 0.33 the moment a bus was observed 40 m
+away **agreeing about which stop it was**. In the production table, 1,018 of 1,535 geometric
+entries carry a residual over 20 m and 522 of those are capped under 0.50 by arithmetic alone.
+
+The principle being violated is not subtle: *evidence that agrees may never make us less
+sure.* `corroboratedConfidence` takes the best of the agreeing sources. It admits nothing that
+either source would have refused on its own — it is the removal of a penalty for having more
+evidence, not a lowered bar. The residual still caps what geometry **alone** is worth, which
+is the only question it can actually answer.
+
+**Promotion was forgetting what it had already seen.** `distinctPatterns` — the count behind
+"two independent RT patterns agree, therefore `confirmed`" — was recomputed every cycle from
+the patterns resolved in *that* cycle. A stop corroborated by two patterns at 08:00 dropped
+back to `candidate` at 03:00 when one of them was not running. Corroboration is a historical
+fact; it does not stop having happened because a bus went to the garage. The log shows the
+oscillation plainly: confirmed 3,043 → 3,031 → 3,019 → 3,025 → 3,042 across five consecutive
+cycles.
+
+Agreement now accumulates. It is keyed by **static** pattern id rather than RT pattern id, and
+that detail is load-bearing: an RT pattern's id is a content hash, so extending a pattern
+renames it, and accumulating RT ids would let a single line of evidence corroborate itself
+under two names — exactly the kind of self-confirming arithmetic this project keeps catching
+itself in. Two RT patterns that are really one resolve to the same static pattern and collapse
+to a single vote.
+
+### The result, and the point of it
+
+With `MIN_XWALK_OCCURRENCE_COVERAGE` **unchanged at 0.50**, measured against the live feeds:
+cycle-1 coverage **49.1%**, rising to **51.7%** by cycle 10; a second run 49.3% → 50.7%. The
+binding gate is now `boardActive` rather than `xwalkOccurrenceCoverage`.
+
+**The gate was right. The learning was broken.** That is the outcome worth having, and it was
+only reachable because the threshold was not touched first. Had the gate been dropped to 0.35
+on the grounds that "the real evidence is sound at lower coverage", the number would have gone
+green, both leaks would still be there, and every published delay would have rested on a
+crosswalk quietly shedding identities it had already earned.
+
+### The change that was refused
+
+The single largest coverage win available was **not taken**. 43.2% of occurrences are blocked
+by the two-independent-patterns promotion rule alone, and 4,066 of those entries already clear
+the confidence floor. Admitting one-pattern identities would roughly double coverage overnight.
+
+The evidence for doing it was a held-out experiment: withhold a random fifth of the geometric
+anchors, let propagation predict those stops from what remains, and compare against the
+measurement that was hidden. It returned **88.57% agreement for one-pattern identities
+(n=140) against 80.70% for two-or-more (n=57)** — i.e. the rule appears to buy no accuracy at
+all.
+
+That was not enough, for a reason visible in the disagreements themselves: they are
+overwhelmingly *adjacent platform ids at a single intersection* — `1037` vs `1036`, `2034` vs
+`2033`, `8349` vs `8348`, `6633` vs `6638`. The withheld "truth" is a nearest-stop match, and
+at exactly this granularity it is about as likely to be the wrong one as the prediction is. The
+experiment therefore cannot distinguish "propagation is wrong" from "geometry picked the other
+side of the street", and a promotion rule protecting published delay measurements does not get
+relaxed on a test that cannot tell those apart. The rule stands; the experiment is recorded so
+the next attempt starts from it rather than from scratch.
+
+### Cold start: written every cycle, read by nothing
+
+`rt_stop_xwalk` was `INSERT`ed on every cycle and `SELECT`ed by no code path at all. Every
+restart began from an empty crosswalk, and since a propagated entry needs eight corroborating
+votes to clear the 0.60 floor, coverage read 0.0% for the first nine cycles of every process —
+about eight minutes at the 45 s cadence. On a host that sleeps when idle, that warm-up is
+longer than the uptime, so the deployment publishes nothing, ever.
+
+`loadCrosswalk()` restores it at boot, scoped by board tag, and only when the in-memory
+crosswalk is genuinely cold — a six-hourly same-board reload must not overwrite fresher state
+with the row we ourselves wrote. Three merge properties earn their own regression tests,
+because a warm start that lies is worse than a cold one: a loaded row **seeds** the vote count
+rather than earning a vote for having been read; its stop id is seeded into the proposal set so
+contradicting evidence still marks the stop conflicted instead of silently overwriting it; and
+a row persisted as `conflicted` comes back conflicted, at confidence 0, and stays out of the
+propagation seed. Cycle-1 coverage: **0.0% → 49.1%**. Warm-up: eight minutes → zero cycles.
+
+### The restore that was built, measured, and reverted
+
+`rt_stop_anchor` — the accumulated geometric centroids — is written and never read too, and
+restoring it is the obvious completion of the same fix. It was implemented. It produced a real
+cross-route agreement figure at boot (90.1%, on a proper denominator) where the crosswalk-only
+warm start computes that audit over four stops and reads 75% — below its own 85% gate, on pure
+noise. It also surfaced ~330 fresh contradictions between measured geometry and the restored
+propagated crosswalk, and coverage read 44.6% → 45.3% over six cycles instead of 49.1% →
+51.7%: **below the publish gate**.
+
+Those contradictions are either geometry correctly retiring stale propagated identities — in
+which case the lower number is the truer one and should ship — or stale anchors, since that
+table is not board-scoped and its centroids never decay. Settling it needs a longer run, and
+the longer run could not be completed (see below). **The change was reverted.** Shipping a
+modification whose only measurement puts the engine under its own publish gate, on the strength
+of "it would probably have recovered", is the move §29 and §33 exist to prevent. It is filed in
+`BLOCKERS.md` entry 11 with both sets of numbers, so the next attempt begins from the evidence
+rather than from the intuition.
+
+### The decoder rule, and a finding corrected downward
+
+`processVehicles` read `bearing`, `speed`, `timestamp`, `currentStopSequence` and
+`trip.tripId` straight off the decoded protobuf with `!= null` and truthiness tests — the exact
+pattern that produced 314,742 information-free delay observations in §29. All of it now goes
+through `pb.ts`, and an absent bearing stays null rather than becoming 0, which the map already
+handles by falling back to the bearing implied by the vehicle's own movement.
+
+But the census does not support the symptom the blocker asserted. Across three live snapshots,
+`bearing`, `speed` and `timestamp` are present on the wire for **every** vehicle that publishes
+a position (1,224 / 1,236 / 1,246). No live vehicle is rendering a fabricated due-north
+heading. The field that genuinely is absent — `currentStopSequence`, on 21–22% — was already
+handled correctly by the old `> 0` guard. Two other defaults *were* reachable and are now
+closed: an absent `timestamp` dated a ping 1970-01-01 and made the intended "unknown → now"
+fallback unreachable, and an alert with an open-ended active period would have been published
+as one starting 1970-01-01.
+
+So this is a **latent** bug fixed, not a wrong number removed, and it is written down that way.
+It is recorded at length in `BLOCKERS.md` 16 because an overstated finding corrected downward
+is worth as much as a confirmed one, and this file's credibility depends on the corrections
+being as loud as the discoveries.
+
+### The cost of measuring: the Neon transfer quota, and the collector
+
+Every one of these live measurements required a fresh pattern index — 2.15 million
+`stop_times` rows, ~120 s over Neon. Four rebuilds in one afternoon **exhausted the free
+tier's data-transfer quota**, which stopped the detached collector at cycle 88 with
+`Your project has exceeded the data transfer quota`. That is a self-inflicted outage, and it is
+recorded rather than quietly waited out, because it has two consequences worth naming.
+
+First, it bounds the confidence of everything above: the after-numbers rest on runs of 10 and 6
+cycles, consistent with each other and both rising, but not a soak.
+
+Second, and more important for tomorrow: **the index rebuild is the dominant data-transfer cost
+in this system, and nothing in the design accounts for that.** It runs on every boot and every
+six hours. On a free tier that is a budget, and a deployment that restarts often will spend its
+quota rebuilding an index that has not changed. The warm-start work above makes restarts
+cheaper for the *crosswalk*; it does nothing for the index. Caching the built index — or paging
+it from a materialised table instead of `stop_times` — is the obvious next correction, and is
+not attempted here.
