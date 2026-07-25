@@ -1,7 +1,8 @@
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { DepartureDto } from '@shared/types';
 import { RouteBadge } from './Primitives';
-import { SignalIcon, ChevronIcon } from './icons';
+import { SignalIcon, ChevronIcon, WarningIcon } from './icons';
 import { useTick } from '@/hooks/useTick';
 import { liveNow } from '@/hooks/useLive';
 import { useStore, paceMps } from '@/store';
@@ -25,6 +26,7 @@ export function DepartureRow({ dep, nextMin, distanceM, onCatch, onOpen }: Props
   const { t } = useTranslation();
   useTick(1000);
   const pace = useStore((s) => s.pace);
+  const [gradeOpen, setGradeOpen] = useState(false);
 
   const now = liveNow();
   const isLive = dep.liveEtaMs != null;
@@ -38,6 +40,9 @@ export function DepartureRow({ dep, nextMin, distanceM, onCatch, onOpen }: Props
   const spreadMin = hasEvidence
     ? Math.max(0, Math.round(((dep.honest.bandHighMs as number) - (dep.honest.bandLowMs as number)) / 2 / 60000))
     : 0;
+  // Both fields are absent unless the server could back them (see shared/types.ts).
+  const grade = dep.grade ?? null;
+  const risk = dep.ghostRisk ?? null;
 
   // Leave-by only makes sense for a near-term departure with a known walk distance.
   const walkSec = distanceM != null ? walkSeconds(distanceM, paceMps(pace)) : 0;
@@ -102,14 +107,59 @@ export function DepartureRow({ dep, nextMin, distanceM, onCatch, onOpen }: Props
         <div className="dep-action">{action}</div>
       </div>
 
-      {/* evidence — the brand: never a number without its receipts */}
+      {/* evidence — the brand: never a number without its receipts.
+          The row wraps rather than truncating a claim: the trust chip, the evidence
+          line, the leave-by chip and the forecast chip can never collide, at any width
+          or in any locale (French runs ~25% longer than English). */}
       <div className="dep-evidence-row">
+        {grade ? (
+          <button
+            type="button"
+            className={`grade-chip grade-${grade.letter}`}
+            onClick={() => setGradeOpen((o) => !o)}
+            aria-expanded={gradeOpen}
+            aria-label={t('eta.gradeAria', { grade: grade.letter, n: grade.n, spread: grade.spreadMin })}
+          >
+            {grade.letter}
+          </button>
+        ) : (
+          // No evidence bucket -> no letter, ever. A dash carries the fact visually and
+          // the accessible name says it in words.
+          <span className="grade-chip grade-untracked" role="img" aria-label={t('eta.untracked')}>
+            {t('eta.untrackedMark')}
+          </span>
+        )}
+
         {hasEvidence ? (
           <span className="evidence-chip truncate">{t('eta.evidence', { spread: spreadMin, n: ev.n })}</span>
         ) : (
           <span className="evidence-chip evidence-thin truncate">{t('eta.scheduleOnly')}</span>
         )}
         {showLeaveBy && <span className="leaveby-chip truncate">{t('eta.leaveBy', { time: fmtClock(leaveByMs) })}</span>}
+
+        {grade && gradeOpen && (
+          <p className="grade-detail">
+            {t('eta.gradeDetail', { grade: grade.letter, n: grade.n, spread: grade.spreadMin })}
+          </p>
+        )}
+
+        {/* The forecast chip renders only when the API sends a risk it can back with a
+            sample size — no ghostRisk field, no chip. */}
+        {risk && (
+          <p
+            className={`forecast-chip forecast-${risk.level}`}
+            aria-label={t(risk.level === 'high' ? 'forecast.ariaHigh' : 'forecast.ariaElevated', {
+              v: risk.ghosts, o: risk.n, days: risk.windowDays,
+            })}
+          >
+            <WarningIcon width={13} height={13} aria-hidden />
+            <span>
+              {t(risk.level === 'high' ? 'forecast.chipHigh' : 'forecast.chipElevated', {
+                v: risk.ghosts, o: risk.n,
+              })}
+            </span>
+          </p>
+        )}
       </div>
     </article>
   );

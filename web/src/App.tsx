@@ -5,8 +5,9 @@ import { useLive } from './hooks/useLive';
 import { TopBar, MobileTopStrip } from './components/TopBar';
 import { TabBar } from './components/TabBar';
 import { NearbyPanel } from './components/NearbyPanel';
+import { AlertsPanel } from './components/AlertsPanel';
 import { SettingsSheet } from './components/SettingsSheet';
-import { RouteIcon, BookmarkIcon, BellIcon, LayersIcon } from './components/icons';
+import { RouteIcon, BookmarkIcon, LayersIcon } from './components/icons';
 
 // The real map (maplibre-gl) is code-split so it never lands in the initial JS
 // budget — it loads after first paint. The styled placeholder is the fallback.
@@ -75,7 +76,9 @@ export default function App() {
             <PlaceholderView icon={<BookmarkIcon width={26} height={26} />} title={t('saved.title')} body={t('saved.body')} />
           )}
           {tab === 'alerts' && (
-            <PlaceholderView icon={<BellIcon width={26} height={26} />} title={t('alerts.title')} body={t('alerts.body')} />
+            <div className="reveal">
+              <AlertsPanel />
+            </div>
           )}
         </div>
       </main>

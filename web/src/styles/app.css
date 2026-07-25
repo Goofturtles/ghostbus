@@ -421,25 +421,63 @@
 .dep-viewroute { padding: 8px 12px; font-size: 12.5px; color: var(--text-2); }
 .dep-action-label { white-space: nowrap; }
 
+/* The evidence row WRAPS. Four things can live here (trust chip, evidence line,
+   leave-by, forecast) across three locales at 390px — wrapping is what guarantees
+   they can never collide or clip, in any combination. */
 .dep-evidence-row {
-  display: flex; align-items: center; gap: var(--s2);
+  display: flex; align-items: center; flex-wrap: wrap;
+  gap: 6px var(--s2);
   margin-top: 10px;
   min-width: 0;
 }
 .evidence-chip {
   display: inline-flex; align-items: center;
+  flex: 1 1 auto;
   font-size: 12px; color: var(--text-2);
+  line-height: 1.4;
   text-align: left; min-width: 0;
 }
 .evidence-thin { color: var(--text-3); }
 .leaveby-chip {
   flex: 0 0 auto;
-  margin-left: auto;
   font-size: 12px; font-weight: 600;
   color: var(--brand);
   background: var(--brand-soft);
   padding: 3px 9px; border-radius: var(--r-pill);
+  line-height: 1.4;
 }
+
+/* trust grade chip — tap to expand its receipts */
+.grade-chip {
+  flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 24px; height: 24px; padding: 0 6px;
+  border-radius: 8px;
+  font-size: 13px; font-weight: 800; line-height: 1.4;
+  transition: transform var(--dur-micro) var(--ease-spring);
+}
+.grade-chip:active { transform: scale(0.92); }
+.grade-A, .grade-B { background: rgba(52, 199, 89, 0.18); color: var(--live-text); }
+.grade-C { background: rgba(255, 176, 32, 0.18); color: var(--warn-text); }
+.grade-D, .grade-E { background: rgba(255, 69, 58, 0.16); color: var(--danger-text); }
+.grade-untracked { background: var(--surface-2); color: var(--text-3); font-weight: 700; }
+.grade-detail {
+  flex: 1 0 100%;
+  margin: 2px 0 0;
+  font-size: 12px; line-height: 1.45; color: var(--text-2);
+}
+
+/* ghost-forecast chip — always its own line, so it can never crowd the evidence */
+.forecast-chip {
+  flex: 1 0 100%;
+  display: flex; align-items: flex-start; gap: 6px;
+  margin: 2px 0 0; padding: 6px 10px;
+  border-radius: var(--r-sm);
+  font-size: 12px; font-weight: 600; line-height: 1.4;
+}
+.forecast-chip svg { flex: 0 0 auto; margin-top: 1px; }
+.forecast-elevated { background: rgba(255, 176, 32, 0.14); color: var(--warn-text); }
+.forecast-high { background: rgba(255, 69, 58, 0.14); color: var(--danger-text); }
 
 /* ============================ honest state cards ============================ */
 .state-card {
@@ -469,6 +507,163 @@
 }
 .state-placeholder { max-width: 380px; }
 
+/* ============================ alerts tab ============================ */
+.alerts-panel { display: flex; flex-direction: column; gap: var(--s6); }
+.alerts-head { display: flex; flex-direction: column; gap: 4px; }
+.alerts-title { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.25; margin: 0; }
+.alerts-sub { margin: 0; font-size: 14px; line-height: 1.45; color: var(--text-2); max-width: 40ch; }
+.alerts-section { display: flex; flex-direction: column; }
+.alerts-updated { color: var(--text-3); text-transform: none; letter-spacing: 0; font-weight: 500; }
+
+/* ghost counters */
+.ghost-counters {
+  display: grid; grid-template-columns: 1fr 1fr; gap: var(--s3);
+  margin-bottom: var(--s3);
+}
+.gc-cell {
+  display: flex; flex-direction: column; gap: 5px;
+  padding: var(--s3) var(--s4);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-card), var(--inner-top);
+  min-width: 0;
+}
+.gc-label {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase;
+  color: var(--text-3); line-height: 1.4;
+}
+.gc-nums { display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px 6px; line-height: 1.35; }
+.gc-nums b { font-size: 20px; font-weight: 800; }
+.gc-ghost { color: var(--ghost); }
+.gc-cancel { color: var(--danger-text); }
+.gc-unit { font-size: 11px; font-weight: 600; color: var(--text-3); margin-right: var(--s2); }
+
+/* ghost event card — the reference's red-tinted alert card */
+.ghost-list { display: flex; flex-direction: column; gap: var(--s3); }
+.ghost-card {
+  display: flex; flex-direction: column; gap: var(--s2);
+  padding: var(--s4);
+  border-radius: var(--r-md);
+  background:
+    linear-gradient(180deg, rgba(255, 69, 58, 0.1), rgba(255, 69, 58, 0.045)),
+    var(--surface-solid);
+  box-shadow: 0 0 0 1px rgba(255, 69, 58, 0.32), var(--shadow-card);
+}
+.ghost-card-head { display: flex; align-items: center; gap: var(--s3); min-width: 0; }
+.ghost-glyph {
+  flex: 0 0 auto;
+  width: 38px; height: 38px; border-radius: var(--r-sm);
+  display: inline-flex; align-items: center; justify-content: center;
+  background: rgba(255, 69, 58, 0.16);
+  color: var(--danger-text);
+}
+.ghost-card .ge-claim {
+  margin: 0; min-width: 0;
+  font-size: 15px; font-weight: 700; line-height: 1.35;
+  color: var(--danger-text);
+}
+.ge-time { color: var(--text); }
+.ghost-card-route { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
+.ghost-dest { font-size: 14px; font-weight: 600; color: var(--text); line-height: 1.35; min-width: 0; }
+.ghost-next { margin: 0; font-size: 13px; color: var(--text-2); line-height: 1.4; }
+.ghost-detected {
+  margin: 0; display: flex; align-items: center; gap: 6px; min-width: 0;
+  font-size: 12px; color: var(--text-3); line-height: 1.4;
+}
+.ghost-detected svg { flex: 0 0 auto; }
+.ghost-alt {
+  margin-top: var(--s1);
+  min-height: 44px; padding: 10px var(--s4);
+  border-radius: var(--r-sm);
+  background: rgba(255, 69, 58, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(255, 69, 58, 0.38);
+  color: var(--danger-text);
+  font-size: 14px; font-weight: 700; line-height: 1.4;
+  transition: background var(--dur-micro) var(--ease-standard), transform var(--dur-micro) var(--ease-spring);
+}
+.ghost-alt:hover { background: rgba(255, 69, 58, 0.16); }
+.ghost-alt:active { transform: scale(0.99); }
+.ghost-window-note {
+  margin: var(--s3) 0 0;
+  font-size: 12px; line-height: 1.5; color: var(--text-3);
+}
+
+/* ghost feed empty state + voxel mascot */
+.ghost-empty { padding-top: var(--s5); }
+.ghost-mascot {
+  display: block;
+  overflow: visible;
+  --gm-top: #a9f3ea;
+  --gm-mid: var(--ghost);
+  --gm-low: #56b7ae;
+  --gm-deep: #2b3f57;
+  --gm-eye: #0d1122;
+}
+:root[data-theme="light"] .ghost-mascot {
+  --gm-top: #79ddd1;
+  --gm-mid: #4dc2b6;
+  --gm-low: #2f9a90;
+  --gm-deep: #b8c4d6;
+  --gm-eye: #10203a;
+}
+.gm-shadow { fill: rgba(0, 0, 0, 0.3); }
+:root[data-theme="light"] .gm-shadow { fill: rgba(20, 22, 40, 0.14); }
+.gm-body {
+  transform-origin: 59px 76px;
+  animation: gm-drift 4.5s var(--ease-standard) infinite;
+}
+@keyframes gm-drift {
+  0% { transform: translateY(0); }
+  50% { transform: translateY(-7px); }
+  100% { transform: translateY(0); }
+}
+
+/* service alert cards */
+.alert-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s3); }
+.alert-card {
+  display: flex; align-items: flex-start; gap: var(--s3);
+  padding: var(--s4);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-card), var(--inner-top);
+}
+.alert-glyph {
+  flex: 0 0 auto;
+  width: 38px; height: 38px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.tone-neutral .alert-glyph { background: var(--brand-soft); color: var(--brand); }
+.tone-warn .alert-glyph { background: rgba(255, 176, 32, 0.16); color: var(--warn-text); }
+.tone-danger .alert-glyph { background: rgba(255, 69, 58, 0.16); color: var(--danger-text); }
+.tone-access .alert-glyph { background: rgba(10, 132, 255, 0.16); color: var(--you); }
+:root[data-theme="light"] .tone-access .alert-glyph { color: #0058b0; }
+
+.alert-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.alert-heading { margin: 0; font-size: 15px; font-weight: 700; line-height: 1.35; color: var(--text); }
+.alert-text { margin: 0; font-size: 14px; line-height: 1.5; color: var(--text-2); overflow-wrap: anywhere; }
+.alert-access {
+  margin: 2px 0 0; display: flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 600; line-height: 1.4; color: var(--you);
+}
+:root[data-theme="light"] .alert-access { color: #0058b0; }
+.alert-access svg { flex: 0 0 auto; }
+.alert-routes {
+  margin: 4px 0 0;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  min-width: 0;
+}
+.alert-affects {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--text-3); line-height: 1.5;
+}
+.alert-route-chip {
+  padding: 2px 8px; border-radius: 7px;
+  background: var(--surface-2); color: var(--text-2);
+  font-size: 12px; font-weight: 700; line-height: 1.5;
+}
+.alert-more { font-size: 12px; font-weight: 600; color: var(--text-3); line-height: 1.5; }
+.alert-skeleton { height: 92px; border-radius: var(--r-md); }
+
 /* ============================ tab bar ============================ */
 .tabbar {
   flex: 0 0 auto;
@@ -489,6 +684,13 @@
 .tab-icon { position: relative; display: inline-flex; }
 .tab-label { font-size: 11px; font-weight: 600; }
 .tab-active { color: var(--brand); }
+/* unread dot — only painted when the agency actually has active alerts */
+.tab-dot {
+  position: absolute; top: -1px; right: -2px;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--danger);
+  box-shadow: 0 0 0 2px var(--bg);
+}
 
 /* ============================ settings sheet ============================ */
 .sheet-scrim {

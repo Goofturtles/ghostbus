@@ -6,7 +6,9 @@
 // stop(). Server clock skew is tracked so freshness labels stay honest.
 import { create } from 'zustand';
 import { api } from '@/lib/api';
-import type { HealthResponse, ArrivalsResponse, StopDto } from '@shared/types';
+import type {
+  HealthResponse, ArrivalsResponse, StopDto, AlertsResponse, GhostFeedResponse,
+} from '@shared/types';
 import { useStore } from '@/store';
 
 /** Fallback when geolocation is denied/unavailable: King & Spadina, Toronto. */
@@ -14,6 +16,10 @@ export const DEFAULT_LOCATION = { lat: 43.6455, lon: -79.3954 };
 const NEARBY_RADIUS_M = 800;
 const HEALTH_INTERVAL_MS = 20_000;
 const ARRIVALS_INTERVAL_MS = 30_000;
+/** Alerts and ghosts change on the scale of minutes, not seconds. */
+const ALERTS_INTERVAL_MS = 60_000;
+const GHOSTS_INTERVAL_MS = 60_000;
+const GHOST_FEED_HOURS = 24;
 /** When "now" has no departures, walk forward day-by-day from tomorrow (up to 8
  *  days) and surface the FIRST day that actually has scheduled service, so the
  *  section header's date is the genuine next service day. See DECISIONS §15. */
@@ -39,6 +45,16 @@ interface LiveState {
   /** When "now" is empty, the next real scheduled service (probe query). */
   nextService: ArrivalsResponse | null;
 
+  /** Active service alerts straight from the agency's feed. */
+  alerts: AlertsResponse | null;
+  alertsError: boolean;
+  /** Ghost + cancellation events, trailing 24h, with today/week counters. */
+  ghosts: GhostFeedResponse | null;
+  ghostsError: boolean;
+  /** Set when a ghost event lands that we had not seen before — announced politely
+   *  once, then cleared. Null on the first load (nothing "new" about a first render). */
+  ghostAnnouncement: { count: number; seq: number } | null;
+
   /** serverNow - clientNow, so countdowns/freshness are honest despite clock skew. */
   skewMs: number;
 
@@ -46,6 +62,8 @@ interface LiveState {
   requestLocation: () => void;
   refetchArrivals: () => void;
   refetchHealth: () => void;
+  refetchAlerts: () => void;
+  refetchGhosts: () => void;
 }
 
 function stopFor(id: string, list: StopDto[]): StopDto | undefined {
@@ -55,6 +73,8 @@ function stopFor(id: string, list: StopDto[]): StopDto | undefined {
 // Monotonic request id: a slow arrivals/probe response for a stop the rider has
 // since switched away from must never overwrite the current board.
 let arrivalsSeq = 0;
+// Monotonic so a repeat of the same count still re-announces in the live region.
+let ghostAnnounceSeq = 0;
 
 export const useLive = create<LiveState>((set, get) => ({
   health: null,
@@ -67,20 +87,35 @@ export const useLive = create<LiveState>((set, get) => ({
   arrivalsLoading: false,
   arrivalsError: false,
   nextService: null,
+  alerts: null,
+  alertsError: false,
+  ghosts: null,
+  ghostsError: false,
+  ghostAnnouncement: null,
   skewMs: 0,
 
   start: () => {
     get().requestLocation();
     get().refetchHealth();
+    get().refetchAlerts();
+    get().refetchGhosts();
 
     const healthTimer = setInterval(() => { if (!document.hidden) get().refetchHealth(); }, HEALTH_INTERVAL_MS);
     const arrivalsTimer = setInterval(() => { if (!document.hidden) get().refetchArrivals(); }, ARRIVALS_INTERVAL_MS);
-    const onVis = () => { if (!document.hidden) { get().refetchHealth(); get().refetchArrivals(); } };
+    const alertsTimer = setInterval(() => { if (!document.hidden) get().refetchAlerts(); }, ALERTS_INTERVAL_MS);
+    const ghostsTimer = setInterval(() => { if (!document.hidden) get().refetchGhosts(); }, GHOSTS_INTERVAL_MS);
+    const onVis = () => {
+      if (!document.hidden) {
+        get().refetchHealth(); get().refetchArrivals(); get().refetchAlerts(); get().refetchGhosts();
+      }
+    };
     document.addEventListener('visibilitychange', onVis);
 
     return () => {
       clearInterval(healthTimer);
       clearInterval(arrivalsTimer);
+      clearInterval(alertsTimer);
+      clearInterval(ghostsTimer);
       document.removeEventListener('visibilitychange', onVis);
     };
   },
@@ -125,6 +160,29 @@ export const useLive = create<LiveState>((set, get) => ({
         }
       })
       .catch(() => { if (current()) set({ arrivalsError: true, arrivalsLoading: false }); });
+  },
+
+  refetchAlerts: () => {
+    api.alerts()
+      .then((alerts) => set({ alerts, alertsError: false }))
+      .catch(() => set({ alertsError: true }));
+  },
+
+  refetchGhosts: () => {
+    api.ghostFeed(GHOST_FEED_HOURS)
+      .then((ghosts) => {
+        // Announce only genuinely new detections, and only after a first load has
+        // established a baseline — a fresh page is not "N new ghosts".
+        const prev = get().ghosts;
+        const seenBefore = prev != null;
+        const newest = prev ? prev.events.reduce((m, e) => Math.max(m, e.detectedAtMs), 0) : 0;
+        const fresh = seenBefore ? ghosts.events.filter((e) => e.detectedAtMs > newest).length : 0;
+        set({
+          ghosts, ghostsError: false,
+          ghostAnnouncement: fresh > 0 ? { count: fresh, seq: ++ghostAnnounceSeq } : get().ghostAnnouncement,
+        });
+      })
+      .catch(() => set({ ghostsError: true }));
   },
 }));
 

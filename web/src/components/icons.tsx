@@ -64,6 +64,21 @@ export const GearIcon = (p: P) => (
 export const PersonIcon = (p: P) => (
   <svg {...base(p)}><circle cx="12" cy="8" r="3.4" /><path d="M5.5 20a6.5 6.5 0 0 1 13 0" /></svg>
 );
+export const InfoIcon = (p: P) => (
+  <svg {...base(p)}><circle cx="12" cy="12" r="8.5" /><path d="M12 11v5M12 8h.01" /></svg>
+);
+export const NoEntryIcon = (p: P) => (
+  <svg {...base(p)}><circle cx="12" cy="12" r="8.5" /><path d="M7.5 12h9" /></svg>
+);
+export const AccessIcon = (p: P) => (
+  <svg {...base(p)}>
+    <circle cx="12" cy="4.6" r="1.7" />
+    <path d="M12 8v4h4M12 12l-3.5 1M12 12v3.5l3 4M8.5 13a4.5 4.5 0 1 0 5.4 6.6" />
+  </svg>
+);
+export const ClockIcon = (p: P) => (
+  <svg {...base(p)}><circle cx="12" cy="12" r="8.5" /><path d="M12 7.5V12l3 1.8" /></svg>
+);
 export const GhostIcon = (p: P) => (
   <svg {...base(p)} fill="currentColor" stroke="none">
     <path d="M12 3a7 7 0 0 0-7 7v9l2.2-1.6L9.4 19l2-1.6 2 1.6 2.2-1.6L19 19v-9a7 7 0 0 0-7-7Z" opacity="0.9" />
