@@ -399,7 +399,15 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
           : stu.arrival?.time != null ? stu.arrival
           : (stu.departure ?? stu.arrival ?? null);
         const evTime = ev ? toNum(ev.time) : null;
-        const delay = ev && ev.delay != null ? toNum(ev.delay) : null;
+        // `delay` must be an OWN property. GTFS-realtime is proto2 and protobuf.js
+        // materialises field defaults on the prototype, so `ev.delay` reads 0 even when
+        // the producer never sent the field — `!= null` cannot tell "on time" from
+        // "not reported". TTC sends `time` on every StopTimeEvent and `delay` on none,
+        // so the old check recorded 314,033 observations of a decoder default and the
+        // evidence gates then treated them as measurements. Absence must stay absent.
+        const delay = ev && Object.prototype.hasOwnProperty.call(ev, 'delay') && ev.delay != null
+          ? toNum(ev.delay)
+          : null;
 
         // Live prediction for arrivals (future stops): keep the predicted event time.
         if (evTime != null) predictions.push({ stopId, timeMs: evTime * 1000 });
