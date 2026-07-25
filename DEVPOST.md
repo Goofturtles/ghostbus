@@ -9,12 +9,19 @@ tells riders when the two stopped agreeing — without waiting for the agency to
 Repo layout, setup and run instructions: **see `README.md`.**
 
 > **Author's note before submitting.** Every number below carries the moment it was measured.
-> This document was re-verified end-to-end on **2026-07-25 at 15:11 ET**, against the production
+> This document was re-verified end-to-end on **2026-07-25 (collector cycles 55–84)**, against the production
 > Neon database, the running collector's log, and the source. Where a figure moves on its own —
 > the fleet count, the crosswalk's coverage, the bundle sizes — it is given with its window
 > rather than as a round number. Anything still genuinely open is marked **[IN PROGRESS]** and
 > says what "open" means. Nothing here should reach a judge as an unverified claim — that is
 > the whole thesis of the project.
+>
+> Figures are stamped with a **date and a collector cycle number**, not a wall-clock time, and
+> that is deliberate: the build machine's clock and the Neon instance's clock disagree by four
+> hours, so any "15:42 ET" in this document would be an assertion we cannot actually defend.
+> The service date and the cycle number are unambiguous on both. It is a small thing, and it is
+> the same discipline as the rest of the document — do not state a number whose provenance you
+> would lose an argument about.
 >
 > One structural warning, because it is the most likely way this document goes stale again:
 > **`server/src/join.ts` no longer exists.** An earlier draft described it as shipped. It was
@@ -95,7 +102,7 @@ next option is worse:
 - Shift workers on late-evening and overnight service, where headways are 20–30 minutes and
   the "just take the next one" fallback costs half an hour, not five minutes.
 - Riders who cannot walk to a parallel route — the reason GhostBus stores an accessibility
-  flag on every service alert (**15 of the 82 alerts** stored at 15:11 ET on 2026-07-25 are
+  flag on every service alert (**15 of the 82 alerts** stored on 2026-07-25 are
   accessibility-flagged) and why a ghosted *accessible* departure has its own copy string
   rather than being folded into the generic case (`web/src/i18n/en.ts`, `ghost.accessibleNever`).
 - Riders for whom a cab is not a fallback at all. For them, the schedule is the service.
@@ -121,8 +128,10 @@ attempt to measure it from the outside, from public data, at the stop.
 
 ### Our own numbers — measured, and honestly qualified
 
-These are GhostBus's own figures, not external statistics. All rows queried against the
-production Neon database or read from the running collector's log at **2026-07-25 15:11 ET**.
+These are GhostBus's own figures, not external statistics. Database rows queried on **2026-07-25**; live-engine rows read from the running collector's
+log at **cycle 84** of that day's run.
+The repo was under active development throughout, which is itself worth disclosing: two of the
+corrections described under Technical Execution landed *while this table was being written*.
 
 | Ours | Value | Window / caveat |
 |---|---|---|
@@ -133,8 +142,8 @@ production Neon database or read from the running collector's log at **2026-07-2
 | Aggregate buckets built | **0** stop-hour · **0** route-hour | Nothing to aggregate, by construction |
 | Ghosts recorded | **0** | An honest zero. The loaded board does not activate until 2026-07-26, so no trip has yet been due, so nothing can yet have failed to arrive |
 | Service alerts stored | **82** (15 accessibility-flagged) | Accumulated across the collection window; 36 were live in the feed on the last cycle |
-| Learned stop crosswalk | **8,162** realtime stop ids seen · **3,048 confirmed** · 203 conflicted | Warms independently of the calendar — this is the part of the engine that works today. See Technical Execution |
-| Crosswalk occurrence coverage | **33.6%** at cycle 55; peaked at **37.2%** | Its own gate demands **50%**. Below the gate, so it would suppress publication even with an active board |
+| Learned stop crosswalk | **7,606** realtime stop ids seen · **3,165 confirmed** · 277 conflicted (cycle 84, in-process; the persisted table held 8,162 rows earlier the same day) | Warms independently of the calendar — this is the part of the engine that works today. See Technical Execution |
+| Crosswalk occurrence coverage | **30.7%** at cycle 84, and **falling** — it peaked at 37.2% and declined from there | Its own gate demands **50%**. Diagnosed on 2026-07-25 as two learning bugs rather than a shortage of evidence, and fixed in commit `dc36469`; **the running collector predates that commit, so this number does not yet reflect the fix.** See Technical Execution |
 
 The zeros in that table are the most important numbers in this document. It would have been
 trivial to seed a plausible-looking ghost count, and — as the next section documents — this
@@ -370,7 +379,7 @@ delay_s = event_epoch_s  (last thing the feed said about that stop before it set
 Both sides of that subtraction are real, published data, and neither comes from a field the
 feed does not send.
 
-**Status at 2026-07-25 15:11 ET.** Method: a direct `SELECT` against the production Neon
+**Status on 2026-07-25.** Method: a direct `SELECT` against the production Neon
 database, plus reading the current source and the running collector's log. An earlier draft of
 this document said the fix had not merged and the table was refilling with zeros; that was true
 when it was written, on 2026-07-24 at 22:02 ET. It is no longer true. What is true now:
@@ -401,10 +410,11 @@ when it was written, on 2026-07-24 at 22:02 ET. It is no longer true. What is tr
 
 - **The half of the engine that can work today is working.** Crosswalk learning is
   calendar-independent, and it is warming: **8,162** realtime stop ids seen, **3,048
-  confirmed**, 203 conflicted, cross-route agreement **93.9%** (93.8–93.9% across cycles, and a
+  confirmed**, 277 conflicted, cross-route agreement **94.1%** (93.8–94.1% across cycles, and a
   **geometric-anchor** figure — see the correction below). Its occurrence coverage is
-  **33.6%**, peaking at 37.2% — **below its own 50% gate**, so it would suppress publication
-  even if the board were active. Two gates would have to pass, and today neither does.
+  **30.7%** — **below its own 50% gate**, so it would suppress publication even if the board
+  were active. Two gates would have to pass, and today neither does. And that coverage number
+  has its own correction attached, immediately below.
 
 So the honest summary is not "we fixed it and the numbers are good." It is: **the lie is gone,
 the machinery that would replace it is built and unit-tested, and it has not yet been allowed
@@ -434,7 +444,7 @@ guess. Both were narrower than their gate names implied:
    crosswalk, are not covered. The headline **93.9%** is a geometric-anchor figure describing
    a minority of the data it appears to describe.
 
-**Status, verified in the source at 2026-07-25 15:11 ET — not claimed from a plan:**
+**Status, verified in the source on 2026-07-25 — not claimed from a plan:**
 
 - **(1) is fixed.** `crosswalkedStaticSeqs` in `server/src/xwalk.ts` now resolves each tracked
   realtime stop to the static sequence the crosswalk claims for it, and `runCycle` feeds *that*
@@ -453,9 +463,46 @@ against. Neither was publishing a wrong number. Both were audits that would not 
 error they exist to catch — which, for this project specifically, is a worse failure than a
 missing feature, and is why it is written here rather than left in a blockers file.
 
-### A third one, found the same way, on 2026-07-25
+### A third: corroboration was *lowering* our confidence
 
-Same shape again, and it is the most rider-visible of the three. The seeder loads `calendar`
+The crosswalk's occurrence coverage sat around 37% against a 50% publish gate, and the
+comfortable reading was "it just needs more time to warm." Somebody checked instead of waiting,
+and the number was not plateauing — **it was falling.** 37.2% at its peak, 36.4% at cycle 40,
+30.9% at cycle 75. Decomposing one live snapshot of 23,636 stop-time occurrences against the
+persisted crosswalk found the plateau was not a shortage of evidence at all. Two rules were
+throwing evidence away:
+
+1. **A second, agreeing source made an entry *less* trusted.** A geometric anchor overwrote a
+   propagated entry, and geometry carries a residual penalty that propagation does not, while
+   anchors are accepted out to 80 m. So a stop identity supported at 0.85 confidence **dropped
+   to 0.33 the moment a vehicle was seen 40 m away agreeing with it.** Two lines of evidence
+   yielding less than one is incoherent on its face. It accounted for 3,185 occurrences —
+   13.5% — sitting `confirmed` but under the 0.60 floor. `corroboratedConfidence` now takes the
+   best of the *agreeing* sources, which admits nothing either source would have refused alone.
+2. **Promotion forgot what it had already seen.** `distinctPatterns` was recounted from the
+   patterns resolved in *that cycle*, so a stop confirmed by two agreeing patterns demoted
+   itself to `candidate` when one of them went off shift — 03:00 unlearning what 08:00
+   established. The oscillation is visible directly in the log: confirmed counts of 3,043 →
+   3,031 → 3,019 → 3,025 → 3,042 across five consecutive cycles. Agreement is now accumulated
+   and restored from the database on a warm start.
+
+**What was deliberately not done**, and this is the part worth reading: the two-independent-
+patterns requirement blocks 43.2% of occurrences on its own, and loosening it would have taken
+coverage over the gate in one line. A held-out-geometry experiment even suggested one-pattern
+identities are no less accurate than two-pattern ones (88.6% against 80.7%, n=197). **The rule
+stays**, because the "truth" that experiment withheld was itself a nearest-stop match and its
+disagreements were overwhelmingly adjacent platform ids at one intersection — so it cannot
+settle the question. Loosening a safety rule on evidence that weak, to make a number clear a
+gate, is precisely the move this project exists not to make. The 50% gate is unchanged too.
+
+**Status: fixed in commit `dc36469`, and not yet observed working.** The detached collector
+process predates the commit, so every coverage figure in this document — including the 30.7% in
+the table above — was produced by the *old* code. Whether the fix moves coverage over 50% is an
+open empirical question, and the honest answer today is that we do not know.
+
+### A fourth, found the same way, on 2026-07-25
+
+Same shape again, and it is the most rider-visible of the four. The seeder loads `calendar`
 and `calendar_dates` whole but filters `trips` through a rolling window, so the board can
 declare a service **active** on a date for which we hold **no trips at all**. Re-measured
 against both the database and the extracted feed: **7 of this board's 42 days** are exactly
@@ -471,7 +518,7 @@ in `seed_toronto.ts` and is written up in `DECISIONS.md` §34 and `BLOCKERS.md` 
 reading as good news about the transit system, which is the failure this whole project exists
 to prevent, aimed inward.
 
-**What this run of corrections is actually evidence of.** Three times now, the thing that caught the
+**What this run of corrections is actually evidence of.** Four times now, the thing that caught the
 product lying to itself was not the honesty architecture — it was somebody going back and
 re-measuring a believed-true assumption against reality. The gates were perfect and the input
 was hollow. The audit was well-designed and the wiring made it tautological. Design does not
@@ -521,7 +568,7 @@ never been committed.
 
 ### Where to read more
 
-All present and verified on 2026-07-25 at 15:11 ET. `METHODS.md` and `ARCHITECTURE.md` were
+All present and verified on 2026-07-25. `METHODS.md` and `ARCHITECTURE.md` were
 rewritten against the delay engine on 2026-07-25 and independently fact-checked against the
 source; where any document and the code disagree, **the code wins and the disagreement gets
 filed in `BLOCKERS.md`** rather than quietly reconciled.
@@ -722,7 +769,7 @@ omitting it.
 | Nearby view, live MapLibre map, voxel sprites, markers | **Built** | `screenshots/reference-match/*` (production build). The `phase4/*` stills predate the §30 shell rebuild and the §31–§32 map rebuild — they are a historical record, not current UI |
 | Both themes, en/fr-CA/es, skeletons, honest empty states | **Built** | `screenshots/phase3/*`, `web/src/i18n/*` |
 | Route shape endpoint + real GTFS route line | **Built** | `GET /api/routes/:routeId/shape` |
-| Service alerts incl. accessibility flagging | **Built** | 82 stored, 15 flagged (2026-07-25 15:11 ET) |
+| Service alerts incl. accessibility flagging | **Built** | 82 stored, 15 flagged (2026-07-25) |
 | Trust grades (A–E) | **Built** — served by the API and rendered as a chip, with an explicit **untracked** dash when there is no evidence. Every departure is untracked today, for the reason in limitation 1 | `GRADE_TIERS` in `server/src/api.ts`, `web/src/components/DepartureRow.tsx`, `screenshots/phase5/departures-untracked-390-dark.png` |
 | Ghost Forecast chips | **Built, but dormant** — `ghostRiskFor` is served and rendered, and **cannot fire until ghosts exist** (limitation 2). Do not demo it as working until it has real input | `server/src/api.ts`, `web/src/components/DepartureRow.tsx` |
 | Ghost Feed UI | **Built** — today/week ghost + cancelled counters, ghost event cards, honest empty state, service-alerts list. **Renders `0 / 0` today, correctly (limitation 2)** | `web/src/components/AlertsPanel.tsx`, `GET /api/ghosts/feed`, `screenshots/phase5/alerts-ghostfeed-390-dark.png` |
@@ -754,7 +801,8 @@ worth more than one someone found for you.
    and running. But its first gate (`boardActive`) fails every cycle because the loaded board
    does not activate until 2026-07-26, so `trip_delay_obs` holds **0 rows** and every departure
    in the app renders as untracked. A second gate would also fail if the first passed: crosswalk
-   occurrence coverage sits at **33.6%** against a required 50%. **Nothing about the delay
+   occurrence coverage sits at **30.7%** against a required 50% (and was falling — see the
+   third correction; a fix landed today that the running collector has not picked up). **Nothing about the delay
    pipeline has been validated end-to-end against real due trips.** The pure functions are
    tested; the system is not yet proven.
 2. **Ghost count is 0 and will stay 0 until 2026-07-26.** The published TTC board covers

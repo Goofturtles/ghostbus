@@ -13,7 +13,7 @@ budget; if a take runs long, cut words, not the honesty caveats.
 > fallback. Shooting the preferred take when its condition is false would be the exact failure
 > this project exists to argue against.
 >
-> **Last verified 2026-07-25 15:11 ET** against the production database and the source. Two
+> **Last verified 2026-07-25** against the production database and the source. Two
 > changes since the previous pass, both in Beat 5 and P-4: the zero-delay rows are **purged**
 > (`trip_delay_obs` holds 0 rows, so the "every row is zero" shot no longer exists to film),
 > and `server/src/join.ts` is **deleted** — do not name it, draw it, or point a camera at it.
@@ -131,7 +131,7 @@ phase4 captures predate the shell rebuild (`DECISIONS.md` §30) and the voxel ma
 > **CONDITIONAL BEAT. Read this before shooting.**
 > A Ghost Forecast chip only renders when a `(route, hour-of-week)` cell clears
 > `GHOST_RISK_MIN_N = 8` scheduled trips inside hours the collector demonstrably watched
-> **and** the ghost rate exceeds 8% (`server/src/api.ts`). Queried 2026-07-25 15:11 ET: the
+> **and** the ghost rate exceeds 8% (`server/src/api.ts`). Queried on 2026-07-25: the
 > `ghosts` table holds **zero rows** — the loaded GTFS board does not activate until
 > **2026-07-26**, so nothing has been due, so nothing can have gone missing. There is no honest
 > forecast chip to film today. Shoot **Take A** only if the condition below is met; otherwise
@@ -236,7 +236,7 @@ Then a two-up: the UI on the left, `server/src/eta.ts` on the right with
   on that test name. It proves the zero was manufactured by our decoder and never on the wire,
   and unlike the live probe it does not depend on the TTC being up on shoot day.
 - **Status check before you record — this note has been wrong before, so re-verify it.**
-  Verified 2026-07-25 15:11 ET against the production database and the source:
+  Verified on 2026-07-25 against the production database and the source:
   - the guard **is** fixed (`server/src/pb.ts`, own-property reads; commit `f54b1cd`);
   - `trip_delay_obs`, `agg_delay` and `agg_delay_route` all hold **0 rows**;
   - `join.ts` is **deleted** and a five-stage delay engine replaced it;
@@ -302,7 +302,7 @@ Then a one-second cut to `render.yaml` showing a single `type: web` service.
 Return to the live app, wide. Wordmark lower third. Repo URL and `README.md` on screen —
 it now exists, alongside `ARCHITECTURE.md`, `METHODS.md`, `SECURITY.md`, `CREDITS.md`,
 `DECISIONS.md`, `TOOLKIT.md` and `BLOCKERS.md`. Name a file on camera only after you have
-seen it; this list was accurate at 2026-07-25 15:11 and the repo was moving fast.
+seen it; this list was accurate on 2026-07-25 and the repo was moving fast.
 
 **Narration**
 > "GhostBus doesn't need the agency to admit a bus was cancelled. It watches the schedule,
@@ -341,7 +341,7 @@ Tick every line before the first take. Anything unticked is a reshoot, not a fix
       "recorded", never "live".
 - [ ] **P-4.** Two separate claims here; keep them apart, because an earlier draft of this
       script did not. **(a) "We found it, purged it and replaced it"** — verified true on
-      2026-07-25 15:11 ET: the presence-aware guard is merged (`server/src/pb.ts`, commit
+      2026-07-25: the presence-aware guard is merged (`server/src/pb.ts`, commit
       `f54b1cd`), `trip_delay_obs` / `agg_delay` / `agg_delay_route` hold **0 rows**, and
       `join.ts` is deleted in favour of the delay engine. Re-confirm with a query on shoot day
       anyway. **(b) "It now measures how late Toronto's buses are"** — **not true yet, do not
