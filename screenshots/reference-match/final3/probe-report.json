@@ -1,0 +1,494 @@
+{
+  "mobile-dark": {
+    "alive": {
+      "hasCard": true,
+      "canvas": {
+        "w": 390,
+        "h": 234
+      },
+      "bodyText": 856,
+      "mapHandle": true
+    },
+    "appOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "mapOverlap": {
+      "markers": [
+        ".you-beacon",
+        ".map-badge",
+        ".map-controls",
+        ".maplibregl-ctrl-attrib"
+      ],
+      "collisions": [],
+      "spill": [],
+      "attributionVisible": true
+    },
+    "clipped": [],
+    "diag": {
+      "pitch": 48,
+      "bearing": -18,
+      "zoom": 15.4,
+      "fov": 16,
+      "city3d": true,
+      "trees": true,
+      "treeCount": 9,
+      "stats": {
+        "blocks": 2059,
+        "built": 2059,
+        "features": 494,
+        "dropped": 0,
+        "origin": [
+          -79.39590558922038,
+          43.644571365174926
+        ]
+      },
+      "routePts": 3,
+      "roadLabels": [
+        "Front Street West"
+      ],
+      "blockers": true
+    },
+    "layerOrder": "bg,landcover,park,water,waterway,building,rail,road-casing,road-minor,road-med,road-major,boundary,voxel-tree-body,voxel-tree-cap,walk-shadow,walk-line,route-shadow,route-casing,route-line,route-stops,label-road,label-place,label-water,vehicles,marker-blockers",
+    "timing": {
+      "n": 1063,
+      "p50": 4.2,
+      "p95": 4.8,
+      "worst": 12.3
+    },
+    "consoleErrors": []
+  },
+  "mobile-dark-fr-CA": {
+    "alive": {
+      "hasCard": true,
+      "canvas": {
+        "w": 390,
+        "h": 234
+      },
+      "bodyText": 1020,
+      "mapHandle": true
+    },
+    "appOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "mapOverlap": {
+      "markers": [
+        ".you-beacon",
+        ".map-badge",
+        ".map-controls",
+        ".maplibregl-ctrl-attrib"
+      ],
+      "collisions": [],
+      "spill": [],
+      "attributionVisible": true
+    },
+    "clipped": [],
+    "diag": {
+      "pitch": 48,
+      "bearing": -18,
+      "zoom": 15.4,
+      "fov": 16,
+      "city3d": true,
+      "trees": true,
+      "treeCount": 9,
+      "stats": {
+        "blocks": 2059,
+        "built": 2059,
+        "features": 494,
+        "dropped": 0,
+        "origin": [
+          -79.39590558922038,
+          43.644571365174926
+        ]
+      },
+      "routePts": 3,
+      "roadLabels": [
+        "Front Street West"
+      ],
+      "blockers": true
+    },
+    "layerOrder": "bg,landcover,park,water,waterway,building,rail,road-casing,road-minor,road-med,road-major,boundary,voxel-tree-body,voxel-tree-cap,walk-shadow,walk-line,route-shadow,route-casing,route-line,route-stops,label-road,label-place,label-water,vehicles,marker-blockers",
+    "timing": {
+      "n": 1050,
+      "p50": 4.2,
+      "p95": 4.9,
+      "worst": 15.3
+    },
+    "consoleErrors": []
+  },
+  "mobile-light": {
+    "alive": {
+      "hasCard": true,
+      "canvas": {
+        "w": 390,
+        "h": 234
+      },
+      "bodyText": 856,
+      "mapHandle": true
+    },
+    "appOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "mapOverlap": {
+      "markers": [
+        ".you-beacon",
+        ".map-badge",
+        ".map-controls",
+        ".maplibregl-ctrl-attrib"
+      ],
+      "collisions": [],
+      "spill": [],
+      "attributionVisible": true
+    },
+    "clipped": [],
+    "diag": {
+      "pitch": 48,
+      "bearing": -18,
+      "zoom": 15.4,
+      "fov": 16,
+      "city3d": true,
+      "trees": true,
+      "treeCount": 9,
+      "stats": {
+        "blocks": 2059,
+        "built": 2059,
+        "features": 494,
+        "dropped": 0,
+        "origin": [
+          -79.39590558922038,
+          43.644571365174926
+        ]
+      },
+      "routePts": 3,
+      "roadLabels": [
+        "Front Street West"
+      ],
+      "blockers": true
+    },
+    "layerOrder": "bg,landcover,park,water,waterway,building,rail,road-casing,road-minor,road-med,road-major,boundary,voxel-tree-body,voxel-tree-cap,walk-shadow,walk-line,route-shadow,route-casing,route-line,route-stops,label-road,label-place,label-water,vehicles,marker-blockers",
+    "timing": {
+      "n": 1060,
+      "p50": 4.2,
+      "p95": 4.8,
+      "worst": 13.5
+    },
+    "consoleErrors": []
+  },
+  "mobile-light-fr-CA": {
+    "alive": {
+      "hasCard": true,
+      "canvas": {
+        "w": 390,
+        "h": 234
+      },
+      "bodyText": 1020,
+      "mapHandle": true
+    },
+    "appOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "mapOverlap": {
+      "markers": [
+        ".you-beacon",
+        ".map-badge",
+        ".map-controls",
+        ".maplibregl-ctrl-attrib"
+      ],
+      "collisions": [],
+      "spill": [],
+      "attributionVisible": true
+    },
+    "clipped": [],
+    "diag": {
+      "pitch": 48,
+      "bearing": -18,
+      "zoom": 15.4,
+      "fov": 16,
+      "city3d": true,
+      "trees": true,
+      "treeCount": 9,
+      "stats": {
+        "blocks": 2059,
+        "built": 2059,
+        "features": 494,
+        "dropped": 0,
+        "origin": [
+          -79.39590558922038,
+          43.644571365174926
+        ]
+      },
+      "routePts": 3,
+      "roadLabels": [
+        "Front Street West"
+      ],
+      "blockers": true
+    },
+    "layerOrder": "bg,landcover,park,water,waterway,building,rail,road-casing,road-minor,road-med,road-major,boundary,voxel-tree-body,voxel-tree-cap,walk-shadow,walk-line,route-shadow,route-casing,route-line,route-stops,label-road,label-place,label-water,vehicles,marker-blockers",
+    "timing": {
+      "n": 1056,
+      "p50": 4.2,
+      "p95": 4.8,
+      "worst": 19.8
+    },
+    "consoleErrors": []
+  },
+  "desktop-dark": {
+    "alive": {
+      "hasCard": true,
+      "canvas": {
+        "w": 960,
+        "h": 740
+      },
+      "bodyText": 921,
+      "mapHandle": true
+    },
+    "appOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "mapOverlap": {
+      "markers": [
+        ".you-beacon",
+        ".stop-marker",
+        ".walk-node",
+        ".map-controls",
+        ".maplibregl-ctrl-attrib"
+      ],
+      "collisions": [],
+      "spill": [],
+      "attributionVisible": true
+    },
+    "clipped": [],
+    "diag": {
+      "pitch": 48,
+      "bearing": -18,
+      "zoom": 16.18,
+      "fov": 16,
+      "city3d": true,
+      "trees": true,
+      "treeCount": 46,
+      "stats": {
+        "blocks": 2059,
+        "built": 2059,
+        "features": 494,
+        "dropped": 0,
+        "origin": [
+          -79.39608560240356,
+          43.644529039866654
+        ]
+      },
+      "routePts": 4,
+      "roadLabels": [
+        "Queen Street West",
+        "Spadina Avenue",
+        "Front Street West"
+      ],
+      "blockers": true
+    },
+    "layerOrder": "bg,landcover,park,water,waterway,building,rail,road-casing,road-minor,road-med,road-major,boundary,voxel-tree-body,voxel-tree-cap,walk-shadow,walk-line,route-shadow,route-casing,route-line,route-stops,label-road,label-place,label-water,vehicles,marker-blockers",
+    "timing": {
+      "n": 1040,
+      "p50": 4.2,
+      "p95": 5.6,
+      "worst": 14.8
+    },
+    "consoleErrors": []
+  },
+  "desktop-dark-fr-CA": {
+    "alive": {
+      "hasCard": true,
+      "canvas": {
+        "w": 960,
+        "h": 740
+      },
+      "bodyText": 1087,
+      "mapHandle": true
+    },
+    "appOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "mapOverlap": {
+      "markers": [
+        ".you-beacon",
+        ".stop-marker",
+        ".walk-node",
+        ".map-controls",
+        ".maplibregl-ctrl-attrib"
+      ],
+      "collisions": [],
+      "spill": [],
+      "attributionVisible": true
+    },
+    "clipped": [],
+    "diag": {
+      "pitch": 48,
+      "bearing": -18,
+      "zoom": 16.18,
+      "fov": 16,
+      "city3d": true,
+      "trees": true,
+      "treeCount": 46,
+      "stats": {
+        "blocks": 2059,
+        "built": 2059,
+        "features": 494,
+        "dropped": 0,
+        "origin": [
+          -79.39608560240356,
+          43.644529039866654
+        ]
+      },
+      "routePts": 4,
+      "roadLabels": [
+        "Queen Street West",
+        "Spadina Avenue",
+        "Front Street West"
+      ],
+      "blockers": true
+    },
+    "layerOrder": "bg,landcover,park,water,waterway,building,rail,road-casing,road-minor,road-med,road-major,boundary,voxel-tree-body,voxel-tree-cap,walk-shadow,walk-line,route-shadow,route-casing,route-line,route-stops,label-road,label-place,label-water,vehicles,marker-blockers",
+    "timing": {
+      "n": 1034,
+      "p50": 4.2,
+      "p95": 5.9,
+      "worst": 13.4
+    },
+    "consoleErrors": []
+  },
+  "desktop-light": {
+    "alive": {
+      "hasCard": true,
+      "canvas": {
+        "w": 960,
+        "h": 740
+      },
+      "bodyText": 921,
+      "mapHandle": true
+    },
+    "appOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "mapOverlap": {
+      "markers": [
+        ".you-beacon",
+        ".stop-marker",
+        ".walk-node",
+        ".map-controls",
+        ".maplibregl-ctrl-attrib"
+      ],
+      "collisions": [],
+      "spill": [],
+      "attributionVisible": true
+    },
+    "clipped": [],
+    "diag": {
+      "pitch": 48,
+      "bearing": -18,
+      "zoom": 16.18,
+      "fov": 16,
+      "city3d": true,
+      "trees": true,
+      "treeCount": 46,
+      "stats": {
+        "blocks": 2059,
+        "built": 2059,
+        "features": 494,
+        "dropped": 0,
+        "origin": [
+          -79.39608560240356,
+          43.644529039866654
+        ]
+      },
+      "routePts": 4,
+      "roadLabels": [
+        "Queen Street West",
+        "Spadina Avenue",
+        "Front Street West"
+      ],
+      "blockers": true
+    },
+    "layerOrder": "bg,landcover,park,water,waterway,building,rail,road-casing,road-minor,road-med,road-major,boundary,voxel-tree-body,voxel-tree-cap,walk-shadow,walk-line,route-shadow,route-casing,route-line,route-stops,label-road,label-place,label-water,vehicles,marker-blockers",
+    "timing": {
+      "n": 1039,
+      "p50": 4.2,
+      "p95": 5.7,
+      "worst": 14
+    },
+    "consoleErrors": []
+  },
+  "desktop-light-fr-CA": {
+    "alive": {
+      "hasCard": true,
+      "canvas": {
+        "w": 960,
+        "h": 740
+      },
+      "bodyText": 1087,
+      "mapHandle": true
+    },
+    "appOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "mapOverlap": {
+      "markers": [
+        ".you-beacon",
+        ".stop-marker",
+        ".walk-node",
+        ".map-controls",
+        ".maplibregl-ctrl-attrib"
+      ],
+      "collisions": [],
+      "spill": [],
+      "attributionVisible": true
+    },
+    "clipped": [],
+    "diag": {
+      "pitch": 48,
+      "bearing": -18,
+      "zoom": 16.18,
+      "fov": 16,
+      "city3d": true,
+      "trees": true,
+      "treeCount": 46,
+      "stats": {
+        "blocks": 2059,
+        "built": 2059,
+        "features": 494,
+        "dropped": 0,
+        "origin": [
+          -79.39608560240356,
+          43.644529039866654
+        ]
+      },
+      "routePts": 4,
+      "roadLabels": [
+        "Queen Street West",
+        "Spadina Avenue",
+        "Front Street West"
+      ],
+      "blockers": true
+    },
+    "layerOrder": "bg,landcover,park,water,waterway,building,rail,road-casing,road-minor,road-med,road-major,boundary,voxel-tree-body,voxel-tree-cap,walk-shadow,walk-line,route-shadow,route-casing,route-line,route-stops,label-road,label-place,label-water,vehicles,marker-blockers",
+    "timing": {
+      "n": 1044,
+      "p50": 4.2,
+      "p95": 5.3,
+      "worst": 20.1
+    },
+    "consoleErrors": []
+  }
+}
