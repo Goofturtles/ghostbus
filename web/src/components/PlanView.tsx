@@ -28,7 +28,7 @@ import { pickBestRide, transitDirectionsUrl, type RidePlan } from '@/lib/plan';
 import { parseHeadsign } from '@/lib/headsign';
 import { RouteBadge } from './Primitives';
 import {
-  SearchIcon, WalkerIcon, RouteIcon, FlagIcon, ClockIcon, WarningIcon,
+  SearchIcon, WalkerIcon, RouteIcon, FlagIcon, ClockIcon, WarningIcon, PinIcon,
   ChevronIcon, CloseIcon, ArrowRightIcon,
 } from './icons';
 
@@ -54,6 +54,9 @@ export function PlanView() {
   const pace = useStore((s) => s.pace);
   const imperial = useStore((s) => s.units) === 'imperial';
   const geo = useLive((s) => s.geo);
+  // Subscribed, not read through getState(): a cold start resolves the geo fix before the
+  // nearby query returns, and the selection effect below has to re-run when stops arrive.
+  const nearby = useLive((s) => s.nearby);
   const geoStatus = useLive((s) => s.geoStatus);
   const online = useLive((s) => s.online);
 
@@ -118,29 +121,88 @@ export function PlanView() {
    * which is exactly what it is meant to depict.
    */
   const boardStop = best?.candidate.board ?? null;
-  useEffect(() => {
-    if (!boardStop) return;
-    if (useStore.getState().selectedStopId === boardStop.stopId) return;
-    useLive.getState().openStop(boardStop);
-  }, [boardStop]);
 
   /**
-   * AND THE MIRROR OF THAT: a plan that did NOT resolve takes the map's walk geometry away.
+   * AND THE MIRROR OF THAT: any plan that is NOT a usable ride takes the map's geometry away.
    *
    * Without this, the previous plan's first leg stayed drawn — a beaded walk path to a
-   * boarding stop belonging to a different journey — sitting directly under the words
-   * "this trip needs a transfer". A route-like line beside a message saying there is no
-   * route is exactly the kind of confident-sounding fiction this tab exists to refuse.
-   * Measured: the flow harness caught `walkNodes = 1` on the transfer screen.
+   * boarding stop belonging to a different journey — sitting directly under a message
+   * saying this journey has no answer. A route-like line beside a message saying there is
+   * no route is exactly the kind of confident-sounding fiction this tab exists to refuse.
    *
-   * Every non-ride outcome counts, and so does a `ride` whose candidates are all
-   * uncatchable (`best === null`) — the rider cannot make any of them, so there is no
-   * first leg to depict.
+   * THIS CONDITION HAS NOW BEEN WRONG TWICE, in the same way both times: it enumerated the
+   * failures it had thought of instead of the one success it can actually depict.
+   *
+   *   First miss  — it only covered `outcome !== 'ride'`, so a `ride` whose candidates were
+   *                 all uncatchable kept its geometry.
+   *   Second miss — it was gated on `phase.kind === 'done'`, so a plan fetch that FAILED
+   *                 (`phase.kind === 'error'`: server unreachable, throttled, restarting)
+   *                 could never set it. A tester killed the server mid-session and got the
+   *                 prior plan's full walk path drawn beneath "Can't reach the planner."
+   *                 The `Phase` union makes `'error'` payload-free, so `'done'` is false by
+   *                 construction there — the effect computed `false` for every network
+   *                 failure, and `setPlanTarget` had already cleared the flag when the
+   *                 re-plan began, so nothing could ever set it back.
+   *
+   * So it is inverted: there is exactly ONE state in which a first leg exists to draw — a
+   * resolved ride with a catchable candidate — and every other state a pending destination
+   * can be in (loading, errored, or answered badly) is unresolved. New `Phase` variants are
+   * unresolved by default rather than by remembering to add them here.
+   *
+   * Scoped to `target`, because with no destination chosen there is no question on screen
+   * and therefore nothing to contradict: the map goes back to its ordinary depiction of the
+   * rider and their own nearest stop, which is honest precisely because nothing is claiming
+   * to be a plan.
    */
-  const unresolved = phase.kind === 'done' && (phase.res.outcome !== 'ride' || best == null);
+  const resolved = phase.kind === 'done' && phase.res.outcome === 'ride' && best != null;
+  const unresolved = target != null && !resolved;
+
+  /**
+   * The selection follows the plan in BOTH directions.
+   *
+   * The truthy branch alone left `selectedStopId` pinned to a stale boarding stop when a
+   * re-plan failed: `best` (and so `boardStop`) goes null, but nothing un-selected the old
+   * stop, so the map's boarding annotation kept naming a stop from a journey that no longer
+   * has an answer. Falling back to the rider's own nearest stop returns the map to the
+   * picture it shows when no plan exists at all — which is the truthful thing to show when
+   * no plan exists at all.
+   *
+   * SETTLED outcomes only. `unresolved` deliberately includes `loading` so the geometry
+   * disappears the instant a new question is asked, but re-selecting on `loading` would
+   * bounce the selection to the nearest stop and back on every single re-plan — a visible
+   * stop-card flicker plus two wasted requests each time. A pending question suppresses the
+   * drawing; only a finished one moves the pin.
+   *
+   * `nearby` is read reactively rather than through `getState()`: on a cold start the geo
+   * fix resolves before the nearby query returns, so a `getState()` read would see an empty
+   * list, and nothing would re-run the effect when the stops actually arrived.
+   */
+  const settled = phase.kind === 'done' || phase.kind === 'error';
+  const nearest = nearby[0] ?? null;
+  useEffect(() => {
+    if (boardStop) {
+      if (useStore.getState().selectedStopId === boardStop.stopId) return;
+      useLive.getState().openStop(boardStop);
+      return;
+    }
+    if (!unresolved || !settled || !nearest) return;
+    if (useStore.getState().selectedStopId === nearest.stopId) return;
+    useLive.getState().openStop(nearest);
+  }, [boardStop, unresolved, settled, nearest]);
+
+  /**
+   * `target` is a dependency, and without it this desynced permanently.
+   *
+   * `setPlanTarget` resets the store flag to `false` the moment a new destination is picked.
+   * If the previous plan was ALSO unresolved (transfer -> transfer, the commonest case for a
+   * rider trying several destinations), `unresolved` stays `true` across that change, React
+   * sees an unchanged dep, the effect never re-runs — and the store keeps the `false` the
+   * store itself wrote. The map then draws the old walk path under the new refusal: exactly
+   * the defect this whole block exists to prevent, reintroduced by a stale dependency.
+   */
   useEffect(() => {
     useStore.getState().setPlanUnresolved(unresolved);
-  }, [unresolved]);
+  }, [unresolved, target]);
   // Leaving the tab (or the app) must not strand the map in a plan-failed state.
   useEffect(() => () => { useStore.getState().setPlanUnresolved(false); }, []);
 
@@ -174,7 +236,7 @@ export function PlanView() {
       {!target && <PlanIdle recents={recentTrips} />}
 
       {target && !geo && (
-        <PlanState glyph={<WarningIcon width={24} height={24} />} title={t('plan.noGeoTitle')} body={t('plan.noGeoBody')} />
+        <PlanState glyph={<WarningIcon width={24} height={24} />} tone="warn" title={t('plan.noGeoTitle')} body={t('plan.noGeoBody')} />
       )}
 
       {target && geo && phase.kind === 'loading' && (
@@ -186,6 +248,7 @@ export function PlanView() {
       {target && geo && phase.kind === 'error' && (
         <PlanState
           glyph={<WarningIcon width={24} height={24} />}
+          tone="warn"
           title={online ? t('plan.errorTitle') : t('offline.title')}
           body={online ? t('plan.errorBody') : t('offline.body')}
         />
@@ -255,11 +318,28 @@ function PlanIdle({ recents }: { recents: ReturnType<typeof useStore.getState>['
   );
 }
 
-function PlanState({ glyph, title, body, children }: {
-  glyph: React.ReactNode; title: string; body: string; children?: React.ReactNode;
+/**
+ * M8: the glyph and the tile it sits in have to agree.
+ *
+ * Every outcome rendered a `<WarningIcon>` inside the DEFAULT `.state-glyph`, whose tile is
+ * `--brand-soft` / `--brand` — so a transfer refusal wore the same purple tile as the idle
+ * "choose a destination" prompt and as the app's own selection accent, and a genuine
+ * planner ERROR wore it too. A warning triangle in the brand colour is neither a warning nor
+ * a brand mark.
+ *
+ * `tone` names what the card actually is:
+ *   'neutral'  a normal answer that happens not to be a ride (transfer, no service, no
+ *              stops nearby). Brand tile, and NOT a warning triangle — see the call sites.
+ *   'warn'     something is actually wrong (no location fix, planner unreachable). Amber
+ *              tile via the existing `.state-down`, which the out-of-coverage card already
+ *              uses correctly.
+ */
+function PlanState({ glyph, title, body, tone = 'neutral', children }: {
+  glyph: React.ReactNode; title: string; body: string;
+  tone?: 'neutral' | 'warn'; children?: React.ReactNode;
 }) {
   return (
-    <div className="state-card state-placeholder" role="status">
+    <div className={`state-card state-placeholder ${tone === 'warn' ? 'state-down' : ''}`} role="status">
       <div className="state-glyph" aria-hidden>{glyph}</div>
       <h3 className="state-title">{title}</h3>
       <p className="state-body">{body}</p>
@@ -281,10 +361,18 @@ function PlanOutcomeView({ res, widened, best, imperial, now, destinationName }:
   if (res.outcome === 'transfer') {
     return (
       <PlanState
-        glyph={<WarningIcon width={24} height={24} />}
+        glyph={<RouteIcon width={24} height={24} />}
         title={t('plan.transferTitle')}
         body={t('plan.transferBody')}
       >
+        {/* The disclosure comes BEFORE the control it qualifies — which is also the only
+            arrangement that makes its own wording true. `plan.transferFine` says "The link
+            below…", and `PlanState` renders children after the body, so with the link first
+            the caption pointed at something above it, in all three locales. An app that
+            argues it does not print false statements should not mis-state where its own
+            button is. Reordering beats rewording: a privacy disclosure belongs before the
+            action it describes, not after the rider has already tapped it. */}
+        <p className="plan-fineprint">{t('plan.transferFine')}</p>
         {/* Destination only — the rider's own position is the one thing this app
             promises never to hand to anyone else, and a maps app already knows it. */}
         <a
@@ -296,7 +384,6 @@ function PlanOutcomeView({ res, widened, best, imperial, now, destinationName }:
           <ArrowRightIcon width={16} height={16} aria-hidden />
           <span>{t('plan.openInMaps')}</span>
         </a>
-        <p className="plan-fineprint">{t('plan.transferFine')}</p>
       </PlanState>
     );
   }
@@ -304,7 +391,7 @@ function PlanOutcomeView({ res, widened, best, imperial, now, destinationName }:
   if (res.outcome === 'noStopsNearYou' || res.outcome === 'noStopsNearDestination') {
     return (
       <PlanState
-        glyph={<WarningIcon width={24} height={24} />}
+        glyph={<PinIcon width={24} height={24} />}
         title={res.outcome === 'noStopsNearYou' ? t('plan.noStopsYouTitle') : t('plan.noStopsDestTitle')}
         body={t('plan.noStopsBody', { m: res.radiusM })}
       />
