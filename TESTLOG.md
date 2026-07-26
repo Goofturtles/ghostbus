@@ -5546,3 +5546,38 @@ merely rewording the claim.
    forecast chips or Catch without stating live-vs-injected basis.
 3. Process practice adopted from this sweep: testers pin builds via git archive
    into scratch (builders rebuilding dist/ in place invalidated two mid-sweep runs).
+
+### Erratum appendix to the R4 console-sweep entry above (2026-07-26, post-merge)
+
+A second, deeper verification pass (requested by the tester itself) completed after
+the entry was merged and found residual precision defects in the corrected text.
+The sweep's verdict, counts, and RED-1 root cause all survive; the corrections of
+record are:
+
+1. The leave-by-chip citation is `s6-forecast-chips-light` — the dark artifact
+   records `leaveByChips: 0`.
+2. Alerts rendered 48-49 rows on the pinned build; the quoted 47 exists only in a
+   pre-pin artifact.
+3. The blockquote asking the builder to amend the "11 of 11" code comment was
+   already stale at merge: the comment was corrected in 1cb45df, an ancestor of the
+   entry's own final-check sha (the adjudication below the entry says so; the entry
+   body does not).
+4. The ~18:57 "defect live in the working tree" timeline row describes the pinned
+   scratch tree; mainline had shipped the fix at 18:48:10 (fb58d08).
+5. "One-line change in fb58d08" → one executable line inside fb58d08 (+48/−1,
+   mostly unrelated walkLeg work the entry separately declines to vouch for).
+6. The "~85 s" outage is not derivable from archived timestamps; the archived
+   brackets are 69.9 s (first→last ERR_CONNECTION_REFUSED) and 101.4 s
+   (state-mark span). The 25 s recovery figure is exact.
+7. "Rebuild-in-place happened twice" — artifacts evidence one alternate bundle
+   hash; the second occurrence is asserted, not archived.
+8. The "512 in 1 min" catch-injection string is light-theme; dark recorded
+   "90 in 1 min". The theme-shared string is "You're at the stop".
+9. Asserted-but-unarchived environment details: todayGhosts/weekGhosts of 0 beyond
+   the archived forecast log line, Chrome/Node versions, server PID, cache size.
+10. The isolation-survey heading overstated: the archived survey proves the
+    default-fallback dir was never written (27 h stale) and `driver=pglite`
+    excludes Neon; it cannot exonerate concurrently-advancing directories.
+11. The three line-level sha claims the deep pass could not check without a shell
+    are now verified by the orchestrator directly: `'4197'` at faecd24:133 and
+    926484b:133; `''` at fb58d08:170. The entry's sha table is correct.
