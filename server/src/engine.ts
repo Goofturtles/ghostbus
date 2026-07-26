@@ -23,7 +23,7 @@ import {
   crossRouteAgreement, monotonicityViolations, crosswalkedStaticSeqs, corroboratedConfidence,
   structurallyAmbiguousStops, GEO_SELF_CONFIRM_M, createPatternCreditStore, validationSufficient,
   type RtPattern, type StaticPatternLite, type XwalkEntry, type PatternState,
-  type PatternValidation,
+  type PatternValidation, type XwalkState,
 } from './xwalk.ts';
 import { originLock, preferBinding, type LockAnchor, type LockSlot, type LockResult } from './bind.ts';
 import {
@@ -451,7 +451,7 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT, write
       let usable = 0;
       let demoted = 0;
       for (const r of res.rows) {
-        let state = r.state === 'confirmed' || r.state === 'conflicted' ? r.state : 'candidate';
+        let state: XwalkState = r.state === 'confirmed' || r.state === 'conflicted' ? r.state : 'candidate';
         // A ROW MAY NOT CARRY MORE AUTHORITY THAN THE EVIDENCE THAT COMES BACK WITH IT.
         // `distinct_patterns` and `geo_resid_m` are persisted, so the first two promotion
         // paths can be re-checked here. The third — time-domain validation by surviving
