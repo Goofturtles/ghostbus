@@ -67,10 +67,10 @@
 //      the truth rather than a little over.
 //   d. Heights are quantised onto a shared lattice (voxelCity.ts owns that maths),
 //      plus a deterministic sub-decimetre coplanar tie-break (COPLANAR_EPS_M).
-//   e. Footprints below a screen-size floor are OMITTED at wide framings — ordinary
-//      cartographic generalisation, and voxelCity's `minFootprintAreaM2` argues the
-//      case. Omission, never invention: nothing is merged, moved or made up, and
-//      zooming in brings every one of them back.
+//   e. Nothing else is dropped. §41's screen-size footprint floor was removed in §43
+//      after §42's corrected instrument measured it monotonically harmful — the
+//      render was never too busy, it was 15 points short of the reference's coverage.
+//      `minHeightForZoom` remains the only generalisation, and it too only ever omits.
 //
 // No transit datum anywhere in GhostBus is styled, derived from, or scaled like any
 // of this. It is scenery.
@@ -89,7 +89,6 @@ import {
   HEIGHT_STEP_M,
   quantizeHeightM,
   minHeightForZoom,
-  minFootprintAreaM2,
   zoomHeightGain,
   FOCUS_FLATTEN,
   type VoxelTheme,
@@ -314,20 +313,8 @@ const AREA_TRUE_MIN = 0.55;
  *   * route focus scales it by FOCUS_FLATTEN along with every other height, leaving
  *     ~7 cm. If a comb ever reappears, expect it there first.
  */
-const COPLANAR_EPS_M = 0.22;
+const COPLANAR_EPS_M = 1.00;
 
-/**
- * The most of a neighbourhood the generalisation floor may ever omit — the safety net
- * that stops a floor calibrated downtown from deleting a low-rise one. Argued where it
- * is applied, in `build`.
- *
- * 0.65 is not a taste call. Measured on the population this code actually sees — the
- * 2,059 loaded rings that survive `minHeightForZoom` at the default framing — the
- * settled screen-size floor of 499 m2 omits 58.6% of them (56.8% of the 796 in view).
- * So the cap sits above the framing the whole of §41 was measured on and changes
- * nothing about it; it only binds somewhere the data is finer-grained than downtown.
- */
-const MAX_OMIT_FRACTION = 0.65;
 /** Sanity ceiling on a block's half-extent — see the note in `build`. Toronto's
  *  longest single building (the Eaton Centre) is ~300 m end to end, so a half-extent
  *  above 300 m is a tile-generalisation artifact, not architecture. */
@@ -694,9 +681,10 @@ function coplanarEps(id: number): number {
   // for about half of all ids — and JS `%` keeps the DIVIDEND's sign. Without the
   // final `>>> 0` the offset ran (-0.22, 0.22]: twice the intended spread, and half of
   // the roofs sat BELOW the lattice `quantizeHeightM` is supposed to guarantee. (The
-  // same missing shift is present in `cellRand` and `pickTint` below; both predate
-  // this pass, both change what the city looks like, and neither is fixed here — see
-  // DECISIONS §41.)
+  // same missing shift was present in `cellRand` and `pickTint` below; §41 recorded
+  // both and left them, because fixing either re-deals the whole city and invalidates
+  // the render §38-§41 were measured against. §43 fixes both, and re-bases every
+  // measurement it moves.
   return (((h >>> 0) % 1024) / 1024) * COPLANAR_EPS_M;
 }
 
@@ -707,7 +695,16 @@ function cellRand(id: number, ix: number, iy: number): number {
   h ^= h >>> 15;
   h = Math.imul(h, 0x2545f491) >>> 0;
   h ^= h >>> 13;
-  return (h % 4096) / 4096;
+  // `>>> 0` — the same signed fold `coplanarEps` above documents. `h ^ (h >>> 13)` is an
+  // int32 expression and JS `%` keeps the DIVIDEND's sign, so this returned a NEGATIVE
+  // value for about half of all cells — and every negative value is below
+  // CELL_DROP_CHANCE. The drop fired at ~71% against the documented 42%, so most of the
+  // city stood a whole course lower than its own quantised height. Its cost is smaller
+  // than it sounds — a dropped cell is one course SHORTER, never absent — and §43
+  // measured the fix at +0.8 points of built coverage on its own, against the +4.4 of
+  // removing the footprint floor. It is shipped for correctness, and because the height
+  // variation the reference's clusters show is a 42% effect, not a 71% one.
+  return ((h >>> 0) % 4096) / 4096;
 }
 
 /**
@@ -803,8 +800,6 @@ export interface VoxelMeshLayer extends CustomLayerInterface {
     built: number;
     features: number;
     dropped: number;
-    /** real footprints omitted by the zoom-keyed area floor (generalisation) */
-    omitted: number;
     /** footprints that produced a multi-cube, multi-height cluster */
     clustered: number;
     origin: [number, number];
@@ -836,7 +831,6 @@ export function createVoxelMeshLayer(opts: VoxelMeshOptions): VoxelMeshLayer {
   let count = 0;
   let built = 0;
   let dropped = 0;
-  let omitted = 0;
   let features = 0;
   let clustered = 0;
 
@@ -920,7 +914,6 @@ export function createVoxelMeshLayer(opts: VoxelMeshOptions): VoxelMeshLayer {
     scratch.length = 0;
     let ringSeq = 0;
     let oversize = 0;
-    let generalised = 0;
 
     const push = (pts: number[], h: number, b: number, id: number) => {
       const box = orientedBox(pts);
@@ -1006,48 +999,19 @@ export function createVoxelMeshLayer(opts: VoxelMeshOptions): VoxelMeshLayer {
     features = feats.length;
     dropped = oversize;
 
-    // ---- GENERALISATION, on the ring's OWN area rather than on its box's ----------
+    // ---- NO GENERALISATION FLOOR HERE ANY MORE (§43) ------------------------------
     //
-    // The floor itself is `minFootprintAreaM2` (voxelCity.ts), a constant screen area.
-    // It is applied HERE rather than inside `push` because of the cap below, which
-    // needs to see the whole neighbourhood before it can decide anything.
+    // §41 filtered `scratch` at this point by a constant screen area (500 m2 at the
+    // desktop diorama), capped by rank at MAX_OMIT_FRACTION so a floor calibrated
+    // downtown could not empty a finer-grained neighbourhood. Both are gone. The sweep
+    // that chose the floor was read through an instrument that counted our own road
+    // network as buildings (§42 §2); corrected, the floor is monotonically harmful —
+    // it costs 3.7 points of built coverage on a frame that was already 15 points
+    // short of the reference — and the rank cap cannot bind once the floor is zero.
+    // The argument is written out in full over `minHeightForZoom` in voxelCity.ts.
     //
-    // THE CAP, and the failure it exists to prevent. A pure absolute floor is tuned on
-    // the place it was measured. At King & Spadina it omits 58.6% of the loaded rings
-    // that get this far and the result is the reference's calm; somewhere finer-grained
-    // the same floor can take most of a neighbourhood. So it is capped by RANK as well as
-    // by size: drop the smallest footprints until the screen-size floor is satisfied OR
-    // MAX_OMIT_FRACTION of the loaded neighbourhood has been dropped, whichever comes
-    // first. Selection by rank is the older and more standard of the two generalisation
-    // operators — Töpfer's radical law is exactly this — and like the size floor it only
-    // ever OMITS.
-    //
-    // MEASURED, on three real Toronto framings, as built coverage of the pane, with the
-    // size floor switched off / on-uncapped / on-capped:
-    //
-    //   King & Spadina (downtown)  66.4%  ->  63.5%  ->  63.5%   cap never binds
-    //   Roncesvalles   (low-rise)  35.4%  ->  27.8%  ->  31.6%   cap halves the loss
-    //   Greenwood/Danforth         25.5%  ->  24.9%  ->  25.2%
-    //
-    // The Greenwood row is worth reading carefully: that frame is ALREADY sparse with no
-    // area floor at all, because most of its houses carry a render_height under
-    // `minHeightForZoom`'s 8 m and never reach this code. The area floor is not what
-    // empties it, and the fix for that — if it is ever wanted — belongs to the HEIGHT
-    // floor, not here.
-    const minArea = minFootprintAreaM2(metresPerPixel(map));
-    if (minArea > 0 && scratch.length > 0) {
-      const sorted = scratch.map((bl) => bl.ringArea).sort((x, y) => x - y);
-      const capIdx = Math.floor(sorted.length * MAX_OMIT_FRACTION);
-      const capArea = capIdx < sorted.length ? sorted[capIdx] : Infinity;
-      const threshold = Math.min(minArea, capArea);
-      let keep = 0;
-      for (let i = 0; i < scratch.length; i++) {
-        if (scratch[i].ringArea >= threshold) scratch[keep++] = scratch[i];
-      }
-      generalised = scratch.length - keep;
-      scratch.length = keep;
-    }
-    omitted = generalised;
+    // So every ring the tiles hand us that clears the HEIGHT floor is drawn, at its
+    // real place, orientation and extent.
     built = scratch.length;
 
     // INSTANCE BUDGET, spent in whole buildings. A cluster with a cell missing out of
@@ -1193,7 +1157,14 @@ export function createVoxelMeshLayer(opts: VoxelMeshOptions): VoxelMeshLayer {
     // variant ~26%, and the violet / teal / rose accents stay rare — §31 measured the
     // violet at ~2% of reference pixels and the teal at ~0.8%, and a previous pass had
     // to correct them down from five times that.
-    const r = (h % 1000) / 1000;
+    // `>>> 0` — `h ^= h >>> 15` above lands back in signed int32 and JS `%` keeps the
+    // DIVIDEND's sign, so every negative hash fell into the first bucket. The dealt
+    // shares were ~67 / 15 / 13 / 3 / 1 / 1 against the intended 34 / 30 / 26 / 6 / 2 / 2
+    // — two thirds of the city one colour, and the violet / teal / rose accents at a
+    // third of their measured share of the reference. Fixed in §43 with `cellRand`; both
+    // re-deal every block, which is why §41 left them and why §43 re-bases every
+    // measurement they move.
+    const r = ((h >>> 0) % 1000) / 1000;
     if (r < 0.34) return 0;
     if (r < 0.64) return 1;
     if (r < 0.90) return 2;
@@ -1427,7 +1398,7 @@ export function createVoxelMeshLayer(opts: VoxelMeshOptions): VoxelMeshLayer {
     },
 
     stats() {
-      return { blocks: count, built, features, dropped, omitted, clustered, origin: [origin.lng, origin.lat] };
+      return { blocks: count, built, features, dropped, clustered, origin: [origin.lng, origin.lat] };
     },
 
     setPartVisible(part, on) {

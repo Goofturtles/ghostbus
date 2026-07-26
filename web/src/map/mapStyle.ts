@@ -40,66 +40,59 @@ interface Palette {
   roadLabelHalo: string;
 }
 
-// MEASURED off ghostbus-design-reference.png. Two passes were needed here, and the
-// second one reversed the first:
-//   pass 1 read "streets one step lighter than the ground" (§C) literally, dropped
-//     the roads to #1A2340 on a #0C1229 ground, and the grid vanished — the render
-//     came back as one continuous mass of rooftops with no sense of place.
-//   pass 2 (this one) is what the reference actually does: its GROUND is the darkest
-//     surface in the frame (#0b142b, and darker still in the shadows between blocks)
-//     and its streets are a clearly readable lavender-slate lattice a good three
-//     steps above it. The street grid is a primary read of the picture, not a
-//     whisper — the "one step lighter" phrasing is about hue family, not contrast.
+// MEASURED off ghostbus-design-reference.png, over four passes, and the fourth one is
+// what ships. The history matters because three of the four were wrong in ways that
+// only the next instrument could see.
 //
-// PASS 3 (this one) is a LUMINANCE-BAND correction, and it is the statistic that
-// finally agrees with what the picture looks like. Share of the desktop map region
-// per 0-255 luminance band, reference vs the pass-2 build:
+//   pass 1 read §C's "streets one step lighter than the ground" literally, dropped the
+//     roads toward the ground tone, and the grid vanished — the render came back as one
+//     continuous mass of rooftops with no sense of place.
+//   pass 2 concluded the opposite: that the reference's streets are "a lavender-slate
+//     around luminance 35-45", and built a ladder ground 20 / casing 35 / minor 40 /
+//     secondary 47 / major 58 to match it.
+//   pass 3 kept that ladder and justified it with a luminance-band histogram — the
+//     reference gives 27.7% of its frame to the 32-48 band, and the casing was taken to
+//     be what fills it.
 //
-//                0-16   16-32  32-48  48-64  64-80
-//   reference     2.9%   37.3%  27.7%  13.2%  12.2%
-//   pass 2       21.1%   27.8%  12.3%   6.0%  30.0%
+//   pass 4 (§42 measured it, §43 ships it). BOTH of those readings were false, and they
+//     were false in the same direction. §42 measured the reference's street SURFACE
+//     directly, two independent ways: the luminance of its street-wide open ground
+//     (p10 15.5, p50 20.0, p90 25.2) and raw vertical cuts across the sheet, which run
+//     13-29 across every street and 60-95 across every roof. THE REFERENCE'S STREETS
+//     ARE ITS DARKEST SURFACE, level with its own ground at ~20 — and the 32-48 band
+//     pass 3 attributed to them is its building WALLS (§40 measured lit 42, shaded 35).
+//     Our ladder was anchored ~20 levels too high: our road surface measured 39.8 (p50)
+//     against our own ground at 20.4.
 //
-// Pass 2 was bimodal — void plus glare. `ground: #090E22` is luminance 14, so a
-// fifth of the frame sat in the 0-16 bucket the reference barely uses, and the
-// gaps between blocks read as HOLES rather than as a lit surface. Worse, the road
-// CASING (#0B1024, luminance 16) was DARKER than the ground it was drawn on, so
-// every major street was a trench.
+//     The consequence was structural, not merely tonal. The road network is a connected
+//     graph across the whole frame, so painting it above the building/ground luminance
+//     boundary WELDED every block to every other block: 17% of the frame classified as
+//     "building" from the basemap alone, and every structural statistic in §38-§41 was
+//     read through that. §41's headline "ground share 37.1% vs the reference's 37.8%"
+//     was two errors cancelling — roads 17 points too bright, buildings 15 points too few.
 //
-// The reference's darkest common tone is #081028 (luminance 16) and its streets
-// are a lavender-slate around luminance 35-45 — a clearly lit surface, three or
-// four steps above the ground, which is what puts 27.7% of its frame in the
-// 32-48 band. These values reproduce that ladder: ground 20, casing 35, minor
-// street 40, secondary 47, major 58.
+// THE LADDER BELOW IS THE REFERENCE'S OWN, and it is deliberately NARROW: casing 17.5,
+// minor 20.6, secondary 22.7, major 26.7, against a ground of 20.4. That spans exactly
+// the reference's measured 15.5-25.2, and it means a minor street is no longer a lit
+// surface — it is the ground, with an edge.
 //
-// >>> "ITS STREETS ARE A LAVENDER-SLATE AROUND LUMINANCE 35-45" IS MEASURABLY FALSE,
-// >>> AND IT IS THE LARGEST KNOWN DEFECT IN THIS RENDER. (The ladder in the sentence
-// >>> after it is arithmetically right for the values below — they really are 20 / 35 /
-// >>> 40 / 47 / 58. It is the reference reading they were built to match that is wrong,
-// >>> so the whole ladder is anchored ~20 levels too high.)
-// >>> DECISIONS §42 measured the reference's street SURFACE directly, two
-// >>> ways: the luminance of its street-wide open ground (p10 15.5, p50 20.0, p90 25.2)
-// >>> and raw vertical cuts across the sheet, which run 13-29 across every street and
-// >>> 60-95 across every roof. The reference's streets are its DARKEST surface, not a
-// >>> lit one — its whole ground plane, streets included, sits at ~20, which is exactly
-// >>> where `ground: #0E142B` already sits. Our road surface measures 39.8-46.8: TWICE
-// >>> the reference's, and ~20 levels above our own ground rather than ~3.
-// >>>
-// >>> The consequence is structural, not merely tonal. The road network is a connected
-// >>> graph across the whole frame, so painting it above the building/ground luminance
-// >>> boundary welds every block to every other block: 17% of the frame classifies as
-// >>> "building" from the BASEMAP ALONE, and §38-§41's structural statistics were all
-// >>> read through that. §41's headline "ground share 37.1% vs the reference's 37.8%"
-// >>> is two errors cancelling — roads 17 points too bright, buildings 15 points too
-// >>> few. Corrected, this frame is 44% built against the reference's 59%.
-// >>>
-// >>> IT IS DELIBERATELY NOT FIXED HERE, for the reason §41 gave for leaving the
-// >>> `cellRand` / `pickTint` hash bugs: the fix invalidates the measurements of the
-// >>> pass that found it. Darkening 17% of the frame by ~17 levels drops the frame mean
-// >>> luminance from 40.6 to ~37.6 against the reference's 39.9, so it REGRESSES §40's
-// >>> verified tonal match unless the missing 15 points of built coverage come back in
-// >>> the same pass — and pass 1 above is the recorded proof that darkening the roads
-// >>> alone makes the grid vanish. Roads and density have to move together, with their
-// >>> own before/after. That is the next piece of work in this file. See DECISIONS §42.
+// WHY THE GRID SURVIVES THIS TIME, when pass 1's identical move destroyed it. Pass 1
+// darkened the roads on a city covering 41.5% of the frame; roads and density have to
+// move together, and §43 moves them together (the footprint floor is gone and both
+// signed-hash bugs are fixed, taking built coverage to 47.2% before the roads move at
+// all). Three things then carry the street grid, none of them a bright fill:
+//
+//   1. THE CASING IS NOW A STEP DARKER THAN ITS FILL, not lighter. It is the widest road
+//      element at the diorama zoom, so it is the one that had to come down hardest; at
+//      17.5 against a 20.4 ground it draws each street as a shallow channel with two
+//      soft edges, which survives even where no building borders the street. A LIGHTER
+//      casing was the other option and was rejected for the same reason pass 3 failed:
+//      it puts the brightest pixels in the frame on the widest road element.
+//   2. THE BUILDING MASSES DEFINE THE CORRIDOR. Roofs run 60-95 and lit walls ~45
+//      against a ~20 street, so the contrast that reads as "street" is building-to-
+//      street, not street-to-ground — exactly as it is in the reference.
+//   3. THE STREET NAMES. Near-white type on a now-darker surface gains contrast for
+//      free; the label layer below is unchanged and did not need to be touched.
 const DARK: Palette = {
   ground: '#0E142B',
   water: '#0C1636',
@@ -107,16 +100,15 @@ const DARK: Palette = {
   park: '#152318',
   grass: '#17251C',
   building: '#1B203F',
-  roadMinor: '#1F2749',
-  roadMed: '#242E56',
-  roadMajor: '#2E3A66',
-  // The street SURFACE, not a trench: the casing is the widest road element at the
-  // diorama zoom, so it is what the eye reads as "the road", and it must sit above
-  // the ground rather than below it.
-  // §42: "above, not below" still holds — but only just. The reference puts its street
-  // surface at luminance ~20, i.e. level with its ground, not the 15 levels above it
-  // this 34.8 sits. Read the §42 block at the head of DARK before changing this.
-  roadCasing: '#1B2242',
+  roadMinor: '#0E142E',
+  roadMed: '#101632',
+  roadMajor: '#131A38',
+  // The street CHANNEL. The casing is the widest road element at the diorama zoom, so
+  // it is what the eye reads as "the road" — and at 17.5 it is now a step DARKER than
+  // both its own fill (20.6) and the ground (20.4), which is what gives a street two
+  // edges without giving it a glow. It sat at 34.8 for three passes. See the §43 block
+  // above DARK before changing it.
+  roadCasing: '#0C1126',
   rail: '#1E2440',
   boundary: 'rgba(180,184,220,0.12)',
   label: '#AAB0C4',
@@ -138,6 +130,19 @@ const DARK: Palette = {
 // no grid at all — "buildings white on white". The reference's daylight roofs are
 // the LIGHTEST surface in frame (#f3f0ea); its roads are a legible mid-grey a
 // clear step below them, which is what separates one block from the next.
+//
+// §43 CARRIED THE SAME CORRECTION ACROSS, because the same defect was here in a
+// lighter key. The roads had crept back UP to the roof band: roadMajor measured 229.6
+// against building tops of 228-244, so a major street and a rooftop were the same
+// value again — and §43's density work, which draws every footprint the tiles carry
+// instead of only those over 500 m2, put many more near-white blocks against them.
+// Left alone, the light theme would have washed out exactly as the dark one welded.
+//
+// The fix is the dark theme's, mirrored: the street surface sits AT or just below the
+// ground plane, and the blocks own the top of the range. minor 195.6 / ground 201.7 /
+// secondary 202.6 / major 210.6 / building 228 / roofs 228-244, over a casing left at
+// 180.5 — already a step below everything, and the element that gives each street two
+// edges. Navigational hierarchy is untouched: a major road is still the lightest road.
 const LIGHT: Palette = {
   ground: '#CFC9C1',
   water: '#BCD0EA',
@@ -145,9 +150,9 @@ const LIGHT: Palette = {
   park: '#C6D4BA',
   grass: '#D2DAC4',
   building: '#E7E4DE',
-  roadMinor: '#DAD5CD',
-  roadMed: '#E2DDD5',
-  roadMajor: '#EAE5DD',
+  roadMinor: '#C9C3BA',
+  roadMed: '#D0CAC1',
+  roadMajor: '#D8D2C9',
   roadCasing: '#BAB4AB',
   rail: '#C8C3BB',
   boundary: 'rgba(70,74,110,0.24)',
@@ -212,19 +217,22 @@ export function buildStyle(theme: MapTheme): StyleSpecification {
         paint: { 'line-color': p.rail, 'line-width': w([[12, 0.5], [16, 1.4]]) as number },
       },
 
-      // --- road casing: the STREET SURFACE the blocks stand on -------------------
-      // Widened deliberately. At the diorama zoom the casing is the widest road
-      // element, so it is what actually fills the gaps between footprints — and
+      // --- road casing: the STREET CHANNEL the blocks stand in --------------------
+      // Widened deliberately, and the WIDTH is the part of this layer that was always
+      // right. At the diorama zoom the casing is the widest road element, so it is what
+      // actually fills the gaps between footprints; a hairline casing left those gaps
+      // showing raw ground and the blocks read as plates floating over nothing. Minor
+      // streets are included for the same reason — downtown they are the laneways
+      // between the big footprints.
+      //
+      // Its TONE is what was wrong for three passes. It was justified by the claim that
       // the reference's 27.7% of frame in the 32-48 luminance band is mostly this
-      // surface, not building walls.
-      // §42 REFUTES THAT LAST CLAIM: the reference's 32-48 band is its building WALLS
-      // (lit 42, shaded 35 — §40 measured them). Its streets are at ~20 and sit in the
-      // 16-32 band with the ground. This casing is the reason 17% of our frame
-      // classifies as "building" from the basemap alone. See the §42 block above DARK.
-      // A hairline casing left those gaps showing the
-      // near-black ground, which is why the blocks read as plates floating over
-      // nothing. Minor streets are included now for the same reason: downtown they
-      // are the laneways between the big footprints.
+      // surface; §42 refuted that outright — the reference's 32-48 band is its building
+      // WALLS (§40 measured lit 42, shaded 35), and its streets sit at ~20 in the 16-32
+      // band with the ground. A casing at 34.8 was the single largest reason 17% of our
+      // frame classified as "building" from the basemap alone. It is now 17.5, a step
+      // BELOW the ground, and the corridor reads as a channel rather than a ribbon.
+      // See the §43 block above DARK.
       {
         id: 'road-casing', type: 'line', source: 'omt', 'source-layer': 'transportation', minzoom: 11,
         filter: ['in', ['get', 'class'], ['literal', [...MAJOR, ...MED, ...MINOR]]],
