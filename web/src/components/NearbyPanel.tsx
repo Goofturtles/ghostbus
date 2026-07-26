@@ -30,7 +30,7 @@ export function NearbyPanel({ onCatch, onOpen }: {
   onCatch?: (d: DepartureDto) => void;
   onOpen?: (d: DepartureDto) => void;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const arr = useLive((s) => s.arrivals);
   const error = useLive((s) => s.arrivalsError);
   const nextService = useLive((s) => s.nextService);
@@ -52,6 +52,7 @@ export function NearbyPanel({ onCatch, onOpen }: {
   const feedTrouble = useLive((s) => s.apiFailure == null && s.health != null && !s.health.ok);
   const isDemo = useLive((s) => s.health?.mode === 'demo');
   const outOfCoverage = useLive((s) => s.outOfCoverage);
+  const health = useLive((s) => s.health);
   const geoStatus = useLive((s) => s.geoStatus);
   const online = useLive((s) => s.online);
   const ghosts = useLive((s) => s.ghosts);
@@ -84,6 +85,19 @@ export function NearbyPanel({ onCatch, onOpen }: {
    */
   if (outOfCoverage) {
     const near = outOfCoverage.nearest;
+    /**
+     * The coverage claim is GENERATED from what is actually seeded, never hardcoded.
+     * "GhostBus only covers the TTC, in Toronto" was maintained by hand and would have
+     * become false the moment MiWay was added with nobody editing it — the app asserting
+     * something untrue about itself, which is the failure §45 exists to prevent.
+     * `health.agencies` is the server's own list, so the sentence cannot drift.
+     */
+    const covered = health?.agencies ?? [];
+    const agencyNames = covered.length > 0
+      ? new Intl.ListFormat(i18n.language, { style: 'long', type: 'conjunction' })
+        .format(covered.map((a) => a.name))
+      : null;
+    const nearAgency = near ? covered.find((a) => a.id === near.agency)?.name ?? near.agency : null;
     return (
       <div className="nearby-panel">
         <div className="state-card state-down" role="status">
@@ -95,9 +109,14 @@ export function NearbyPanel({ onCatch, onOpen }: {
             {near && near.distanceM != null
               ? t('empty.noCoverageNearest', {
                 stop: near.name ?? t('stop.code', { code: near.stopId }),
+                agency: nearAgency ?? near.agency,
                 dist: fmtDistance(near.distanceM, imperial),
               })
-              : t('empty.noCoverageUnknown')}
+              // No nearest stop at all is only possible with an empty database, so this
+              // falls back to naming what we cover rather than to a bare apology.
+              : agencyNames
+                ? t('empty.noCoverageUnknown', { agencies: agencyNames })
+                : t('empty.noCoverageTitle', { dist: fmtDistance(outOfCoverage.radiusM, imperial) })}
           </p>
           <button className="btn btn-primary" onClick={useDefaultLocation}>
             {t('empty.noCoverageAction')}

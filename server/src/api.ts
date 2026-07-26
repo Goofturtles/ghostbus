@@ -432,7 +432,10 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
    * silent half-coverage the Phase 0 boot refusal stood in for; this list is what replaced
    * that refusal.
    */
-  const seeded: string[] = enabledAgencies().map((a) => a.id);
+  const seededDescriptors = enabledAgencies();
+  const seeded: string[] = seededDescriptors.map((a) => a.id);
+  /** Sent on /api/health so the UI can state its coverage instead of hardcoding it. */
+  const seededForWire = seededDescriptors.map((a) => ({ id: a.id, name: a.name }));
 
   /**
    * WHICH AGENCY AN ID-BEARING REQUEST IS ABOUT.
@@ -818,7 +821,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     const m = poller.getMode();
     const body: HealthResponse = {
       ok, dbDriver: db.driver, lastPollAtMs: h.lastPollAtMs, collectorMode: 'in-process',
-      feeds, boardCoverage: poller.getJoinStats().boardCoverage, serverNowMs: dataNow(),
+      feeds, boardCoverage: poller.getJoinStats().boardCoverage, agencies: seededForWire, serverNowMs: dataNow(),
       mode: m.mode, demo: m.demo,
     };
     return reply.send(body);

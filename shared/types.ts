@@ -92,6 +92,16 @@ export interface HealthResponse {
   /** the loaded static GTFS board's calendar coverage, "YYYYMMDD..YYYYMMDD". */
   boardCoverage: string;
   /**
+   * EVERY AGENCY THIS DEPLOYMENT SERVES, in configured order.
+   *
+   * The client renders its coverage claim from this list rather than from a hardcoded
+   * sentence. "GhostBus only covers the TTC, in Toronto" was a claim maintained by hand,
+   * and the first time an agency was added it would have become false with nobody
+   * editing it — the app asserting something untrue about itself, which is the failure
+   * DECISIONS §45 exists to prevent. A generated claim cannot drift from what is seeded.
+   */
+  agencies: Array<{ id: string; name: string }>;
+  /**
    * The server's DATA clock — what "now" means to the process that produced this response.
    * Live it is the wall clock; on a recording it is the capture instant of the frame being
    * replayed, so the client's countdowns stay correct against replayed departures.

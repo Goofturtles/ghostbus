@@ -23,8 +23,8 @@ const en = {
     empty: 'Search a stop by name or number, or a route by its number.',
     emptyDestination: 'Search the stop you are travelling to.',
     noResults: 'Nothing matches “{{q}}”.',
-    coverage: 'GhostBus only covers the TTC, in Toronto.',
-    coverageNear: 'GhostBus only covers the TTC, in Toronto. The nearest stop it can see is {{area}}.',
+    coverage: 'GhostBus covers {{agencies}}.',
+    coverageNear: 'GhostBus covers {{agencies}}. The nearest stop it can see is {{area}}.',
     failed: "Couldn't reach the stop search just now.",
     defaultLocationNote: 'Distances are measured from a default location until you share yours.',
     hintMove: 'move',
@@ -206,9 +206,16 @@ const en = {
      * with somebody else's stop — and the way back is an explicit button that relabels
      * the view as a default location, because that is what it is.
      */
-    noCoverageTitle: 'No TTC stops within {{dist}} of you',
-    noCoverageNearest: 'The nearest stop GhostBus covers is {{stop}}, about {{dist}} away.',
-    noCoverageUnknown: 'GhostBus only covers the TTC, in Toronto.',
+    /**
+     * AGENCY-NEUTRAL TITLE, SPECIFIC BODY. The title states OUR failure — we have nothing
+     * for you here — and naming one agency in it was wrong the moment a second was seeded:
+     * "No TTC stops within 800 m" is a true sentence that answers the wrong question for a
+     * rider standing at a MiWay stop. The body then names what we DO cover, generated from
+     * the seeded set (see `coverage`), so the claim cannot drift from reality.
+     */
+    noCoverageTitle: 'No stops within {{dist}} of you',
+    noCoverageNearest: 'The nearest stop GhostBus covers is {{stop}} ({{agency}}), about {{dist}} away.',
+    noCoverageUnknown: 'GhostBus covers {{agencies}}.',
     noCoverageAction: 'Browse downtown Toronto instead',
     noCoverageRetry: 'Check my location again',
     noCoverageActionNote: 'That view is labelled as a default location, not as where you are.',
@@ -441,14 +448,14 @@ const en = {
     errorBody: 'The trip planner is unreachable right now. Nothing here is cached, because a replayed plan looks exactly like a live one.',
     // The single-ride scope, said plainly. This is a limit, not a failure.
     transferTitle: 'This trip needs a transfer',
-    transferBody: 'No single TTC vehicle runs from a stop near you to a stop near your destination. Full trip planning is coming — GhostBus will not invent a connection it cannot see.',
+    transferBody: 'No single vehicle runs from a stop near you to a stop near your destination. Full trip planning is coming — GhostBus will not invent a connection it cannot see.',
     transferFine: 'The link below opens your maps app with the destination only. Your own position never leaves this device.',
     openInMaps: 'Open in a maps app',
     noServiceTitle: 'Nothing direct is running',
     noServiceBody: 'A direct ride exists in the schedule, but none departs in the days GhostBus searched.',
     noStopsYouTitle: 'No stop near you',
     noStopsDestTitle: 'No stop near that destination',
-    noStopsBody: 'GhostBus found no TTC stop within {{m}} m of it, so there is nowhere to start or finish the ride.',
+    noStopsBody: 'GhostBus found no covered stop within {{m}} m of it, so there is nowhere to start or finish the ride.',
     unreachableTitle: "You can't reach any of these on foot",
     unreachableBody: 'All {{count}} direct rides GhostBus found depart before you could walk to their stop at your pace.',
     resultLabel: 'Your single-ride plan',
