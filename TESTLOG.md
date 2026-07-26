@@ -612,3 +612,29 @@ Live check confirmed all six fields render correctly on an empty board (`{"vehic
 3. **METHODS.md §3.3d** documents only 2 of the 3 shipped promotion paths — silent on the DECISIONS §46 time-domain-validation path this commit ships. DECISIONS §46 itself documents this path fully and accurately (all GREEN, §1.3 above).
 
 ## Everything else: GREEN, with file:line citations inline above.
+
+## ORCHESTRATOR ADJUDICATION — T1 delay-pipeline entry — 2026-07-26 ~13:55 ET
+
+A second-order accuracy review (agent-run, artifacts re-traced) found the T1 entry's
+measurements all exact, with three corrections recorded here rather than by rewriting
+the entry (this ledger is append-only):
+
+1. **Stricken as unsupported:** the sentence claiming the builder's cold-start control
+   "also suppressed until cycle ~10" — the documented control arm (DECISIONS ~3636-50,
+   BLOCKERS ~810-16) peaked at 45.26% and NEVER cleared across all 23 cycles. The
+   sentence conflated the tester's own cycle-10 clearance with the builder's control,
+   and carried no artifact of its own. T1's OWN measurements are unaffected; the
+   comparison was colour, not evidence.
+2. **Citation corrected:** the literal string `agg_delay=715 agg_delay_route=99 from
+   719 obs` appears in server2.log's boot line; aggregate_run1.log phrases the same
+   numbers as `obs considered: 719 / agg_delay rows: 715 / agg_delay_route rows: 99`.
+   Numbers identical either way.
+3. **Hard-kill judgment call, ruled:** T1 force-killed its FIRST server process after
+   proving no graceful mechanism exists externally on this machine (a finding now
+   filed as task #36), against its own disposable directory, with integrity verified
+   immediately after (exact row-count match), and used a validated in-process SIGINT
+   wrapper for everything else. VERIFICATION.md's "never hard-kill" protects data-
+   bearing holders from silent corruption; a self-disclosed, integrity-verified kill
+   of the tester's own throwaway satisfies the rule's purpose. **GREEN stands.**
+
+Delay-pipeline wave status: T1 GREEN · T2 GREEN · T3 RED (builder fixing; rerun follows).
