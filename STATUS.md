@@ -11,6 +11,7 @@
 | # | Tier-0 feature | T1 | T2 | T3 | Critic | Prior evidence |
 |---|---|---|---|---|---|---|
 | 1 | Nearby view (honest ETAs, evidence lines, Live/Scheduled, stop header, alert card) | ⚪ | ⚪ | ⚪ | ⚪ | screenshots/reference-match/final2/, §F probe results.json |
+| 1b | **Delay/evidence pipeline (server)** — crosswalk learning, coverage gate, published obs, arrivals evidence | 🟢 | 🟢 | 🟢 | — | TESTLOG: T1/T2 entries + T3 rerun (supersedes the RED); adjudication note |
 | 2 | Ghost detection + Ghost Feed (Alerts) | ⚪ | ⚪ | ⚪ | ⚪ | engine live (due=627, bindings=341); gated by coverage — see R2 |
 | 3 | Ghost Forecast chips + trust grades | ⚪ | ⚪ | ⚪ | ⚪ | gated: zero obs until coverage clears (R2) |
 | 4 | Voxel map: city, route, vehicles, You beacon, stop pin, walk path, markers | ⚪ | ⚪ | ⚪ | ⚪ | screenshots/reference-match/final4–6/, DECISIONS §38–42 |
@@ -35,5 +36,5 @@
   the answer is "thin data"). Unassigned.
 - **R4 — Console errors**: zero-console-error sweep not yet run under the contract.
 
-_Last updated: 2026-07-26 ~11:05 ET by the orchestrator. No green exists yet by design —
+_Last updated: 2026-07-26 ~15:20 ET by the orchestrator. No green exists yet by design —
 the first tester wave runs when R1/R2 land._

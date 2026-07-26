@@ -638,3 +638,282 @@ the entry (this ledger is append-only):
    of the tester's own throwaway satisfies the rule's purpose. **GREEN stands.**
 
 Delay-pipeline wave status: T1 GREEN · T2 GREEN · T3 RED (builder fixing; rerun follows).
+
+# T3 (SPEC-FIDELITY) — RERUN — GhostBus delay-measurement pipeline
+
+Commit under test: `004e05e` ("Earn the test-coverage claim, and stop METHODS describing last week's
+engine"), repo `ghostbus` @ HEAD. Prior pass: RED (`.data/testlog-drafts/T3-delay-pipeline.md`,
+commit `e55033a`), builder response landed as `004e05e`.
+Tester: T3, fresh — no context assumed from the prior pass beyond re-checking its own claims from
+scratch. No file under test carries a net modification from this pass (one temporary, reverted
+mutation used for regression-test verification — see §2 below; `git diff --stat` is empty and
+`git status --short` shows only pre-existing unrelated untracked screenshot files).
+
+## VERDICT: GREEN — full re-check of everything the original RED covered, plus the fix's own
+claims, plus an independent sweep, plus empirical verification of the new regression test. No
+surviving or new drift found. Every item below is cited to file:line or to a command actually run.
+
+---
+
+## 1. METHODS.md §3.3e / §3.6 — the monotonicity gate, now correctly described as live
+
+**Original RED:** METHODS.md called the gate "inert as wired... cannot currently fail... fed
+realtime sequences" — false as of commit `6920b13`, five commits before the reviewed commit.
+
+**Current text, METHODS.md §3.3e (lines 352–362):**
+> "**Monotonicity** (`monotonicityViolations`) — within one bound trip, the crosswalked static
+> stops must appear in strictly increasing static `stop_sequence` order. **This gate can fail, and
+> did not always be able to.**... Fixed in commit `6920b13`: `runCycle` now routes each binding's
+> tracked realtime stops through **`crosswalkedStaticSeqs`** (`xwalk.ts`)... That the gate can now
+> fail is itself pinned by a regression test — `xwalk.test.ts` *"REGRESSION (BLOCKERS 17): the
+> monotonicity gate can actually fail"*."
+
+§3.6's gate table (line 523): `monotonicity` row now reads "Fed the **static** sequences via
+`crosswalkedStaticSeqs` since `6920b13`, so it can genuinely fail — see §3.3e." No "inert"/"cannot
+fail" language remains attached to present tense anywhere in the file (verified: `grep -in "inert"
+METHODS.md` returns exactly one hit, at line 1010, §9.7, correctly past-tensed — see §4 below).
+
+**Verified against code, current line numbers** (shifted +5 lines from the prior pass's citation
+because of the `004e05e` `XWALK_MIN_CONF` diff earlier in the file — content identical):
+- `server/src/engine.ts:1289-1299` feeds `crosswalkedStaticSeqs(...)` (the static side), with an
+  inline comment stating exactly the history METHODS.md now describes.
+- `server/src/xwalk.ts:696-721` (`crosswalkedStaticSeqs`) resolves each tracked realtime stop
+  through the crosswalk to its static `stop_sequence`.
+- `server/src/gates.ts:84-87` — `evaluateGates` fails `'monotonicity'` when
+  `monotonicityViolationRate > MAX_MONOTONICITY_VIOLATION_RATE` — a live, capable-of-failing
+  comparison, not tautological.
+- Regression test present and unchanged: `server/src/xwalk.test.ts:520` *"REGRESSION (BLOCKERS
+  17): the monotonicity gate can actually fail"*.
+
+**GREEN.** Doc and code agree; the fix cited (`6920b13`) was verified in the original pass and is
+untouched by `004e05e`.
+
+---
+
+## 2. DECISIONS §46 — "three named regression tests" — all three now exist and verified
+
+DECISIONS.md §46 (lines 3711–3727) now reads: *"Each of the three failures is now a named
+regression test: defects 1 and 2 in `xwalk.test.ts` against the credit store directly (\"a voided
+binding takes its CYCLES with it, not just its count\", \"a distrusted pattern can never be
+credited again, in any order\"), and defect 3 in `engine.test.ts` (\"a validation-confirmed entry
+is demoted IN-PROCESS when its evidence is withdrawn\")"* — and adds a self-aware paragraph: *"A
+spec-fidelity reviewer caught that claim before it was true... It was then checked the only way a
+regression test can honestly be checked: with `demoteUnvalidated()` commented out it fails on
+exactly the closing assertion, and passes with it restored."*
+
+**All three tests confirmed to exist, verbatim:**
+1. `server/src/xwalk.test.ts:342` — `'CREDIT: a voided binding takes its CYCLES with it, not just
+   its count'`.
+2. `server/src/xwalk.test.ts:357` — `'CREDIT: a distrusted pattern can never be credited again, in
+   any order'`.
+3. `server/src/engine.test.ts:274` — `'DEFECT 3: a validation-confirmed entry is demoted IN-PROCESS
+   when its evidence is withdrawn'`.
+
+**Critical read of the new test (`engine.test.ts:274-345`) — does it exercise the in-process
+sweep, or the cold-boot path the two lookalikes cover?**
+
+It is a genuinely different path from `engine.test.ts:263` ("a row confirmed by BINDING VALIDATION
+comes back as a candidate, not confirmed") and `:347` ("the two evidence-carrying promotion paths
+still survive a restart intact"), both of which call `createDelayEngine` + `reloadStatic` exactly
+once against a stub DB seeded with pre-set `xw(...)` rows — i.e. they test `loadCrosswalk`'s
+warm-start demotion, never calling `runCycle` at all.
+
+The new test instead calls `e.reloadStatic(BOARD)` **once**, then drives **six consecutive
+`e.runCycle(...)` calls** on the same live engine instance:
+- Cycle 1–2: two distinct bindings (`RT1`, `RT3`) lock onto pattern `PA` across two distinct
+  cycles — building exactly `MIN_VALIDATING_BINDINGS=2` / `MIN_VALIDATING_CYCLES=2` credit.
+- Cycle 3: `assert.equal(e.staticStopFor('d'), 'st4', ...)` — path 3 confirms stop `'d'` (single-
+  pattern, no geometric anchor, so paths 1/2 cannot fire) purely from accumulated in-process
+  credit.
+- Cycle 4: `RT1` reports a contradicting stop at sequence 4, tripping the per-trip consistency
+  gate.
+- Cycle 5: the trip settles and the gate fires, quarantining the pattern
+  (`voidForInconsistency`/`distrust`).
+- Cycle 6: `'d'` is no longer proposed by anything (its RT pattern is quarantined and it has no
+  geometric anchor), so **only `demoteUnvalidated()`'s sweep can still retract it** — this is
+  exactly the gap the promotion loop leaves (it only rewrites entries the *current* cycle
+  re-proposed). Final assertions: `e.getStats().patterns.quarantined === 1` (pins the mechanism —
+  rules out the drift breaker, which cannot fire here since `|resid|` 60 s is well inside half the
+  600 s headway) and `e.staticStopFor('d') === null`.
+
+This is unambiguously the in-process sweep, not the cold-boot path: `reloadStatic` runs once,
+before any binding exists; the demotion under test happens two cycles after the pattern is
+quarantined, entirely inside one running process.
+
+**Builder's claim verified empirically, not just by inspection.** I temporarily stubbed
+`demoteUnvalidated()` to a no-op (`return;` as the first statement) in `server/src/engine.ts`, ran
+`node --import tsx --test server/src/engine.test.ts`, and confirmed:
+- 8/9 tests pass, 1 fails — precisely the new `DEFECT 3` test, and no other (in particular the two
+  cold-boot lookalikes at `:263` and `:347` still pass, confirming they are unaffected — different
+  code path, as claimed).
+- The failure is exactly the closing assertion, matching the commit message word for word:
+  ```
+  ✖ DEFECT 3: a validation-confirmed entry is demoted IN-PROCESS when its evidence is withdrawn
+    AssertionError: validation was withdrawn, so the entry must stop backing delay rows
+    'st4' !== null
+    at engine.test.ts:343:10
+  ```
+- I then reverted the stub verbatim and confirmed `git diff --stat server/src/engine.ts` is empty
+  before continuing (no reversion committed or left in the working tree).
+
+**GREEN.** All three regression tests exist, are named correctly in DECISIONS §46, and the third
+one's mechanism claim is verified by direct experiment, not merely plausible-by-reading.
+
+---
+
+## 3. METHODS §3.3d — all three promotion paths documented, N=2/M=2, structural-unambiguity — matches xwalk.ts
+
+METHODS.md §3.3d (lines 263–272) now presents a three-row table:
+
+| # | Path | Condition |
+|---|---|---|
+| 1 | Two independent patterns | `distinctPatterns ≥ 2` |
+| 2 | Geometric self-confirmation | `source === 'geo'` and residual ≤ 60 m (`GEO_SELF_CONFIRM_M`) |
+| 3 | Time-domain validation | `distinctPatterns ≥ 1`, pattern validated by ≥2 bindings (`MIN_VALIDATING_BINDINGS`) across ≥2 cycles (`MIN_VALIDATING_CYCLES`), and the stop not structurally ambiguous |
+
+Followed (lines 274–311) by the full circularity discussion, the "surviving" definition, the
+structural-unambiguity measurement (1,484/9,361 stops, 15.85%), and the restart-survival note —
+this is the exact content the prior pass found only in DECISIONS §46 and flagged as a **gap** (not
+a RED) in METHODS.md. That gap is now closed.
+
+**Verified against `server/src/xwalk.ts`:**
+- `promotionState` (`xwalk.ts:441-460`) implements exactly the three paths, in the same order,
+  with `hasConflict` overriding all three (matches "a conflict overrides all three paths").
+- `MIN_VALIDATING_BINDINGS = 2`, `MIN_VALIDATING_CYCLES = 2` — `xwalk.ts:414-415`.
+- `ADJACENT_STOP_M = 80` — `xwalk.ts:540`; `structurallyAmbiguousStops` — `xwalk.ts:555-576`.
+- `demoteUnvalidated` wiring — `server/src/engine.ts:416-423`, called at `engine.ts:647` inside the
+  per-cycle sweep, matches "Within one process the same rule is enforced by a sweep
+  (`demoteUnvalidated`)" (METHODS.md line 310-311).
+- `validationFor`/`patternValidation.validation` — `engine.ts:381-385`, reads off exactly one
+  (the best-validated) pattern, matching `createPatternCreditStore.validation` (`xwalk.ts:516-527`).
+
+**corroboratedConfidence naming (§3.3d, line 321)** — METHODS.md now names it explicitly: "the
+shipped value is `corroboratedConfidence`, which takes the better of the agreeing sources." Matches
+`server/src/xwalk.ts:622` (function definition) and its call site `server/src/engine.ts:644`
+(`confidence: hasConflict ? 0 : corroboratedConfidence(votes, prop.resid, prop)`).
+
+**GREEN.**
+
+---
+
+## 4. The rest of the builder's swept items — spot-checked individually
+
+- **§9.7 "inert as wired" (line 1010–1011):** now reads "it was inert as wired until `6920b13` and
+  is not any more (§3.3e)" — correctly past-tensed, no longer a live misdescription. The only other
+  file-wide match for "inert" is this one line; confirmed via `grep -in "inert" METHODS.md`.
+- **§9.3 crosswalk restore (lines 930–935):** now states `rt_stop_xwalk` **is** restored via
+  `loadCrosswalk()`, "pinned by tests... BLOCKERS entry 11," and names the five genuinely
+  write-only tables (`rt_stop_anchor`, `rt_stop_xwalk_votes`, `rt_pattern`, `rt_trip_binding`,
+  `sched_slot_claim`). Verified: `loadCrosswalk` exists at `server/src/engine.ts:446-502`, queries
+  `rt_stop_xwalk` (line 454), and is called from boot (`engine.ts:325,353`). Regression tests
+  present: `server/src/engine.test.ts:143` `'REGRESSION (BLOCKERS 11): a cold boot restores the
+  crosswalk instead of relearning'` and `:183` `'REGRESSION (BLOCKERS 11): new evidence can still
+  overturn a restored mapping'`.
+- **§9.4 ghost-zero explanation (lines 947–974):** now attributes the zero to "the poller's global
+  mass-ghost breaker" firing over "roughly 646 due trips" (470/646 unbound, "far past the
+  breaker's 30% ceiling"), explicitly stating "That is no longer the reason" (i.e., not a zero
+  denominator) and citing the 36.0% join rate. This matches DECISIONS §46's own figures verbatim
+  (646 due trips, 470 unbound, 36.0% join rate — DECISIONS.md lines 3682-3686).
+- **§3.6 gate table (lines 517–524):** six rows — `boardActive`, `boardIntegrity`,
+  `xwalkOccurrenceCoverage`, `crossRouteAgreement`, `monotonicity`, `boardAgreement`. Verified
+  against `server/src/gates.ts`: `evaluateGates` (lines 53-97) checks exactly these six conditions,
+  in this order, each with its own `fail(...)` call — no gate present in code and absent from the
+  table, no row in the table absent from code.
+- **§3.3d corroboratedConfidence naming:** covered in §3 above.
+- **§3.7/§4.7/§7/§3.4.2/§9.5 dated-snapshot labels:**
+  - §3.7 (line 545-549): opens with an explicit callout, "**This table is a dated snapshot from
+    the day BEFORE the board activated, kept as the record of that state. It is not current.**"
+    and points to §3.3d/§9.4/DECISIONS §46 for the live picture.
+  - §4.7 (lines 663-669): "They are no longer zero: the engine began publishing on 2026-07-26
+    (§3.3d, DECISIONS §46)."
+  - §7 (lines 887-891): "Note the cause has changed even though the output has not: the forecast
+    was empty because there was no active board, and is now empty because ghost detection is
+    honestly refusing to report."
+  - §3.4.2 (line 408-410): "a leak visible only in the state this deployment sat in **until the
+    board activated on 2026-07-26**" — past-tensed.
+  - §9.5 (lines 976-992): explicitly dated, "on 2026-07-26 the join rate ran 18.8% → 36.0% across
+    18 cycles," with the plateau described as historical ("until 2026-07-26").
+  All five read as historical record with a live cross-reference, not as current state presented
+  as live. **GREEN, no lingering "as of now" phrasing found.**
+- **gates.ts stale date comment (lines 40-52):** no longer asserts "TODAY... the machine date is
+  2026-07-24." Replaced with an "ORDER IS PART OF THE CONTRACT" framing and "Until 2026-07-26 this
+  returned publish=false... That is no longer the live case." Confirmed by direct read of
+  `server/src/gates.ts:40-52`.
+- **engine.ts constant import (line 60-65):** `const XWALK_MIN_CONF = XWALK_MIN_CONFIDENCE;` with a
+  comment explaining the drift-hazard rationale, `XWALK_MIN_CONFIDENCE` imported from `xwalk.ts` at
+  `engine.ts:24`. Verified `xwalk.ts:368`: `export const XWALK_MIN_CONFIDENCE = 0.60;` — identical
+  value to the old private literal (see §6, T1/T2 neutrality, below).
+
+**All items GREEN — the sweep was not partial.**
+
+---
+
+## 5. Independent re-sweep for the same drift class
+
+Repeated the search the original RED's root-cause diagnosis implies (docs not re-read after code
+moved), beyond the builder's own list:
+
+- `grep -in "inert\|cannot fail\|cannot currently fail\|two promotion paths" METHODS.md
+  DECISIONS.md` — only hit is METHODS.md:1010 (§9.7), already confirmed correctly past-tensed
+  above. No other stale "inert"/"cannot fail" language anywhere in either document.
+- Read METHODS.md in full, front to back (all ~1,059 lines, in five passes across this
+  verification) — no other doc-vs-code mismatch found in §1–§9 beyond what's already covered above.
+- Checked DECISIONS §43 ("seed window"), §44 ("Demo Mode"), §45 ("rate limit / attribution") — the
+  three entries after §42 that are not §46 — for any mention of the delay pipeline (`xwalk`,
+  `crosswalk`, `monoton`, `promot`, `gate`, `boardActive`, `boardIntegrity`) that might carry the
+  same staleness: §43 references the `boardIntegrity` gate only in past-tense historical framing
+  (as the gate that "stays"), consistent with current code; §44 and §45 do not touch the pipeline
+  at all (Demo Mode and rate-limiting are separate subsystems). No new drift found.
+
+**GREEN — no surviving drift found beyond the builder's own sweep.**
+
+---
+
+## 6. Untouchables — confirmed unchanged
+
+- `MIN_XWALK_OCCURRENCE_COVERAGE = 0.50` — `server/src/gates.ts:12`, single definition, compared
+  once at `gates.ts:74`. Unchanged from the prior pass's citation.
+- `STOP_HOUR_MIN_N = 8`, `ROUTE_HOUR_MIN_N = 20` — `server/src/eta.ts:9-10`, compared at
+  `eta.ts:70,73`. Unchanged.
+
+**GREEN.**
+
+---
+
+## Standing adjudication (recorded, not re-run): T1/T2 verdicts stand
+
+Per the assignment, T1 (GREEN, TESTLOG.md, with an orchestrator adjudication note striking one
+unsupported comparison sentence but leaving T1's own measurements and GREEN verdict intact) and T2
+(GREEN, TESTLOG.md) are **not re-run**, because `004e05e`'s runtime diff is provably value-neutral.
+Verified directly via `git show 004e05e -- server/src/engine.ts server/src/gates.ts`:
+
+- `server/src/engine.ts`: the only change is `const XWALK_MIN_CONF = 0.60;` → `const
+  XWALK_MIN_CONF = XWALK_MIN_CONFIDENCE;` (plus the corresponding import). `XWALK_MIN_CONFIDENCE`
+  is confirmed at `server/src/xwalk.ts:368` to equal `0.60` — the identical numeric value, now a
+  single source of truth instead of a duplicated literal. No comparison, threshold, or branch
+  changed.
+- `server/src/gates.ts`: the diff touches only the doc comment above `evaluateGates` (lines 40-52)
+  — a `/** ... */` block. No line outside the comment changed; `evaluateGates`'s logic, its six
+  gates, and `MIN_XWALK_OCCURRENCE_COVERAGE` are byte-identical to what T1/T2 already exercised.
+
+Both files were also confirmed to typecheck clean (`npx tsc --noEmit`, zero output) and the full
+suite passes at **324/324** (`node --import tsx --test "server/src/**/*.test.ts"
+"web/src/**/*.test.ts"`), matching the commit message's own claim exactly.
+
+**T1/T2 GREEN verdicts stand without rerun. Runtime neutrality independently verified.**
+
+---
+
+## Summary
+
+| # | Item | Verdict |
+|---|---|---|
+| 1 | METHODS §3.3e/§3.6 monotonicity description | GREEN |
+| 2 | DECISIONS §46 three named regression tests (incl. empirical stub test of DEFECT 3) | GREEN |
+| 3 | METHODS §3.3d three promotion paths, N=2/M=2, structural-unambiguity | GREEN |
+| 4 | Full builder sweep (§9.7, §9.3, §9.4, §3.6 table, §3.3d naming, dated snapshots ×5, gates.ts comment, engine.ts import) | GREEN, all spot-checked |
+| 5 | Independent re-sweep for the same drift class | GREEN, nothing new found |
+| 6 | Untouchables (0.50 coverage gate, n≥8/n≥20 evidence thresholds) | GREEN, unchanged |
+| — | T1/T2 standing adjudication, runtime-neutrality of the diff | Confirmed, not re-run |
+
+**No RED items. No gaps. This pass supersedes `.data/testlog-drafts/T3-delay-pipeline.md` in full.**
