@@ -33,6 +33,45 @@ export interface WindowDay {
 }
 
 /**
+ * A GTFS date is only usable if it is actually a date. A blank column parses as 0, not NaN,
+ * so without this one empty cell drags a board span back to 1899.
+ */
+export function isPlausibleGtfsDate(ymd: number): boolean {
+  return Number.isFinite(ymd) && ymd >= 19700101 && ymd <= 21001231;
+}
+
+/**
+ * The full span of dates a board can speak about: min..max across `calendar`'s validity
+ * windows, widened by any `calendar_dates` exception outside them. `null` when the feed
+ * carries no usable date at all.
+ *
+ * THIS IS SHARED ON PURPOSE. The seeder uses it to decide which trips to load, and the
+ * poller uses it to compute `boardCoverage` — which IS the `board_tag` scoping the learned
+ * crosswalk (migration 004). Two copies of this arithmetic that drift apart would mean the
+ * board we seeded and the tag we filed its crosswalk under disagree silently, which is
+ * exactly the class of failure ARCHITECTURE.md §6 exists to prevent.
+ *
+ * Taking calendar_dates into account is not cosmetic: MiWay, GO and Milton ship NO
+ * calendar.txt at all and Brampton's has only a header row, so for those feeds the
+ * calendar-only span is empty and the entire board lives in calendar_dates.
+ */
+export function boardSpan(
+  calendar: readonly CalendarRow[],
+  calendarDates: readonly CalendarDateRow[],
+): { first: number; last: number } | null {
+  let first = Infinity;
+  let last = -Infinity;
+  const see = (ymd: number): void => {
+    if (!isPlausibleGtfsDate(ymd)) return;
+    if (ymd < first) first = ymd;
+    if (ymd > last) last = ymd;
+  };
+  for (const c of calendar) { see(c.start_date); see(c.end_date); }
+  for (const d of calendarDates) see(d.date);
+  return first === Infinity ? null : { first, last };
+}
+
+/**
  * Genuine GTFS service resolution: which service_ids are active on the given
  * set of days, honouring calendar weekday flags, the [start_date, end_date]
  * validity window, and calendar_dates add/remove exceptions.

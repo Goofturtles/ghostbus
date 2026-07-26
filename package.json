@@ -19,7 +19,8 @@
     "aggregate": "tsx server/src/aggregate.ts",
     "eval": "tsx server/src/eval.ts",
     "test": "node --import tsx --test \"server/src/**/*.test.ts\" \"web/src/**/*.test.ts\"",
-    "typecheck": "tsc --noEmit"
+    "seed": "tsx server/src/seed_toronto.ts",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.node.json --noEmit"
   },
   "engines": {
     "node": ">=20"
