@@ -4092,14 +4092,13 @@ Every number either script prints traces to a parameterized, agency-scoped (`'tt
 
 ## §48 — A schedule is not an observation: §45 §7's agency fix overshot, and the limiter was refusing the app itself
 
-> **PARTLY SUPERSEDED (2026-07-26) — see §49.** ONE sentence in §6 below is false and always
-> was: *"anything not positively identifiable as non-API is **limited** — including 404s"*.
-> Unmatched paths bypass the budget entirely, at any exhaustion state — Fastify routes them
-> on a separate internal 404 router that never fires the `onRequest` hook the limiter attaches
-> to, so the `allowList` fallback it describes is never consulted. Everything else in §48 —
-> the agency split, the cross-seam join, the `/api`-only scoping and the `%61pi` encoded
-> bypass, all of it measured — stands unchanged. §49 records the finding, the real exposure,
-> and why the code is deliberately NOT being changed.
+> **PARTLY SUPERSEDED (2026-07-26) — see §49 and §50.** ONE sentence in §6 below is false and
+> always was: *"anything not positively identifiable as non-API is **limited** — including
+> 404s"*. Unmatched requests are never limited, at any exhaustion state. §49 records the
+> finding and why the code deliberately stays as it is; **§50 corrects §49's own account of
+> the mechanism**, which was right about the outcome and wrong about the cause for the
+> commonest case. Everything else in §48 — the agency split, the cross-seam join, the
+> `/api`-only scoping and the `%61pi` encoded bypass, all of it measured — stands unchanged.
 
 Two corrections to §45, both found by testers on the build §45 describes, and both in the same
 file. **§45 is left exactly as written** — it records what was decided and why at the time,
@@ -4295,6 +4294,17 @@ when either one fails.
 
 ## §49 — Unmatched routes were never rate-limited, the claim that they were is withdrawn, and the code stays as it is
 
+> **PARTLY SUPERSEDED (2026-07-26) — see §50.** §1 below ("Why the fallback never runs") is
+> wrong for the commonest case. It says the limiter's hook is never called for an unmatched
+> request; measured, that holds only for non-GET/HEAD methods and for every method when no
+> bundle is built. In the DEPLOYED configuration an unmatched GET/HEAD matches
+> @fastify/static's `/*` wildcard, the hook DOES fire, and the request is exempted because
+> the routed pattern is `/*` rather than an `/api` path. **Every CONCLUSION in §49 is
+> unaffected and none of it is superseded** — unmatched requests are still never limited,
+> the per-branch exposure in §2 is unchanged, the decision not to change the code in §3
+> still holds for the same reasons, and the deferred hardening in §4 is untouched. §50 has
+> the corrected mechanism and the probe that settled it.
+
 §48 §6 ended with a sentence I wrote with confidence and never tested:
 
 > anything not positively identifiable as non-API is **limited** — including 404s, which is
@@ -4405,3 +4415,125 @@ The correction is procedural, not just factual: **a claim about what a hook does
 that makes the hook fail to fire, not a reading of the code that registers it.** The
 seam-test lesson in §48 §4 was the same shape — a test that encodes a wrong rule defends the
 defect — and this is that lesson again, one layer up, in prose instead of in a test.
+
+## §50 — §49 was right that unmatched routes are never limited, and wrong about why — and it got that wrong the exact way it warned against
+
+§49 closed by naming its own failure mode:
+
+> a claim about what a hook does needs a probe that makes the hook fail to fire, not a
+> reading of the code that registers it.
+
+**§49 then explained the mechanism by reading `node_modules` and never ran that probe.** It
+identified one real path and presented it as the only one. T3's docs re-check caught it with
+a probe: `GET /api/bogus` invokes the `allowList` with a routed pattern of `/*`, which §49
+says cannot happen.
+
+**Every conclusion §49 drew is still correct.** Unmatched requests are never rate-limited; the
+per-branch exposure is unchanged; the decision not to change the code stands on the same
+reasoning. What was wrong is the account of *how* — and it was wrong for the case that
+actually dominates production traffic. This section corrects the mechanism and nothing else.
+
+### 1. Probed before written, this time
+
+`.data/ft3fix_probe.mjs`, output in `.data/ft3fix_probe.out`. The instrument is the **real**
+`allowList`, not a replica: a byte copy of `api.ts` with a recorder pushed into the callback
+and an env switch to force the no-bundle configuration. The recorder *is* the evidence — an
+entry means the hook fired, no entry means it never ran. Response headers cannot tell those
+apart, because both end unlimited, and that indistinguishability is precisely how §49 talked
+itself into the wrong story.
+
+**Config A — `webDist` present (what actually ships):**
+
+| request | status | hook fired | routed pattern | exempted | counted |
+|---|---|---|---|---|---|
+| `GET /api/health` | 200 | **yes** | `/api/health` | no | **yes** |
+| `GET /api/bogus` | 404 | **yes** | `/*` | **yes** | no |
+| `HEAD /api/bogus` | 404 | **yes** | `/*` | **yes** | no |
+| `GET /assets/nope-abc123.js` | 404 | **yes** | `/*` | **yes** | no |
+| `GET /admin` | **200** | **yes** | `/*` | **yes** | no |
+| `POST /api/bogus` | 404 | **no** | — | — | no |
+| `PUT /api/health` | 404 | **no** | — | — | no |
+| `DELETE /api/stops` | 404 | **no** | — | — | no |
+
+**Config B — `webDist` absent:** every row except the matched `GET /api/health` shows
+`hook fired: no`. With no static plugin there is no wildcard, so nothing unmatched routes at
+all.
+
+8/8 verdicts pass. The probe asserts both mechanisms explicitly rather than leaving them to be
+read off a table.
+
+### 2. The corrected mechanism: two paths, one outcome
+
+**Path A — the deployed one, and the one §49 missed entirely.** `@fastify/static` registers a
+`/*` wildcard route. Every unmatched **GET or HEAD** — *including `/api`-prefixed ones* —
+matches it. So the request is fully routed, the `onRequest` chain runs, and
+`@fastify/rate-limit`'s hook **does** fire. `allowList` is then handed `routeOptions.url ===
+'/*'`, which does not start with `/api`, so it returns `true` and the request is exempted.
+The JSON 404 an API client sees for `/api/bogus` comes from the not-found handler only
+*after* the static handler falls through to it.
+
+**Path B — everything else.** Non-GET/HEAD methods match no route in any configuration, and
+with no bundle built nothing unmatched matches anything. Fastify dispatches these on the
+separate internal 404 router (`lib/fourOhFour.js`, its own `FindMyWay` instance), which never
+runs the main router's `onRequest` chain. **This is the path §49 described** — it is real, it
+is just not the common one.
+
+**The observable is identical on both paths** (never limited, confirmed empirically three
+times by T2), which is why a header-level probe could not separate them and why §49's
+plausible half-explanation survived review until someone instrumented the callback.
+
+**Consequence for the code:** the no-route fallback branch inside `allowList` is **dead in
+both configurations and across all five methods**. On path A a pattern always exists; on path
+B the callback is never invoked. It stays as a fail-closed guard against a future route that
+registers without a pattern, and its comment now says so.
+
+### 3. What did NOT change, and why the code still stands
+
+Explicitly not superseded, restated so no reader has to reconstruct it:
+
+* **Unmatched requests are never rate-limited.** Unchanged — only the reason differs.
+* **The per-branch exposure (§49 §2)** is unchanged: three cheap JSON-404 branches with no
+  I/O, one navigation branch doing an uncached `readFileSync` of a ~1.2 kB shell. Path A
+  adds nothing to that cost; the static plugin's `stat` miss is the same filesystem work the
+  handler was already going to do.
+* **The decision not to change the code (§49 §3)** holds on identical reasoning: limiting the
+  not-found handler would answer 429 for the SPA shell during an exhausted budget and
+  re-break the fix T1 verified, and nothing on any branch touches the database.
+* **The deferred hardening (§49 §4)** is untouched, still filed as `SECURITY.md` §8 item 5.
+
+One detail the probe adds to §49 §2: `GET /admin` returns **200** with the SPA shell, not a
+404 — it is navigation-shaped, so it takes the `readFileSync` branch. That is the scanner
+case, and it confirms rather than changes §49's cost table.
+
+### 4. Where the wrong mechanism was carried, and what was done to each
+
+| location | action |
+|---|---|
+| §49 §1 body | scoped `PARTLY SUPERSEDED` marker; **conclusions explicitly not superseded** |
+| §48's marker | **reworded in place** — it is a navigation annotation, not a historical section body, so leaving a wrong mechanism in a signpost would misdirect every future reader. Now points at both §49 and §50 and states only the outcome. |
+| `SECURITY.md` §8 item 5 | corrected in place (living document, not a ledger) |
+| `api.ts` allowList comment | rewritten to the two-path behaviour |
+| `api.ts` fallback-branch comment | now records the branch's unreachability where the branch sits |
+
+`TESTLOG`'s T2 entry carries it too; that file is append-only and its owner annotates it.
+
+The `api.ts` changes are **comment-only** — every changed line in the diff is a comment line,
+with both typechecks clean and 334/334 tests green afterwards. Leaving a withdrawn claim
+standing in a source comment is the same defect §49 exists to correct, and a comment is the
+first thing the next person to touch that code will read.
+
+### 5. The lesson, sharpened
+
+§49 §5 already said the right thing. The failure was not that the rule was unknown — **it was
+that the rule was stated in the same entry that broke it.** Writing down a discipline is not
+practising it.
+
+Two things generalise:
+
+1. **A partial explanation is more dangerous than no explanation.** "The hook never fires"
+   was true, checkable, and supported by a real source comment — and it stopped the enquiry
+   one case short. Every subsequent reader, including a code review, had a plausible story to
+   agree with. An unexplained finding invites a probe; a half-explained one closes the file.
+2. **When two mechanisms share an observable, the observable cannot be the evidence.** The
+   only instrument that could tell path A from path B was one that recorded whether the
+   callback ran. That is what got built this time, and it is checked in.

@@ -601,16 +601,20 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
      * is the matched route PATTERN, decided before onRequest hooks run, so it cannot be
      * spelled around.
      *
-     * The fallback matters as much as the primary: an unmatched request has no route
-     * pattern, and treating "unknown" as exempt is how the bypass comes back. So anything
-     * we cannot positively identify as non-API is limited — including 404s, which are
-     * exactly what a scanner generates.
+     * UNMATCHED REQUESTS ARE NOT LIMITED, by either of two paths — measured, see §50.
+     * With a bundle present, GET/HEAD misses match @fastify/static's `/*` wildcard, so this
+     * hook DOES run and exempts them on that pattern; every other method, and everything
+     * when no bundle is built, matches no route at all and never reaches this hook. That is
+     * accepted deliberately: limiting the not-found handler would 429 the SPA shell during
+     * an exhausted budget, and its branches are cheap 404s (§49 §2-§3).
      */
     allowList: (req) => {
       const routed = (req as { routeOptions?: { url?: string }; routerPath?: string }).routeOptions?.url
         ?? (req as { routerPath?: string }).routerPath;
       if (typeof routed === 'string') return !routed.startsWith('/api');
-      // No matched route: decode defensively and only exempt a path we are sure is static.
+      // UNREACHABLE in both shipped configurations (§50): a request with no matched route
+      // never reaches this hook. Kept as a guard in case a future route registers without a
+      // pattern — it must fail closed, so an /api path is limited rather than exempted.
       let raw = req.url.split('?')[0];
       try { raw = decodeURIComponent(raw); } catch { return false; }
       return !raw.startsWith('/api');
