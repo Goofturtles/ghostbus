@@ -15,8 +15,9 @@
 
 import { getDb } from './db.ts';
 import { createPoller } from './poller.ts';
+import { enabledAgencies, agency as agencyOf } from './agencies.ts';
 import { demoRequested, bootDemoSource } from './demo.ts';
-import { runAggregation } from './aggregate.ts';
+import { runAggregationAll } from './aggregate.ts';
 import { buildApi } from './api.ts';
 
 const PORT = Number(process.env.PORT) || 8799;
@@ -30,8 +31,75 @@ async function main(): Promise<void> {
   const db = await getDb();
   console.log(`GhostBus API — driver=${db.driver}, mode=${demo ? 'DEMO (recorded replay)' : 'live'}`);
 
-  const poller = createPoller(db, { source });
-  poller.start();
+  /**
+   * ONE POLLER PER ENABLED AGENCY, IN ONE PROCESS.
+   *
+   * `createPoller` closes over all of its state, so N instances cost nothing structurally —
+   * which is what preserves ARCHITECTURE.md §3's argument for a single deployable service.
+   * A separate process per agency would reintroduce exactly the "publish live positions
+   * somewhere for the API to read" problem the memory-first design (§1) exists to avoid.
+   *
+   * Demo mode stays single-agency: a fixture is a recording of one agency's feeds, and
+   * `bootDemoSource()` supplies one source. Replaying it under several pollers would mean
+   * N-1 of them observing bytes that are not theirs.
+   */
+  const enabled = enabledAgencies();
+
+  /**
+   * REFUSE EARLY, BEFORE ANY WORK. The API read path still serves exactly one agency
+   * (Phase 1 lands the union queries), so booting with several would poll and store every
+   * agency while showing riders only the first — coverage silently halved. `buildApi`
+   * enforces this too, but by then N pollers have started and run their heavy static
+   * loads; failing here keeps the message the first thing that happens.
+   */
+  if (!demo && enabled.length > 1) {
+    throw new Error(
+      `GHOSTBUS_AGENCIES lists ${enabled.length} agencies (${enabled.map((a) => a.id).join(', ')}), ` +
+      `but the API read path still serves exactly one. Booting would poll and store every agency ` +
+      `while showing riders only the first — coverage silently halved. ` +
+      `Run with a single agency until the Phase 1 union queries land.`,
+    );
+  }
+
+  /**
+   * A FIXTURE IS A RECORDING OF ONE AGENCY, AND IT DICTATES WHICH ONE.
+   *
+   * `source.agency` is the demo namespace ('<agency>-demo'), so the board it replays
+   * against is that name minus the suffix. Taking `enabledAgencies()[0]` instead would let
+   * `GHOSTBUS_AGENCIES=miway --demo` replay recorded TTC protobuf against MiWay's seeded
+   * board — RT ids from one network resolved against another network's stops. That is the
+   * cross-namespace blend DECISIONS §48 is about, and it would be invisible: every query
+   * would succeed and simply describe the wrong city.
+   */
+  const agencies = demo && source
+    ? [agencyOf(source.agency.replace(/-demo$/, ''))]
+    : enabled;
+  if (demo && source) {
+    console.log(`[boot] demo fixture replays agency '${agencies[0].id}' (writes '${source.agency}')`);
+  }
+  const pollers = agencies.map((a) => createPoller(db, { source, agency: a }));
+  console.log(`[boot] ${pollers.length} poller(s): ${agencies.map((a) => a.id).join(', ')}`);
+
+  /**
+   * STAGGER THE CYCLES. Every poller runs a 45 s loop, and starting them in the same tick
+   * means every 45 s the process decodes N feeds and runs N delay-engine passes in one
+   * burst — the engine's crosswalk resolution is the expensive half — while `/api/vehicles`
+   * waits behind it. Offsetting agency i by i*(POLL_MS/N) spreads the same work evenly.
+   * With one agency the offset is 0 and the behaviour is exactly as before.
+   */
+  const POLL_MS = 45_000;
+  const stagger = pollers.length > 1 ? Math.floor(POLL_MS / pollers.length) : 0;
+  const staggerTimers: NodeJS.Timeout[] = [];
+  pollers.forEach((p, i) => {
+    if (i === 0 || stagger === 0) { p.start(); return; }
+    const t = setTimeout(() => p.start(), i * stagger);
+    t.unref?.();
+    staggerTimers.push(t);
+  });
+
+  // The API is still single-agency on its read path (Phase 1 lands the union queries), so
+  // it is handed the first poller. `buildApi` refuses to boot if that would under-serve.
+  const poller = pollers[0];
 
   // Aggregation rebuilds agg_delay/agg_delay_route for the LIVE agency, so a demo process
   // must not run it: it would be a recorded-replay process rewriting live aggregates, and
@@ -50,7 +118,9 @@ async function main(): Promise<void> {
     stopping = true;
     console.log(`\n[signal] ${sig} — shutting down…`);
     if (aggTimer) clearInterval(aggTimer);
-    await poller.stop();
+    for (const t of staggerTimers) clearTimeout(t);
+    // Every poller, not just the one the API reads from.
+    await Promise.all(pollers.map((p) => p.stop()));
     try { await app.close(); } catch { /* ignore */ }
     try { await db.close(); } catch { /* ignore */ }
     process.exit(0);
@@ -61,11 +131,11 @@ async function main(): Promise<void> {
 
 /** Aggregate on boot (non-fatal if it fails) and then hourly in-process. */
 function startAggregation(db: Awaited<ReturnType<typeof getDb>>): NodeJS.Timeout {
-  runAggregation(db)
+  runAggregationAll(db)
     .then((r) => console.log(`[aggregate] boot: agg_delay=${r.stopHourRows} agg_delay_route=${r.routeHourRows} from ${r.obsConsidered} obs (${(r.elapsedMs / 1000).toFixed(1)}s)`))
     .catch((e) => console.error('[aggregate] boot failed:', e));
   const t = setInterval(() => {
-    runAggregation(db)
+    runAggregationAll(db)
       .then((r) => console.log(`[aggregate] hourly: agg_delay=${r.stopHourRows} agg_delay_route=${r.routeHourRows} from ${r.obsConsidered} obs`))
       .catch((e) => console.error('[aggregate] hourly failed:', e));
   }, AGG_INTERVAL_MS);

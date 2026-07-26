@@ -63,7 +63,7 @@ test('THE ONE-LINE OMISSION: 1,000 legacy zero rows must not touch the percentil
     const real = [60, 75, 90, 105, 120, 135, 150, 165, 180, 195, 210, 225, 240, 255, 270, 285, 300, 90, 150, 210];
     for (let i = 0; i < real.length; i++) await insertObs(db, real[i], { staticTripId: `T${i % 5}` });
 
-    const r = await runAggregation(db);
+    const r = await runAggregation(db, 'ttc');
     assert.equal(r.obsConsidered, 20, 'only the real rows are even read');
 
     const agg = await db.query<{ n: number; p50: number; p25: number; p75: number; n_trips: number }>(
@@ -89,7 +89,7 @@ test('n_trips counts DISTINCT static trips, not observations', async () => {
   try {
     // 10 observations, but all of them from a single very late bus.
     for (let i = 0; i < 10; i++) await insertObs(db, 600 + i, { staticTripId: 'ONE_BUS' });
-    const r = await runAggregation(db);
+    const r = await runAggregation(db, 'ttc');
     assert.equal(r.obsConsidered, 10);
     const agg = await db.query<{ n: number; n_trips: number }>('SELECT n, n_trips FROM agg_delay');
     assert.equal(Number(agg.rows[0].n), 10);
@@ -104,7 +104,7 @@ test('low-confidence rows are excluded from the aggregates', async () => {
   try {
     for (let i = 0; i < 10; i++) await insertObs(db, 1000, { confidence: 'low', staticTripId: `L${i}` });
     for (let i = 0; i < 4; i++) await insertObs(db, 100, { confidence: 'high', staticTripId: `H${i}` });
-    const r = await runAggregation(db);
+    const r = await runAggregation(db, 'ttc');
     assert.equal(r.obsConsidered, 4);
     const agg = await db.query<{ n: number; p50: number }>('SELECT n, p50 FROM agg_delay');
     assert.equal(Number(agg.rows[0].n), 4);
@@ -117,7 +117,7 @@ test('rows whose stop crosswalk is not confident enough are excluded', async () 
   try {
     for (let i = 0; i < 8; i++) await insertObs(db, 900, { xwalkConf: 0.55, staticTripId: `W${i}` });
     for (let i = 0; i < 3; i++) await insertObs(db, 120, { xwalkConf: 0.60, staticTripId: `G${i}` });
-    const r = await runAggregation(db);
+    const r = await runAggregation(db, 'ttc');
     assert.equal(r.obsConsidered, 3, '0.60 is inclusive, 0.55 is not');
     const agg = await db.query<{ p50: number }>('SELECT p50 FROM agg_delay');
     assert.equal(Number(agg.rows[0].p50), 120);
@@ -129,7 +129,7 @@ test('with no qualifying rows at all the aggregates are EMPTY, not zero', async 
   try {
     // This is today's real state: legacy rows only, nothing the engine has measured.
     for (let i = 0; i < 50; i++) await insertObs(db, 0, { method: 'legacy_feed_delay_zero' });
-    const r = await runAggregation(db);
+    const r = await runAggregation(db, 'ttc');
     assert.equal(r.obsConsidered, 0);
     assert.equal(r.stopHourRows, 0);
     const agg = await db.query('SELECT * FROM agg_delay');
@@ -141,7 +141,7 @@ test('negative delays survive aggregation — early buses are real measurements'
   const db = await freshDb();
   try {
     for (const d of [-120, -60, -30, 0, 30, 60, 120]) await insertObs(db, d, { staticTripId: `E${d}` });
-    await runAggregation(db);
+    await runAggregation(db, 'ttc');
     const agg = await db.query<{ p25: number; p50: number }>('SELECT p25, p50 FROM agg_delay');
     assert.equal(Number(agg.rows[0].p50), 0);
     assert.ok(Number(agg.rows[0].p25) < 0, 'the distribution is not floored at zero');

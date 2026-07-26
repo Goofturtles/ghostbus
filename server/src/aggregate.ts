@@ -15,8 +15,8 @@ import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { getDb, type Db, type Queryable } from './db.ts';
 import { percentiles } from './eta.ts';
+import { enabledAgencies } from './agencies.ts';
 
-const AGENCY = 'ttc';
 // The trailing window aggregates are computed over. Exported so the arrivals endpoint
 // reports the SAME windowDays in every evidence object (metadata must not drift).
 export const WINDOW_DAYS = 14;
@@ -31,6 +31,33 @@ export interface AggregateResult {
   windowDays: number;
   percentileContSupported: boolean;
   elapsedMs: number;
+}
+
+/**
+ * Rebuild the aggregates for EVERY seeded agency, summing the row counts.
+ *
+ * Aggregates are per-agency by primary key, so this is a loop rather than a wider query:
+ * one agency's observations can never contribute to another's percentiles. A failure on
+ * one agency is rethrown rather than swallowed — a silently skipped agency would look
+ * exactly like an agency with no delays, which is the confusion gates.ts exists to prevent.
+ */
+export async function runAggregationAll(db: Db): Promise<AggregateResult> {
+  const t0 = Date.now();
+  let stopHourRows = 0, routeHourRows = 0, obsConsidered = 0;
+  let percentileContSupportedFlag = false;
+  for (const a of enabledAgencies()) {
+    const r = await runAggregation(db, a.id);
+    stopHourRows += r.stopHourRows;
+    routeHourRows += r.routeHourRows;
+    obsConsidered += r.obsConsidered;
+    percentileContSupportedFlag = r.percentileContSupported;
+  }
+  return {
+    stopHourRows, routeHourRows, obsConsidered,
+    windowDays: WINDOW_DAYS,
+    percentileContSupported: percentileContSupportedFlag,
+    elapsedMs: Date.now() - t0,
+  };
 }
 
 /** Probe whether the driver supports percentile_cont (informational; we use JS math). */
@@ -60,7 +87,12 @@ async function insertAgg(tx: Queryable, table: string, columns: string[], rows: 
   }
 }
 
-export async function runAggregation(db: Db): Promise<AggregateResult> {
+/**
+ * Rebuild one agency's aggregates. `agency` is REQUIRED rather than defaulted: a default
+ * would silently aggregate the TTC while claiming to have aggregated whoever the caller
+ * meant, and every row this touches is keyed by it.
+ */
+export async function runAggregation(db: Db, AGENCY: string): Promise<AggregateResult> {
   const t0 = Date.now();
   const supported = await percentileContSupported(db);
 
@@ -140,7 +172,7 @@ export async function runAggregation(db: Db): Promise<AggregateResult> {
 async function main(): Promise<void> {
   const db = await getDb();
   console.log(`GhostBus aggregate â€” driver=${db.driver}, window=${WINDOW_DAYS} days`);
-  const r = await runAggregation(db);
+  const r = await runAggregationAll(db);
   console.log(`  percentile_cont supported on ${db.driver}: ${r.percentileContSupported} (aggregates computed in JS for cross-driver determinism)`);
   console.log(`  obs considered: ${r.obsConsidered}`);
   console.log(`  agg_delay rows        : ${r.stopHourRows}`);

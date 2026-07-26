@@ -47,6 +47,8 @@ import GtfsRealtimeBindings from 'gtfs-realtime-bindings';
 import type { FeedId } from '../../shared/types.ts';
 import type { DemoFixtureFile, DemoManifest, RecordedFrame } from './record_demo.ts';
 import type { DemoModeInfo, PollerSource } from './poller.ts';
+import { STATIC_AGENCY } from './poller.ts';
+import { demoAgencyFor } from './agencies.ts';
 
 const { transit_realtime } = GtfsRealtimeBindings;
 
@@ -60,8 +62,14 @@ export const DEFAULT_SPEED = 8;
  * The namespace every row a demo process writes is tagged with. Deliberately NOT 'ttc':
  * one SELECT that forgets a WHERE clause is all it would take to publish recorded history
  * as live measurement, and there is no such SELECT if the rows are not there.
+ *
+ * NOTE FOR MULTI-AGENCY. This derives the demo namespace from the TTC because every
+ * recorded fixture is currently a TTC capture. It is NOT the general answer: a fixture
+ * recorded from another agency must be replayed under `demoAgencyFor(<that agency>)`, which
+ * is why the helper takes an argument rather than being a constant. When fixtures grow an
+ * agency field, read it from the fixture and pass it here.
  */
-export const DEMO_AGENCY = 'ttc-demo';
+export const DEMO_AGENCY = demoAgencyFor(STATIC_AGENCY);
 /** Where bundled fixtures live, relative to this file. */
 const FIXTURES_DIR = fileURLToPath(new URL('../../fixtures/', import.meta.url));
 

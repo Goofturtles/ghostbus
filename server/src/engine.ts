@@ -53,7 +53,6 @@ export function dedupeByKey(rows: readonly unknown[][], keyCols: number): unknow
   return [...out.values()];
 }
 
-const AGENCY_DEFAULT = 'ttc';
 /** A vehicle ping older than this is not evidence of where the bus is now. */
 const ANCHOR_MAX_AGE_S = 120;
 /** A pending birth we still cannot bind after this long is given up on. */
@@ -191,7 +190,7 @@ export interface DelayEngine {
  * keys rather than of anyone's discipline: every read here is already agency-filtered, so
  * neither mode can see the other's rows even by accident.
  */
-export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT, writeAgency: string = agency): DelayEngine {
+export function createDelayEngine(db: Db, agency: string, writeAgency: string = agency): DelayEngine {
   let index: PatternIndex = emptyPatternIndex();
   let boardTag = '?..?';
   let ready = false;
