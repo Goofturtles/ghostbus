@@ -2743,3 +2743,279 @@ stayed out of this change set.
    trips, 2,151,105 stop_times) and is the good directory now. The lesson is the one §38 already
    wrote down and this pass re-learned the hard way: shut PGlite down cleanly, and never touch
    `postmaster.pid` under a live server.
+
+## §41 — The metric was wrong, not the render: density is structural, and the banding was a depth-buffer tie
+
+§40 closed on a defensible-sounding conclusion — every absolute tone matches or exceeds the
+reference, so the render matches and a global lift would move *away* from it. The user, looking at
+the two images side by side, said the buildings still looked nothing like theirs. **They were right,
+and the reason §40 could not see it is that a luminance histogram is blind to structure.** Ours and
+the reference can hold the same ground tone, the same lit-wall tone and the same roof tone while one
+is a carpet of 796 small footprints with no visible street and the other is a handful of clean
+masses with wide ones between them. §40 even measured the cause and did not name it: the reference
+gives 49.4% of its frame to the mid band and ours 38.5% — that is density, written as a histogram.
+
+So this section changes the instrument first and the code second. **Nothing about the projection,
+the cube-cluster structure, the derived height step, `TONES`, `PALETTES`, the trees, the markers,
+King & Spadina or the 230 m / 4 min walk moves here.** The shipped files are `voxelCity.ts` and
+`voxelMesh.ts`.
+
+---
+
+### 1. A structural instrument, because the tonal one had nothing left to say
+
+`structure.py` runs one code path over both images, at the reference's own 0.950 m/px, cropped to
+the same 709 x 570 px so a count is a count of the same amount of Toronto. Pixels are classed by
+absolute luminance — legitimate here *precisely because* §40 established that the absolute tones
+already match — at the midpoints of the measured levels: ground < 30, shaded wall < 48, lit wall
+< 68, roof above. Four statistics:
+
+* **open ground** — the ground mask eroded by a 6 px (5.7 m) disk, so only ground wide enough to
+  read as a *street* counts;
+* **separated masses per hectare** — connected components of the building mask after severing every
+  bridge narrower than ~6 m, which is narrower than any real street;
+* **roof blobs per hectare** — connected components of the roof mask, i.e. distinct tops in frame;
+* **edge density** — share of pixels on a strong Sobel edge. The single number for "reads busy":
+  dozens of small buildings put an edge everywhere; a few large clean masses do not.
+
+| | reference | **ours before** | **ours after** |
+|---|---|---|---|
+| ground share of frame | 37.8% | **28.3%** | **37.1%** |
+| open, street-wide ground | 7.7% | **5.6%** | **8.0%** |
+| separated masses / ha | 1.29 | **0.83** | **1.08** |
+| median separated mass | 1366 m2 | 1274 m2 | 1032 m2 |
+| p90 separated mass | 4162 m2 | **18,897 m2** | **11,203 m2** |
+| roof blobs / ha | 3.30 | **4.34** | **3.20** |
+| median roof blob | 163 m2 | 194 m2 | 245 m2 |
+| edge density | 15.0% | **17.4%** | **17.0%** |
+
+Read the p90 row first, because it is the user's complaint in one number: before, the largest single
+connected mass in our frame was **18,897 m2** — dozens of separate buildings welded into one
+continuous carpet because there was no visible ground between them — against the reference's
+4,162 m2. The frame did not read as "many buildings"; it read as "one lump".
+
+### 2. The height floor was never a size floor. A census says so.
+
+`census.mjs` reads every building ring the source has loaded, computes the same PCA oriented box
+`voxelMesh` does, and keeps the ones on screen. **796 rings in the 731 x 563 m default frame**,
+median short span 12.9 m, median ring area 267 m2.
+
+Against that population, `minHeightForZoom`'s 8 m floor — the lever three previous passes swept at
+8 / 16 / 24 m — keeps 63% of the rings, 68% of their footprint area, and moves the median short span
+only from 12.9 m to 16.0 m. **It drops low buildings of every size roughly uniformly.** That is why
+sweeping it never changed how busy the frame reads, and why the earlier rejection of that sweep was
+right for the wrong reason.
+
+Footprint **area** is the proxy that works:
+
+| floor | rings kept | footprint area kept | median short span |
+|---|---|---|---|
+| none | 796 (100%) | 100% | 12.9 m |
+| 400 m2 | 380 (48%) | 90% | 24.8 m |
+| 900 m2 | 218 (27%) | 74% | 31.1 m |
+| 1600 m2 | 103 (13%) | 52% | 39.9 m |
+
+Keep the massing, drop the noise. That is the definition of cartographic generalisation, and it is
+the honest lever: **nothing is merged, dissolved, unioned or moved; no building is drawn that does
+not exist; every surviving block is one real OSM ring at its real place, orientation and extent.**
+Some real small buildings are omitted while the camera is far enough away that they would render as
+specks — exactly as OSM Carto, Google and Apple all omit small footprints until you zoom in, and
+exactly as `minHeightForZoom` already did.
+
+**The floor is keyed to SCREEN pixels, not to zoom** (`minFootprintAreaM2(metresPerPixel)`,
+860 px2 — a footprint under about 29 x 29 screen pixels). "Too small to read" is a statement about
+the screen, not about the ground: the same shed is noise at 1.31 m/px on a phone and architecture at
+0.33 m/px. A constant screen area is scale-invariant across every framing `frameCamera` can produce,
+and it is continuous in the camera, so nothing ever pops in or out and the step-boundary bug §32
+documents in `minHeightForZoom` has no way to recur. The first draft of this WAS a stepped ladder
+with a hard cut to zero at the top, on the argument that below ~120 m2 the floor excludes nothing
+real. The census refutes that — 48% of the rings here are under 400 m2 — so the cut was removed and
+the floor now simply shrinks with the camera: 500 m2 at the desktop diorama, 92 m2 at z17.4, 40 m2
+at z18.
+
+**The value was swept structurally, on production builds, one browser window each:**
+
+| diorama-tier floor | ground | open | masses/ha | roofs/ha | edge | sum of relative deviations |
+|---|---|---|---|---|---|---|
+| reference | 37.8% | 7.7% | 1.29 | 3.30 | 15.0% | — |
+| 0 (banding fixes only) | 34.1% | 6.6% | 1.10 | 3.68 | 18.3% | 0.75 |
+| **500 m2** | **37.0%** | **8.0%** | **1.07** | **3.16** | **17.0%** | **0.41** |
+| 600 m2 | 38.4% | 8.4% | 1.07 | 2.85 | 16.7% | 0.53 |
+| 700 m2 | 39.3% | 8.8% | 1.30 | 2.75 | 16.5% | 0.46 |
+| 900 m2 | 42.9% | 10.7% | 1.30 | 2.32 | 15.9% | 0.89 |
+| 1200 m2 | 48.7% | 14.2% | 1.30 | 1.71 | 14.8% | — |
+| 2500 m2 | 64.1% | 24.1% | 0.98 | 0.44 | 12.4% | — |
+
+500 m2 at the desktop diorama's 0.763 m/px — hence 860 px2. Past 900 the city stops being busy and
+starts being *depopulated*, which is a new wrongness rather than a smaller one: at 2500 m2 only 7%
+of the rings survive and two thirds of the frame is road.
+
+### 3. A floor tuned downtown needs a cap, and the cap was measured, not assumed
+
+An absolute size floor is calibrated where it was measured. The obvious way for it to go wrong is a
+finer-grained neighbourhood, where the same floor takes everything — §32 hit the mirror image of that
+failure once already. So the floor is capped by RANK as well as by size: drop the smallest
+footprints until the screen-size floor is satisfied **or** `MAX_OMIT_FRACTION` (0.65) of the loaded
+neighbourhood has gone, whichever comes first. 0.65 is measured, not chosen: on the population this
+code actually sees — the 2,059 loaded rings that survive `minHeightForZoom` at the default framing —
+the settled 499 m2 floor omits **58.6%** of them, so the cap sits just above downtown and cannot
+disturb it. Selection by rank is the older of the two
+generalisation operators — Töpfer's radical law is exactly this — and like the size floor it only
+ever omits.
+
+Measured on three real Toronto framings at the diorama zoom, as built coverage of the pane, with the
+size floor off / on-uncapped / on-capped:
+
+| | floor off | uncapped | **capped (shipped)** |
+|---|---|---|---|
+| King & Spadina (downtown) | 66.4% | 63.5% | **63.5%** |
+| Roncesvalles (low-rise) | 35.4% | 27.8% | **31.6%** |
+| Greenwood & Danforth (low-rise) | 25.5% | 24.9% | **25.2%** |
+
+Downtown the cap never binds, so nothing about the framing the whole of this section was measured on
+changes. At Roncesvalles it halves the loss.
+
+**And the Greenwood row corrected an assumption of mine before it became a change.** That frame
+looks nearly empty with the new floor — but it looks nearly as empty with the floor switched off
+entirely (25.5%), because most of those houses carry a `render_height` under `minHeightForZoom`'s
+8 m and never reach this code at all. The sparseness there is pre-existing and belongs to the HEIGHT
+floor. I had begun writing the cap as a fix for a regression that, measured, was not one; it stays
+because the Roncesvalles row shows it doing real work, not because of the row that prompted it.
+
+### 4. The horizontal banding was two roofs at exactly the same height
+
+**It is not the old five sub-tiers of roof height.** That workaround belonged to the
+`fill-extrusion` renderer and died with it; `quantizeHeightM` is one `ceil(raw/17)*17` lattice, and
+`voxelMesh` emits one box per cell rather than stacking a box per course, so there are no coplanar
+course faces to fight either. The line in `voxelMesh.ts`'s header that mentions sub-tiers is a
+historical note on why fill-extrusion was abandoned, not a description of live behaviour.
+
+**The evidence.** Dumping the pixels under one band (rows 665-679, columns 1360-1400 of the
+1920 x 1480 card) shows rows alternating incoherently between `#474b8d` (luminance 74, a roof) and
+`#2d345f` (luminance 51, a *different building's* roof). Two surfaces trading pixels is a
+depth-buffer tie, not a texture.
+
+**The cause.** The PCA box *circumscribes* the ring, so it over-covers every footprint that is not a
+rectangle — measured on those 796 rings, the ring fills its own box to a median of 0.888, a mean of
+0.806 and a p10 of 0.498. Boxes that over-cover into each other overlap: **2,252 overlapping ring
+pairs in view, and 1,360 of them carry the same quantised roof height**, because the shared lattice
+has only four values in this frame (17 / 34 / 51 / 68 m). Two exactly coplanar roof quads, no answer
+from the depth test, one comb per pair.
+
+**Two fixes, in that order.**
+
+1. **The area-true box.** Scale the box about its own centre until it covers the same ground the ring
+   does: `k = sqrt(ringArea / boxArea)`, clamped never to enlarge and never to shrink past 0.55.
+   This is a fidelity fix that happens to remove most of the overlaps — a block now stands on as much
+   ground as its building does. `INSET_M` is consequently now the GAP and only the gap; the half of
+   its old justification that was "counterweight to the circumscribed box" has been transferred to
+   this and the comment says so.
+2. **A coplanar tie-break.** Some OSM buildings genuinely overlap (a tower over its own podium, a
+   building and its parts, a block digitised twice across two overscaled z14 tiles). A deterministic
+   per-footprint offset of at most 22 cm, keyed off the same id as the tint, gives the depth test a
+   definite answer, so the pair reads as one roof lying on another. At 0.38 m/px that is well under
+   one pixel of height; it moves no measured tone and no silhouette.
+
+**Measured** by `zfight.py`, which looks for *horizontal* banding specifically: a pixel differing
+from the row above and the row below by more than 12, in the same direction, inside a horizontal run
+of at least 7 px. The run-length condition is what separates a stripe from a thin laneway building
+seen edge-on — which is what the first draft of the detector was actually counting, and it reported
+"the fix did nothing" until that was corrected. Worth recording, because it is the same failure as
+§40's: **the instrument was wrong twice in this pass before the render was.**
+
+| | banded pixels | patches >= 40 px | patches >= 150 px |
+|---|---|---|---|
+| reference | 43 (0.012%) | 2 | 0 |
+| ours before | **1,235 (0.048%)** | **43** | **11** |
+| area-true + tie-break, no floor | 301 (0.012%) | 16 | 3 |
+| **ours after (shipped)** | **245 (0.010%)** | **12** | **2** |
+
+The two fixes alone take it to the reference's own share of the frame; the generalisation floor then
+takes it below. `FACES-4x-banding-before-after.png` is the same 105 m of ground at 4x, before and
+after, beside the reference.
+
+### 5. What the luminance metric did — and it is not what was expected
+
+The brief said a worse luminance number would be an acceptable trade for structure. **It did not
+happen; the tonal metric improved sharply**, and the reason is the same lesson as everything above.
+Same instrument as §40 (`surfaces.py`), same masking, both captures resampled to 0.950 m/px:
+
+| | reference | ours before | ours after |
+|---|---|---|---|
+| six-band deviation | — | **26.4** | **9.7** |
+| frame mean luminance | 39.9 | 45.1 (1.13x) | **40.6 (1.02x)** |
+| modal ground tone's share of frame | 35.5% | 23.7% | **31.4%** |
+| corner-sampled TOP / LIT / SHADE | 70.5 / 42.4 / 35.2 | 58.0 / 39.5 / 30.2 | **71.1 / 45.0 / 33.9** |
+
+Our frame was never *tinted* too bright — it was too **built**. Wall-to-wall massing put mid-tone
+building surface where the reference has road, and the frame mean followed it up. Fix the structure
+and the histogram follows for free. `TONES` is untouched.
+
+### 6. Three hash bugs, one fixed and two deliberately left
+
+A review of the new code found that `coplanarEps`'s final `h ^= h >>> 13` re-enters signed int32
+space, and JS `%` keeps the dividend's sign — so the offset ran `(-0.22, 0.22]` rather than
+`[0, 0.22)`: twice the intended spread, with half the roofs sitting *below* the lattice
+`quantizeHeightM` is supposed to guarantee. Fixed, and the numbers above are all post-fix.
+
+**The identical missing `>>> 0` is present in `cellRand` and `pickTint`, and neither is fixed here.**
+Their consequences are real and measurable:
+
+* `cellRand` goes negative about half the time, so the cell height drop fires at roughly **71%**, not
+  the documented `CELL_DROP_CHANCE` of 42%;
+* `pickTint` returns index 0 for every negative hash, so the palette shares are roughly
+  **67 / 15 / 13 / 3 / 1 / 1** against the documented 34 / 30 / 26 / 6 / 2 / 2.
+
+Both predate this pass. Fixing either re-deals every block's colour and height across the whole
+city, which would invalidate the render every measurement in §38-§41 was taken against — so they are
+recorded here rather than changed in the same pass that measured this one. The same caveat applies
+to `tintKey`, which mixes in a counter over the whole `querySourceFeatures` result rather than a
+per-feature ring index, so the deal is not in fact stable across a change in the loaded tile set.
+**That is the next piece of work in this file, and it should be done on its own with its own
+before/after.**
+
+### 7. Verification
+
+Production build, real Chrome, **each of the four combinations in its own rate-limit window**, and
+every probe gated on the app having actually rendered before its numbers are believed:
+
+```
+desktop/dark : zoom 16.182 pitch 48 fov 16 | layers 3/3 | stop true walk "230m 4min"
+               | overlaps 0 | markerCollisions 0 spill 0 | clip 0 | errors 0
+desktop/light: same
+mobile/dark  : zoom 15.4 | same
+mobile/light : same
+```
+
+`npm test` **214 / 214**. `tsc --noEmit` clean. Bundle: the MapCard chunk goes 1,510.49 ->
+**1,511.21 kB raw**, 397.66 -> **397.99 kB gzipped, +0.33 kB**.
+
+Evidence in `screenshots/reference-match/final6/`:
+`SCALE-MATCHED-190m-ref-before-after.png` and the 620 m version (reference, before and after, each
+resampled to the same metres across, so a cube in one is the same size on screen as a cube in the
+other); `FACES-4x-banding-before-after.png`; and the production cards.
+
+**Operational note, and it cost an hour.** `.data/pglite3` was corrupted mid-pass by a hard kill of
+the backgrounded server — the same `PANIC: could not locate a valid checkpoint record` that took
+`pglite` and `pglite2`, and clearing the stale `postmaster.pid` does not recover it. It was reseeded
+from the already-downloaded GTFS extract in 46 s (9,361 stops, 68,401 trips, 2,151,105 stop_times)
+and is good again. Two things follow: **never background the server in a way that can be killed**,
+and note that PowerShell's `$env:DATABASE_URL = ''` DELETES the variable rather than emptying it, so
+the server falls through to the quota-blocked Neon instance. The variable has to be present and
+empty, which needs a spawn with an explicit env.
+
+### 8. What is still unreachable, stated plainly
+
+**The reference's masses are city blocks; ours are buildings, and no honest lever closes that.** At
+0.950 m/px — confirmed independently here, King St W to Wellington St W measures ~162 px against a
+real ~160 m — the reference's masses are 100-140 m across, one per block, each a cluster of four to
+six 25 m cubes. Real OSM data at King & Spadina has a median footprint short span of **12.9 m**.
+Drawing block-sized masses from it would mean unioning neighbouring footprints into buildings that
+do not exist, which is the one thing this project will not do. Zooming in instead does not help:
+to make our footprints read at 110 px the frame would have to cover ~170 m of ground where the
+reference covers 673, which destroys both the composition and the 230 m walk path.
+
+So the reference's *density, openness and calm* are now matched to within a few percent on every
+structural statistic, and its *granularity* is not — because its granularity is not what the data
+says is there. That residual is the honest floor of this approach, and it is where this line of work
+should stop.

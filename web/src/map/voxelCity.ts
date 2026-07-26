@@ -68,7 +68,7 @@ const LABEL_ABOVE_LAYER_IDS = ['vehicles', 'marker-blockers'];
  * 24 -> 17, AND IT IS NOW DERIVED FROM `voxelMesh.CELL_M` RATHER THAN CHOSEN.
  *
  * Since voxelMesh draws a CLUSTER OF CUBES per footprint instead of one prism, a
- * course is no longer an abstract skyline tier � it is the height of an actual cube,
+ * course is no longer an abstract skyline tier � it is the height of an actual cube,
  * and a cube whose height does not match its width is not a cube. Measured against
  * the reference at matched 190 m scale, ours read as thin towers where the
  * reference's read as squat blocks, and this is the number that was wrong.
@@ -83,7 +83,7 @@ const LABEL_ABOVE_LAYER_IDS = ['vehicles', 'marker-blockers'];
  * At the app's measured default framing, z = 16.182, `zoomHeightGain` interpolates to
  * 1.386, so 24 / 1.386 = 17.3. At 17 a course draws 23.6 m against a 24 m cell.
  *
- * This does NOT make buildings shorter � that was explicitly not the goal. A finer
+ * This does NOT make buildings shorter � that was explicitly not the goal. A finer
  * step means MORE courses for the same real height: raw 41 m gives 2 courses of 24
  * (48 m) under the old step and 3 courses of 17 (51 m) under this one. The tower is
  * the same height; it is now built of three cubes instead of two slabs.
@@ -223,6 +223,70 @@ export function minHeightForZoom(zoom: number): number {
   if (zoom < VOXEL_MIN_ZOOM) return 22; // below the diorama: only substantial massing
   if (zoom < 17.4) return 8;
   return 0; // close in, every building is back
+}
+
+/**
+ * MINIMUM FOOTPRINT AREA — the generalisation floor that actually generalises, and
+ * §41's main change. Held constant in SCREEN pixels rather than in metres.
+ *
+ * WHY A SECOND FLOOR AT ALL. `minHeightForZoom` above drops by HEIGHT, and a census of
+ * the real rings in the default frame says height is close to useless as a proxy for
+ * SIZE: the 8 m floor keeps 63% of the 796 rings in view but only 68% of their
+ * footprint area, and it moves the median short span of what survives from 12.9 m to
+ * just 16.0 m. It removes low buildings of every size more or less uniformly. That is
+ * why three passes of sweeping it (8 / 16 / 24 m) never changed how busy the frame
+ * reads — and why §40, measuring only luminance bands, could not see that they hadn't.
+ *
+ * Area is the proxy that works, on that same census of 796 rings:
+ *
+ *     floor        rings kept        footprint area kept    median short span
+ *     none         796  (100%)        100%                  12.9 m
+ *      400 m2      380   (48%)         90%                  24.8 m
+ *      900 m2      218   (27%)         74%                  31.1 m
+ *     1600 m2      103   (13%)         52%                  39.9 m
+ *
+ * — it keeps the massing and drops the noise, which is the definition of cartographic
+ * generalisation.
+ *
+ * THIS IS GENERALISATION, NOT INVENTION, and that distinction is the whole reason it is
+ * allowed. Nothing is merged, dissolved, unioned or moved; no building is drawn that
+ * does not exist; every surviving block is still one real OSM ring at its real place,
+ * real orientation and real extent. Some real small buildings are OMITTED while the
+ * camera is far enough away that they would render as specks — exactly as OSM Carto,
+ * Google and Apple all omit small footprints until you zoom in, and exactly as
+ * `minHeightForZoom` already did. Zoom in and every one of them comes back.
+ *
+ * WHY IT IS KEYED TO PIXELS AND NOT TO ZOOM. "Too small to read" is a statement about
+ * the screen, not about the ground: the same shed is noise at 1.31 m/px on a phone and
+ * architecture at 0.33 m/px. A constant screen area makes the floor scale-invariant
+ * across every framing `frameCamera` can produce, and it is CONTINUOUS in the camera:
+ * there is no zoom at which anything pops in or out, and no boundary at which the
+ * step-boundary bug documented on `minHeightForZoom` could recur.
+ *
+ * That continuity is why the first draft of this was thrown away. It was a
+ * `['step', ['zoom'], ...]`-shaped ladder with a hard cut to zero at the top, on the
+ * argument that below ~120 m2 the floor excludes nothing the tiles contain. The census
+ * below refutes that argument outright — 48% of the rings here are under 400 m2, so a
+ * cut to zero would dump precisely that population into the frame in one step. A hard
+ * cut to zero IS a pop.
+ *
+ * So the floor simply shrinks with the camera and never switches off: 500 m2 at the
+ * desktop diorama, 92 m2 at z17.4, 40 m2 at z18 — a 6 x 6 m shed, smaller than the p10
+ * of anything in these tiles. "Close in, every building is back" then holds by
+ * construction rather than by a special case.
+ *
+ * THE VALUE was chosen structurally against the reference, on statistics that can see
+ * density — open street-wide ground, separated masses per hectare, roof blobs per
+ * hectare, edge density — rather than on a luminance histogram. Swept at the real
+ * default framing over 0 / 500 / 600 / 700 / 900 / 1200 / 1600 / 2500 m2, 500 m2 at the
+ * desktop diorama's 0.763 m/px had the lowest total deviation. 500 / 0.763^2 = 860,
+ * i.e. a footprint smaller than about 29 x 29 screen pixels. See DECISIONS §41.
+ */
+const MIN_FOOTPRINT_PX2 = 860;
+
+export function minFootprintAreaM2(metresPerPixel: number): number {
+  if (!(metresPerPixel > 0)) return 0;
+  return MIN_FOOTPRINT_PX2 * metresPerPixel * metresPerPixel;
 }
 
 /**

@@ -51,18 +51,26 @@
 //
 // Every block is ONE real OpenStreetMap building from the same OpenFreeMap vector
 // tiles the basemap already loads. Nothing is hand-modelled, nothing is generated,
-// and no two footprints are ever merged into a structure that does not exist. Three
+// and no two footprints are ever merged into a structure that does not exist. Five
 // documented decorative transforms are applied, all of them the same class of
 // stylisation as the height quantisation this project has always used:
 //
 //   a. Each footprint is drawn as its PCA-oriented bounding box — one block per real
 //      building, at the building's real position, real orientation and real extent.
-//      (An oriented box slightly OVER-covers a non-rectangular footprint; the inset
-//      in (b) pulls it back the other way, so the drawn area is not systematically
-//      larger than the truth.)
-//   b. That box is inset by INSET_M so abutting buildings show the reference's dark
-//      gap instead of fusing into one mass.
-//   c. Heights are quantised onto a shared lattice (voxelCity.ts owns that maths).
+//   b. That box is scaled about its own centre until it covers the same GROUND AREA
+//      the real ring does (AREA_TRUE_MIN). An oriented box CIRCUMSCRIBES a
+//      non-rectangular footprint, so without this a block stands on ground its
+//      building does not; the correction only ever shrinks, never enlarges.
+//   c. It is then inset by INSET_M so abutting buildings show the reference's dark
+//      gap instead of fusing into one mass. (b) makes the block honest about its
+//      area; (c) is the gap, on top, and after both the drawn area is a little under
+//      the truth rather than a little over.
+//   d. Heights are quantised onto a shared lattice (voxelCity.ts owns that maths),
+//      plus a deterministic sub-decimetre coplanar tie-break (COPLANAR_EPS_M).
+//   e. Footprints below a screen-size floor are OMITTED at wide framings — ordinary
+//      cartographic generalisation, and voxelCity's `minFootprintAreaM2` argues the
+//      case. Omission, never invention: nothing is merged, moved or made up, and
+//      zooming in brings every one of them back.
 //
 // No transit datum anywhere in GhostBus is styled, derived from, or scaled like any
 // of this. It is scenery.
@@ -81,6 +89,7 @@ import {
   HEIGHT_STEP_M,
   quantizeHeightM,
   minHeightForZoom,
+  minFootprintAreaM2,
   zoomHeightGain,
   FOCUS_FLATTEN,
   type VoxelTheme,
@@ -185,10 +194,10 @@ const PALETTES: Record<VoxelTheme, MeshPalette> = {
     //   A indigo-violet 235 / 0.50 / 52   (34%)   B lavender     245 / 0.38 / 70 (30%)
     //   C blue-slate    227 / 0.52 / 60   (26%)   D violet       257 / 0.48 / 62 ( 6%)
     //   teal 190 / 0.42 / 55 (2%)         rose   300 / 0.42 / 64 (2%)
-    // LIFTED 1.28x over �38's values (1.14 then 1.12), and the lift is measured rather than judged:
-    // running �38's own vertical-edge sampler over BOTH images gives a median
+    // LIFTED 1.28x over �38's values (1.14 then 1.12), and the lift is measured rather than judged:
+    // running �38's own vertical-edge sampler over BOTH images gives a median
     // top-face luminance of 63 on the reference and 55 on our render. Same code,
-    // same masking, both panels � so the roofs really were eight levels dark, and
+    // same masking, both panels � so the roofs really were eight levels dark, and
     // the frame histogram agreed (bands 64-80 and >80 sat at 4.1 / 3.4 against the
     // reference's 12.3 / 6.1). Hue and saturation are untouched; this is value only.
     tops: ['#3a4076', '#5a5489', '#3e4b80', '#5a4787', '#2f4b52', '#744374'],
@@ -232,13 +241,72 @@ const PALETTES: Record<VoxelTheme, MeshPalette> = {
  *
  * Small on purpose. Downtown Toronto's OSM footprints have a median span around
  * 24 m, so 1.2 m a side is ~10% of a block, which is about what the reference shows.
- * It is also the counterweight to the oriented bounding box: a box CIRCUMSCRIBES a
- * non-rectangular footprint, so without the inset every block would read slightly
- * fatter than the building actually is.
+ *
+ * IT IS NO LONGER DOING TWO JOBS. It used to be justified partly as the counterweight
+ * to the circumscribed oriented box, which over-covers a non-rectangular footprint.
+ * The area-true scale below now does that job properly and measurably, so this is the
+ * GAP and only the gap. The two do compound — the total pull-in per side is
+ * `(1 - k) * half + INSET_M` — which is why the value was left where the reference
+ * measurement put it rather than re-tuned on top of the new scale.
  */
 const INSET_M = 1.2;
 /** A block never insets below this half-extent, so small real buildings survive. */
 const MIN_HALF_M = 2.4;
+
+/**
+ * AREA-TRUE BOX. The PCA box CIRCUMSCRIBES the ring, so it over-covers every footprint
+ * that is not a rectangle — measured on the 796 rings in the default frame, the ring
+ * fills its own box to a median of 0.888 and a mean of 0.806, with a p10 of 0.498.
+ * That surplus is ground the building does not stand on, drawn as if it did, and it is
+ * also the direct cause of §41's second gap: two boxes that over-cover into each other
+ * overlap, and 1,360 of the 2,252 overlapping pairs in view carry the SAME quantised
+ * roof height (the lattice has only four values here — 17 / 34 / 51 / 68 m), which is
+ * an exactly coplanar pair of roof quads and therefore a depth-buffer tie.
+ *
+ * So the box is scaled about its own centre until its area equals the ring's:
+ * `k = sqrt(ringArea / boxArea)`, clamped to never ENLARGE and never to shrink past
+ * `AREA_TRUE_MIN` (a ring that is nearly a line — a wall, a canopy, a mis-digitised
+ * sliver — must not collapse a real building to a dot).
+ */
+const AREA_TRUE_MIN = 0.55;
+
+/**
+ * COPLANAR TIE-BREAK, in metres. The area-true box removes most of the overlaps; it
+ * cannot remove them all, because some OSM buildings genuinely overlap (a tower over
+ * its own podium, a building and its parts, the same block digitised twice in two
+ * overscaled z14 tiles). Where two boxes still overlap AND land on the same course of
+ * the shared height lattice, their roofs are the same plane to the last bit and the
+ * depth test has no answer — which is exactly the horizontal comb §41 found on our
+ * faces and the reference does not have.
+ *
+ * A deterministic per-footprint offset of at most 22 cm, keyed off the same id as the
+ * tint, gives the depth test a definite answer: the pair reads as one roof lying on
+ * another instead of as a stripe. At the diorama's 0.38 m/px it is well under one
+ * pixel of height, so it changes no measured tone and no silhouette.
+ *
+ * TWO HONEST LIMITS, both recorded in DECISIONS §41 rather than papered over:
+ *   * it is exactly as stable as the tint key it shares, and that key mixes in a
+ *     counter over the whole `querySourceFeatures` result rather than a per-feature
+ *     ring index — so it does re-deal when the loaded tile set changes. That is a
+ *     pre-existing property of `tintKey`, it moves every block's COLOUR too, and it is
+ *     deliberately not changed in the same pass that measured this render;
+ *   * route focus scales it by FOCUS_FLATTEN along with every other height, leaving
+ *     ~7 cm. If a comb ever reappears, expect it there first.
+ */
+const COPLANAR_EPS_M = 0.22;
+
+/**
+ * The most of a neighbourhood the generalisation floor may ever omit — the safety net
+ * that stops a floor calibrated downtown from deleting a low-rise one. Argued where it
+ * is applied, in `build`.
+ *
+ * 0.65 is not a taste call. Measured on the population this code actually sees — the
+ * 2,059 loaded rings that survive `minHeightForZoom` at the default framing — the
+ * settled screen-size floor of 499 m2 omits 58.6% of them (56.8% of the 796 in view).
+ * So the cap sits above the framing the whole of §41 was measured on and changes
+ * nothing about it; it only binds somewhere the data is finer-grained than downtown.
+ */
+const MAX_OMIT_FRACTION = 0.65;
 /** Sanity ceiling on a block's half-extent — see the note in `build`. Toronto's
  *  longest single building (the Eaton Centre) is ~300 m end to end, so a half-extent
  *  above 300 m is a tile-generalisation artifact, not architecture. */
@@ -583,10 +651,32 @@ interface Block {
   base: number;
   height: number;
   tint: number;
-  area: number;
+  /** the REAL ring's ground area in m2 — the generalisation key AND the budget key */
+  ringArea: number;
   /** cluster shape, filled in by `push` */
   nx: number;
   ny: number;
+}
+
+/**
+ * Deterministic sub-decimetre height offset, in metres, keyed off the footprint's
+ * stable id — the coplanar tie-break described on COPLANAR_EPS_M. Stable across tile
+ * refetches for the same reason `cellRand` is: a roof that changed its winner when a
+ * tile reloaded would flicker, which is the artefact this exists to remove.
+ */
+function coplanarEps(id: number): number {
+  let h = (Math.imul(id, 0x45d9f3b) ^ 0x3c6ef372) >>> 0;
+  h ^= h >>> 16;
+  h = Math.imul(h, 0x119de1f3) >>> 0;
+  h ^= h >>> 13;
+  // `h ^ (h >>> 13)` is an int32 expression, so this is signed again and is negative
+  // for about half of all ids — and JS `%` keeps the DIVIDEND's sign. Without the
+  // final `>>> 0` the offset ran (-0.22, 0.22]: twice the intended spread, and half of
+  // the roofs sat BELOW the lattice `quantizeHeightM` is supposed to guarantee. (The
+  // same missing shift is present in `cellRand` and `pickTint` below; both predate
+  // this pass, both change what the city looks like, and neither is fixed here — see
+  // DECISIONS §41.)
+  return (((h >>> 0) % 1024) / 1024) * COPLANAR_EPS_M;
 }
 
 /** Deterministic 0..1 from a footprint id and a cell index. Stable across tile
@@ -603,8 +693,16 @@ function cellRand(id: number, ix: number, iy: number): number {
  * Collapse one building's rings to an oriented bounding box via PCA of its ring
  * vertices. OSM building rings are overwhelmingly rectangles of 4–6 points, so the
  * principal axis is the building's own long axis and the box is the building.
+ *
+ * Also returns the ring's own SHOELACE AREA, which `build` uses for two things: the
+ * generalisation floor (a floor on real footprint area, not on box area, so a long
+ * thin building is judged on the ground it actually covers), and the area-true
+ * correction that stops the circumscribed box over-covering a non-rectangular
+ * footprint.
  */
-function orientedBox(pts: number[]): { cx: number; cy: number; yaw: number; halfW: number; halfD: number } | null {
+function orientedBox(
+  pts: number[],
+): { cx: number; cy: number; yaw: number; halfW: number; halfD: number; area: number } | null {
   const n = pts.length / 2;
   if (n < 3) return null;
   let sx = 0;
@@ -647,7 +745,19 @@ function orientedBox(pts: number[]): { cx: number; cy: number; yaw: number; half
   if (!(halfW > 0.5) || !(halfD > 0.5)) return null;
   const ou = (maxU + minU) / 2;
   const ov = (maxV + minV) / 2;
-  return { cx: mx + ou * c - ov * s, cy: my + ou * s + ov * c, yaw, halfW, halfD };
+  let shoelace = 0;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    shoelace += pts[i * 2] * pts[j * 2 + 1] - pts[j * 2] * pts[i * 2 + 1];
+  }
+  return {
+    cx: mx + ou * c - ov * s,
+    cy: my + ou * s + ov * c,
+    yaw,
+    halfW,
+    halfD,
+    area: Math.abs(shoelace) / 2,
+  };
 }
 
 // ---------------------------------------------------------------- the layer
@@ -672,6 +782,8 @@ export interface VoxelMeshLayer extends CustomLayerInterface {
     built: number;
     features: number;
     dropped: number;
+    /** real footprints omitted by the zoom-keyed area floor (generalisation) */
+    omitted: number;
     /** footprints that produced a multi-cube, multi-height cluster */
     clustered: number;
     origin: [number, number];
@@ -703,6 +815,7 @@ export function createVoxelMeshLayer(opts: VoxelMeshOptions): VoxelMeshLayer {
   let count = 0;
   let built = 0;
   let dropped = 0;
+  let omitted = 0;
   let features = 0;
   let clustered = 0;
 
@@ -786,6 +899,7 @@ export function createVoxelMeshLayer(opts: VoxelMeshOptions): VoxelMeshLayer {
     scratch.length = 0;
     let ringSeq = 0;
     let oversize = 0;
+    let generalised = 0;
 
     const push = (pts: number[], h: number, b: number, id: number) => {
       const box = orientedBox(pts);
@@ -796,9 +910,16 @@ export function createVoxelMeshLayer(opts: VoxelMeshOptions): VoxelMeshLayer {
       // dropped rather than drawn. Counted, so the harness can see if it ever
       // becomes common.
       if (box.halfW > MAX_HALF_M || box.halfD > MAX_HALF_M) { oversize++; return; }
-      const halfW = Math.max(MIN_HALF_M, box.halfW - INSET_M);
-      const halfD = Math.max(MIN_HALF_M, box.halfD - INSET_M);
-      const height = quantizeHeightM(h);
+      // AREA-TRUE correction: pull the circumscribed box in until it covers the same
+      // ground the ring does. Never enlarges, never collapses past AREA_TRUE_MIN.
+      // `orientedBox` already guarantees halfW, halfD > 0.5, so boxArea > 1.
+      const boxArea = box.halfW * box.halfD * 4;
+      const k = Math.sqrt(Math.min(1, Math.max(AREA_TRUE_MIN, box.area / boxArea)));
+      const halfW = Math.max(MIN_HALF_M, box.halfW * k - INSET_M);
+      const halfD = Math.max(MIN_HALF_M, box.halfD * k - INSET_M);
+      // The tie-break rides on the footprint's quantised height, so every cube in one
+      // cluster still shares one lattice with every other cube in it.
+      const height = quantizeHeightM(h) + coplanarEps(id);
       if (!(height > 0)) return;
       // THE CLUSTER. The footprint is divided into a whole number of cells as close
       // to CELL_M as it can manage, so the cubes exactly tile the footprint — no
@@ -818,7 +939,7 @@ export function createVoxelMeshLayer(opts: VoxelMeshOptions): VoxelMeshLayer {
         base: Math.max(0, b),
         height,
         tint: id,
-        area: halfW * halfD,
+        ringArea: box.area,
         nx,
         ny,
       });
@@ -863,6 +984,49 @@ export function createVoxelMeshLayer(opts: VoxelMeshOptions): VoxelMeshLayer {
 
     features = feats.length;
     dropped = oversize;
+
+    // ---- GENERALISATION, on the ring's OWN area rather than on its box's ----------
+    //
+    // The floor itself is `minFootprintAreaM2` (voxelCity.ts), a constant screen area.
+    // It is applied HERE rather than inside `push` because of the cap below, which
+    // needs to see the whole neighbourhood before it can decide anything.
+    //
+    // THE CAP, and the failure it exists to prevent. A pure absolute floor is tuned on
+    // the place it was measured. At King & Spadina it omits 58.6% of the loaded rings
+    // that get this far and the result is the reference's calm; somewhere finer-grained
+    // the same floor can take most of a neighbourhood. So it is capped by RANK as well as
+    // by size: drop the smallest footprints until the screen-size floor is satisfied OR
+    // MAX_OMIT_FRACTION of the loaded neighbourhood has been dropped, whichever comes
+    // first. Selection by rank is the older and more standard of the two generalisation
+    // operators — Töpfer's radical law is exactly this — and like the size floor it only
+    // ever OMITS.
+    //
+    // MEASURED, on three real Toronto framings, as built coverage of the pane, with the
+    // size floor switched off / on-uncapped / on-capped:
+    //
+    //   King & Spadina (downtown)  66.4%  ->  63.5%  ->  63.5%   cap never binds
+    //   Roncesvalles   (low-rise)  35.4%  ->  27.8%  ->  31.6%   cap halves the loss
+    //   Greenwood/Danforth         25.5%  ->  24.9%  ->  25.2%
+    //
+    // The Greenwood row is worth reading carefully: that frame is ALREADY sparse with no
+    // area floor at all, because most of its houses carry a render_height under
+    // `minHeightForZoom`'s 8 m and never reach this code. The area floor is not what
+    // empties it, and the fix for that — if it is ever wanted — belongs to the HEIGHT
+    // floor, not here.
+    const minArea = minFootprintAreaM2(metresPerPixel(map));
+    if (minArea > 0 && scratch.length > 0) {
+      const sorted = scratch.map((bl) => bl.ringArea).sort((x, y) => x - y);
+      const capIdx = Math.floor(sorted.length * MAX_OMIT_FRACTION);
+      const capArea = capIdx < sorted.length ? sorted[capIdx] : Infinity;
+      const threshold = Math.min(minArea, capArea);
+      let keep = 0;
+      for (let i = 0; i < scratch.length; i++) {
+        if (scratch[i].ringArea >= threshold) scratch[keep++] = scratch[i];
+      }
+      generalised = scratch.length - keep;
+      scratch.length = keep;
+    }
+    omitted = generalised;
     built = scratch.length;
 
     // INSTANCE BUDGET, spent in whole buildings. A cluster with a cell missing out of
@@ -872,7 +1036,7 @@ export function createVoxelMeshLayer(opts: VoxelMeshOptions): VoxelMeshLayer {
     let cubesWanted = 0;
     for (const b of scratch) cubesWanted += b.nx * b.ny;
     if (cubesWanted > MAX_INSTANCES) {
-      scratch.sort((a, b2) => b2.area - a.area);
+      scratch.sort((a, b2) => b2.ringArea - a.ringArea);
       let acc = 0;
       let keep = 0;
       for (; keep < scratch.length; keep++) {
@@ -1242,7 +1406,7 @@ export function createVoxelMeshLayer(opts: VoxelMeshOptions): VoxelMeshLayer {
     },
 
     stats() {
-      return { blocks: count, built, features, dropped, clustered, origin: [origin.lng, origin.lat] };
+      return { blocks: count, built, features, dropped, omitted, clustered, origin: [origin.lng, origin.lat] };
     },
 
     setPartVisible(part, on) {
