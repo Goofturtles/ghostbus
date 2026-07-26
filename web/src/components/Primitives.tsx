@@ -98,10 +98,23 @@ export function StatusPill({ compact = false }: { compact?: boolean }) {
     loading: { label: t('status.scheduled'), cls: 'sp-sched', dot: false },
   };
   const c = cfg[kind];
-  // Stale surfaces its age inline (per spec: "Stale — last updated X min ago"), and so
-  // does our own trouble — a rider who sees a changed pill deserves the reason without
-  // having to tap it, and "retrying" is the part that stops the app looking broken.
-  const inlineDetail = (kind === 'stale' || kind === 'catchingUp') && !compact;
+  /**
+   * Stale surfaces its age inline (per spec: "Stale — last updated X min ago"). Catching-up
+   * does NOT, and that reversed an earlier decision here.
+   *
+   * The reasoning for adding it was that a rider seeing a changed pill deserves the reason
+   * without tapping. The measurement says the pill was the wrong place to put it: at 1280px
+   * the pill went 64px (Live) -> 366px (en) / 384px (fr-CA) — 30% of the window, 4.3x its
+   * own previous width — and STILL did not fit, truncating fr-CA mid-word as
+   * "nouvelle te…". DESIGN-TARGET §F already bans mid-word truncation in a short metadata
+   * line, and nothing else in the reference's chrome re-proportions itself on a state change.
+   *
+   * The reason is not lost, it is just not duplicated: the sidebar banner prints the same
+   * sentence in full, which is where a sentence belongs. The pill stays a chip that names
+   * the state, and the full text is still available to assistive tech via `aria-label` and
+   * to a pointer via the tap-to-expand `sp-detail` every other state already uses.
+   */
+  const inlineDetail = kind === 'stale' && !compact;
 
   return (
     <button

@@ -33,7 +33,7 @@ import {
   type RecentPlace, type RouteResult, type StopResult,
 } from '@/lib/search';
 import { RouteBadge } from './Primitives';
-import { SearchIcon, CloseIcon, PinIcon, ClockIcon, StarIcon, RouteIcon, FlagIcon } from './icons';
+import { SearchIcon, PinIcon, ClockIcon, StarIcon, RouteIcon, FlagIcon } from './icons';
 
 /** Long enough that a normal typing burst is one request, short enough to feel live. */
 const DEBOUNCE_MS = 220;
@@ -349,11 +349,24 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="search-bar">
+          {/*
+            A STATIC MAGNIFIER. It used to cross-fade into a ✕ as soon as the field had text —
+            inside an `aria-hidden` span with no handler, so clicking it did nothing.
+
+            A ✕ inside a search field is universally read as "clear", so this was a dead
+            affordance in the most prominent position in the sheet, with the real control (the
+            named `Clear` button) 300px away at the other end of the bar. That is precisely the
+            defect this file's own header says it exists to remove: a control that looks live
+            and does nothing.
+
+            The alternative was to promote it to a real button, but then the sheet would ship
+            two clear affordances for one action, and the text button is already the better
+            one — it has an accessible name, it is in the tab order, and its focus contract is
+            verified. So the icon goes back to meaning exactly one thing: this is a search
+            field. It no longer pretends to be a control.
+          */}
           <span className="search-glyphs" aria-hidden>
-            {/* Cross-faded, not hard-cut: the glyph rotates and scales between the two
-                states so the field never blinks between two different icons. */}
-            <span className={`search-glyph ${q ? 'glyph-off' : 'glyph-on'}`}><SearchIcon width={18} height={18} /></span>
-            <span className={`search-glyph ${q ? 'glyph-on' : 'glyph-off'}`}><CloseIcon width={18} height={18} /></span>
+            <SearchIcon width={18} height={18} />
           </span>
           <label className="sr-only" htmlFor="gb-search-input">{title}</label>
           <input

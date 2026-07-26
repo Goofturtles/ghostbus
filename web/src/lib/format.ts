@@ -4,12 +4,26 @@ import i18n from '@/i18n';
 
 const AGENCY_TZ = 'America/Toronto';
 
+/**
+ * A clock time that cannot be broken across a line.
+ *
+ * M7: in the 320px sidebar the plan's ride detail wrapped as `…get off 2:08` / `PM` — the
+ * meridiem orphaned onto the next line, splitting one atomic fact in half. Unlike
+ * `.search-fact` / `.stop-fact`, an interpolated time inside a sentence has no element of
+ * its own to mark `white-space: nowrap`, so the fix belongs at the source: Intl emits a
+ * normal space (or U+202F) before the meridiem, and this replaces any such separator with a
+ * non-breaking space. Fixes every caller at once — board rows, plan legs, catch view — and
+ * cannot be forgotten at a new call site.
+ */
 export function fmtClock(ms: number, tz = AGENCY_TZ): string {
   return new Intl.DateTimeFormat(i18n.language, {
     hour: 'numeric',
     minute: '2-digit',
     timeZone: tz,
-  }).format(new Date(ms));
+  }).format(new Date(ms))
+    // Escapes, not literals: the separator Intl emits is invisible in source and varies
+    // by runtime (plain space, NBSP, or the narrow NBSP U+202F on newer ICU).
+    .replace(/[\u0020\u00a0\u202f]+/g, '\u00a0');
 }
 
 /** A weekday + date label in the agency zone, e.g. "Fri, Jul 31" — used to

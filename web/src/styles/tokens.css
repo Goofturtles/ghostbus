@@ -30,6 +30,14 @@
   --live-text: #34c759;
   --warn-text: #ffb020;
   --danger-text: #ff6b61;
+  /* OUR-SIDE TROUBLE ("catching up"), text-safe. The state used a blue TINT with `--accent`
+     (purple) TEXT — two meaning-locked families spent on one meaning, and the purple is the
+     app's most ordinary colour (wordmark, active tab, walk beads), so the one message that
+     says "something is different" was painted in the least different hue available.
+     Blue is the right family per DECISIONS §45 (informational, not an alarm — amber and red
+     stay reserved), so this is the text-safe blue that goes WITH that tint. Clears AA on the
+     0.14-0.16 blue fills. */
+  --ours-text: #6aa2ff;
   --you: #0a84ff;           /* platform-convention blue, the You beacon */
   --ghost: #7fe7dc;         /* ghost cyan */
 
@@ -89,7 +97,16 @@
      near-black background it only reaches ~4:1, and the reference's accent reads
      visibly brighter than the wordmark fill. This is the one used for words. */
   --accent: #b168e0;
-  --glass: rgba(31, 34, 48, 0.7);
+  /* RAISED 0.70 -> 0.88. `.glass` has exactly two consumers, both modal dialogs that sit
+     over the live map (the search sheet and the settings sheet), so it is a SURFACE, not a
+     tint. At 0.70 under a 24px blur it did not suppress `--route-red` (#ff4d4d), the most
+     saturated stroke in the app: the map's route line, its stop card and the `504` badge
+     were all legible through the search results in dark mode. Measured on
+     desktop-dark-en and desktop-dark-frCA; the red crossed rows 4-5.
+     0.88 clears its own `--glass-strong` (0.86), which already holds the top bar over the
+     same map. The LIGHT value stays 0.78 — it was measured clean over a pale map and does
+     not need the weight. */
+  --glass: rgba(31, 34, 48, 0.88);
   --glass-strong: rgba(31, 34, 48, 0.86);
   --hairline: rgba(255, 255, 255, 0.06);
   --hairline-2: rgba(255, 255, 255, 0.09);
@@ -148,6 +165,8 @@
   --live-text: #157a37;
   --warn-text: #8a5a00;
   --danger-text: #c62828;
+  /* Light-theme pair of --ours-text; same reasoning as the dark block above. */
+  --ours-text: #1f5fd0;
 
   /* Daylight map — real navigational contrast: darker ground, shaded roofs. */
   --map-ground: #c9cede;

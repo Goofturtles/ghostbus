@@ -117,7 +117,7 @@
   align-items: center;
   gap: var(--s2);
   border-radius: var(--r-pill);
-  padding: 6px 13px;
+  padding: 6px var(--s3); /* M15: was 13px — one pixel off `.pill`'s 6/12 for no reason */
   font-size: 13px;
   font-weight: 700;
   min-height: 32px;
@@ -138,11 +138,14 @@
 .sp-stale { background: rgba(255, 176, 32, 0.16); color: var(--warn-text); }
 .sp-sched { background: var(--surface-2); color: var(--text-2); }
 .sp-offline { background: rgba(255, 69, 58, 0.15); color: var(--danger-text); }
-/* OUR OWN trouble — the app's accent blue, NOT the red it used to borrow from
-   `sp-offline`. Red said "something is broken"; this state is the app throttling or
-   restarting itself and already recovering, and the colour should not overstate it.
-   See DECISIONS §45. */
-.sp-catchup { background: rgba(52, 120, 246, 0.16); color: var(--accent); }
+/* OUR OWN trouble — blue, NOT the red it used to borrow from `sp-offline`. Red said
+   "something is broken"; this state is the app throttling or restarting itself and already
+   recovering, and the colour should not overstate it. See DECISIONS §45.
+   The TEXT is `--ours-text`, not `--accent`: `--accent` is the brand PURPLE, so this rule
+   used to pair a blue fill with purple text — the only state in the app whose fill and text
+   came from two different meaning-locked families, and painted in the same purple as the
+   wordmark, the active tab and the walk beads. One family per state, like Live and DEMO. */
+.sp-catchup { background: rgba(52, 120, 246, 0.16); color: var(--ours-text); }
 /* A RECORDING — amber, the same family as the DEMO badge in the banner. */
 .sp-demo { background: rgba(255, 176, 32, 0.2); color: var(--warn-text); font-weight: 700; letter-spacing: 0.04em; }
 .sp-dot {
@@ -440,8 +443,10 @@
 
 /* default-location note + feed banner */
 .loc-note, .feed-banner {
-  display: flex; align-items: center; gap: var(--s2);
-  padding: 9px var(--s4);
+  /* M13: `center` floated the glyph opposite the GAP between lines of a two-line message;
+     `.forecast-chip svg` already solves this the same way. M14: 9px was off the 4pt scale. */
+  display: flex; align-items: flex-start; gap: var(--s2);
+  padding: var(--s2) var(--s4);
   border-radius: var(--r-sm);
   font-size: 12.5px; font-weight: 500;
   min-width: 0; line-height: 1.4;
@@ -463,7 +468,7 @@
 }
 .loc-note:hover { color: var(--accent); }
 .loc-note span, .feed-banner span { min-width: 0; overflow-wrap: break-word; }
-.loc-note svg, .feed-banner svg { flex: 0 0 auto; }
+.loc-note svg, .feed-banner svg { flex: 0 0 auto; margin-top: 2px; }
 .loc-note:active { transform: scale(0.99); }
 .feed-banner { background: rgba(255, 176, 32, 0.14); color: var(--warn-text); }
 
@@ -472,9 +477,11 @@
    See DECISIONS §45. Only ONE of these can render at a time (NearbyPanel gates them
    mutually), so they never stack and never compete for the same slot.
 
-   OURS — blue, the app's own accent family. It reads as informational rather than as
-   an alarm, because it is: we are already retrying and the rider need do nothing. */
-.feed-banner-ours { background: rgba(52, 120, 246, 0.14); color: var(--accent); }
+   OURS — blue, fill and text from the same family (`--ours-text`, not the brand purple
+   `--accent` this used to use). It reads as informational rather than as an alarm, because
+   it is: we are already retrying and the rider need do nothing. The WarningIcon inside
+   inherits via currentColor, so the glyph moves with the text. */
+.feed-banner-ours { background: rgba(52, 120, 246, 0.14); color: var(--ours-text); }
 
 /* A RECORDING — amber, matching the DEMO badge it carries. */
 .feed-banner-demo { background: rgba(255, 176, 32, 0.16); color: var(--warn-text); }
@@ -653,8 +660,13 @@
   min-width: 0;
 }
 .evidence-chip {
-  flex: 1 1 auto;
-  font-size: 11.5px; color: var(--text-3);
+  /* M5: was `flex: 1 1 auto`, whose flex BASIS is the content width, so line-breaking used
+     the hypothetical size and pushed the whole sentence to line 2 — leaving the 26px grade
+     chip stranded alone above its own caption. `1 1 0` keeps it on line 1 and wraps the
+     sentence under itself. M6: 11.5px against `.plan-leg-sub`'s 12.5px was a 1px delta that
+     reads as inconsistency rather than hierarchy — three sizes in one card, rule is two. */
+  flex: 1 1 0;
+  font-size: 12.5px; color: var(--text-3);
   line-height: 1.5;
   text-align: left; min-width: 0; overflow-wrap: break-word;
 }
@@ -746,6 +758,13 @@
   text-align: center;
   display: flex; flex-direction: column; align-items: center; gap: var(--s2);
 }
+/* M10: a uniform 8px gap spaced glyph, title, body, action, action and fine print
+   IDENTICALLY, so a six-element card read as six equal items with no grouping. */
+.state-card > .btn:first-of-type { margin-top: var(--s2); }
+.state-card > .state-fine { margin-top: var(--s1); }
+/* M9: two centred pills of different widths (232.3 vs 175px en; 248 vs 206.3 fr) read as a
+   ragged stack. Every other card action in the app and in the reference is full-width. */
+.state-card > .btn { width: 100%; }
 .state-glyph {
   width: 52px; height: 52px;
   display: inline-flex; align-items: center; justify-content: center;
@@ -1130,7 +1149,9 @@
 /* ============================ offline ============================ */
 .state-offline .state-glyph { background: rgba(255, 69, 58, 0.14); color: var(--danger-text); }
 /* Must come after .state-body: same specificity, later wins. */
-.state-fine { font-size: 12.5px; line-height: 1.55; color: var(--text-3); }
+/* M11: was 12.5px, a third size in a card already running 17px title / 14px body. Fine
+   print is now distinguished by COLOUR alone — the distinction doing the work anyway. */
+.state-fine { font-size: 14px; line-height: 1.55; color: var(--text-3); }
 
 /* ============================ skeletons ============================ */
 .stophead-skeleton { height: 56px; border-radius: var(--r-md); }
@@ -1198,18 +1219,8 @@
   display: inline-flex; align-items: center; justify-content: center;
   color: var(--text-3);
 }
-/* Icon state swap: the two glyphs cross-fade while rotating and scaling, so the
-   field never hard-cuts between two different pictures. Compositor-only. */
-.search-glyph {
-  position: absolute;
-  inset: 0;
-  display: inline-flex; align-items: center; justify-content: center;
-  transition:
-    opacity var(--dur-micro) var(--ease-out),
-    transform var(--dur-micro) var(--ease-spring);
-}
-.glyph-on { opacity: 1; transform: rotate(0deg) scale(1); }
-.glyph-off { opacity: 0; transform: rotate(90deg) scale(0.5); }
+/* The magnifier/✕ cross-fade that used to live here is gone with the dead ✕ it animated
+   (SearchSheet.tsx). One glyph, one meaning, no state to swap. */
 
 .search-input {
   flex: 1 1 auto;
@@ -1227,8 +1238,11 @@
 .search-clear,
 .search-close {
   flex: 0 0 auto;
-  min-height: 36px;
-  padding: 7px 13px;
+  /* M2: was `min-height: 36px; padding: 7px 13px` — the only two controls in the app that
+     opted out of the 44px touch floor `.btn` enforces (measured 64.4x36 on a phone), with a
+     padding pair matching neither `.pill` (6/12) nor `.btn` (10/16). */
+  min-height: 44px;
+  padding: 10px 16px;
   border-radius: var(--r-pill);
   font-size: 13px;
   font-weight: 600;
@@ -1242,11 +1256,20 @@
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 0 var(--s1) var(--s2);
+  /* M3: the last row used to be guillotined mid-glyph by the opaque hints bar below, while
+     the Plan tab's scroller fades out — two scrollers in one app disagreeing about what a
+     scroll edge looks like. The mask fades the final 24px so content reads as continuing
+     rather than as cut, and the extra bottom padding means a fully-scrolled list still ends
+     on a whole row. The top stays hard: it butts against the search bar, which is a real
+     edge, not a fold. */
+  padding: 0 var(--s1) var(--s5);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent 100%);
 }
 .search-section + .search-section { margin-top: var(--s4); }
 .search-section-head { padding: 0 var(--s3) var(--s2); }
-.search-rows { display: flex; flex-direction: column; gap: 2px; }
+/* M4: gap was 2px against a declared 4pt scale — read as "no gap", not as a step. */
+.search-rows { display: flex; flex-direction: column; gap: var(--s1); }
 
 .search-row {
   display: flex;
@@ -1275,7 +1298,7 @@
 }
 .search-row-active .search-tile { background: var(--brand); color: var(--on-brand); box-shadow: none; }
 
-.search-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.search-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: var(--s1); }
 .search-title {
   display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
   font-size: 14.5px; font-weight: 700; line-height: 1.35; color: var(--text);
@@ -1752,11 +1775,17 @@
      outright. Indented to the text column so it still reads as part of the row. */
   .search-row { flex-wrap: wrap; }
   .search-chip {
-    flex: 1 0 100%;
-    max-width: none;
-    justify-content: flex-start;
-    margin-left: calc(34px + var(--s3));
-  }
+  /* WAS `flex: 1 0 100%` + `margin-left: 46px`. `flex-basis: 100%` resolves against the
+     row's 334px content box and the margin is added ON TOP, so with `flex-shrink: 0` the
+     chip drew 380px on a 334px line: it overhung the row's rounded right edge by a measured
+     34px on all four mobile combinations, hidden from the overlap probe because a child
+     escaping its own parent is not an overlap, and stopped from scrolling the page only by
+     `.scroll { overflow-x: hidden }`. It was also two-thirds empty — ~120px of content in a
+     334px bar. Hugging its content makes it a pill again, exactly as on desktop. */
+  flex: 0 0 auto;
+  max-width: none;
+  margin-left: calc(34px + var(--s3));
+}
 
   /* Keep the 44px hit target, draw a 36px ring: the reference's save control is a
      ~35px circle with a quiet ring, and a full 44px purple ring outweighed it. */
