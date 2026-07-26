@@ -267,18 +267,68 @@ export function buildStyle(theme: MapTheme): StyleSpecification {
         paint: { 'line-color': p.boundary, 'line-width': w([[6, 0.4], [12, 1.1]]) as number, 'line-dasharray': [3, 2] },
       },
 
-      // --- labels (minimal) ---
+      // --- labels ---
       // Street names lie ALONG the road, rotated to the road angle, exactly as the
       // reference shows "King St West" / "Wellington St W" running down their
       // streets. `symbol-placement: line` defaults both rotation- and
       // pitch-alignment to `map`, so the type is painted onto the ground plane and
       // tips with the diorama camera instead of floating flat over it.
       //
-      // Density is held DOWN on purpose (§D: "at phone size keep at most ~3
-      // floating labels visible at once"): major/secondary roads only, a wide
-      // `symbol-spacing` so one street gets one name rather than a repeating
-      // ribbon, and generous `text-padding` so MapLibre's own collision index
-      // keeps names off each other and off the marker blockers MapCard registers.
+      // TWO LAYERS, AND THE ORDER BETWEEN THEM IS LOAD-BEARING.
+      //
+      // The user tested the live app and filed it plainly: the streets are not
+      // labeled. They were right, and the cause was this layer's FILTER — it carried
+      // `[...MAJOR, ...MED]`, so motorway/trunk/primary/secondary/tertiary got names
+      // and every residential street, laneway and side street in the frame got
+      // nothing. Downtown Toronto at the diorama zoom is mostly those.
+      //
+      // `label-road-minor` below therefore names them, and it is placed BEFORE
+      // `label-road` in this array on purpose. MapLibre's placement pass walks the
+      // style order from the END downward, so the LAST symbol layer is placed FIRST
+      // and wins every collision it takes part in. Minor first in the array means
+      // minor is placed LAST, so a side street can never suppress "King St West" —
+      // the hierarchy the reference shows survives having five times as many labels
+      // in the frame.
+      //
+      // What this does NOT and CANNOT do: label a street OSM has no name for. The
+      // `transportation_name` layer only carries ways that have been named, so an
+      // unnamed service alley stays unnamed — there is no data to draw. The
+      // per-frame coverage this actually achieves is measured, not assumed; see the
+      // census in .data/r5map-artifacts/labels-*.json.
+      {
+        id: 'label-road-minor', type: 'symbol', source: 'omt', 'source-layer': 'transportation_name',
+        // Higher than the majors' 14.5: a residential street name is only legible
+        // once its street is more than a few pixels wide, and below the diorama the
+        // frame belongs to the arterials.
+        minzoom: 15,
+        filter: ['in', ['get', 'class'], ['literal', MINOR]],
+        layout: {
+          'text-field': ['coalesce', ['get', 'name:en'], ['get', 'name']],
+          // Regular, not Bold — the weight difference is half of what keeps the
+          // arterial names dominant now that the side streets are named too.
+          'text-font': ['Noto Sans Regular'],
+          'text-size': ['interpolate', ['linear'], ['zoom'], 15, 10.5, 17, 14],
+          'text-letter-spacing': 0.01,
+          'symbol-placement': 'line',
+          // Tight, unlike the majors. `text-padding: 44` is what thins the arterials
+          // to the reference's two-per-frame; applying it here would suppress almost
+          // every side street and leave the RED exactly where it was.
+          'symbol-spacing': 260,
+          'text-padding': 3,
+          'text-max-angle': 35,
+        },
+        paint: {
+          'text-color': p.roadLabel,
+          'text-halo-color': p.roadLabelHalo,
+          // Slightly tighter halo than the majors', scaled to the smaller type.
+          'text-halo-width': 1.8,
+          'text-halo-blur': 0.3,
+          // Not full strength: a side street name is a secondary read. This is the
+          // other half of the hierarchy, and it keeps a frame with twenty labels in
+          // it from reading as a wall of type.
+          'text-opacity': theme === 'dark' ? 0.86 : 0.9,
+        },
+      },
       {
         id: 'label-road', type: 'symbol', source: 'omt', 'source-layer': 'transportation_name', minzoom: 14.5,
         filter: ['in', ['get', 'class'], ['literal', [...MAJOR, ...MED]]],
@@ -296,11 +346,20 @@ export function buildStyle(theme: MapTheme): StyleSpecification {
           'symbol-placement': 'line',
           // The reference shows TWO street names in a 715px frame. `symbol-spacing`
           // only dedupes repeats along one feature — separate OSM ways with the same
-          // name are separate features, so a wide `text-padding` is what actually
-          // thins them: it inflates each label's collision box until neighbours (and
-          // the marker blockers MapCard publishes) suppress each other.
-          'symbol-spacing': 900,
-          'text-padding': 44,
+          // name are separate features, so `text-padding` is what actually thins
+          // them: it inflates each label's collision box until neighbours (and the
+          // marker blockers MapCard publishes) suppress each other.
+          //
+          // RELAXED, 900/44 -> 420/14. At 44 px of padding an arterial name claimed a
+          // ~50 px moat, and the layer was thinned so hard that ARTERIALS were going
+          // unnamed too — which is half of the user's "streets are not labeled". The
+          // reference's two-names-per-frame was never a rule about how many streets
+          // may be named; it is what that one illustration happens to show. 14 px
+          // still keeps names off each other and off the marker blockers (whose own
+          // `icon-padding` was raised to match — see MapCard), and it lets a frame
+          // name the streets it actually contains.
+          'symbol-spacing': 420,
+          'text-padding': 14,
           'text-max-angle': 30,
         },
         paint: {
