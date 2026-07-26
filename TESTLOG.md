@@ -3941,3 +3941,964 @@ independently recounted by the tester against the raw logs.
 4. Build-under-test: da046b9 runtime, re-verified by the tester against the actual
    current HEAD (ebd217f) including a line-by-line read of the one code-file diff
    in between (comment-only). The greens hold at HEAD.
+
+---
+
+# T3 (SPEC-FIDELITY) RERUN — Reliability + Search + Plan, against the nine-red fix batch
+
+Pinned HEAD: `da046b9b1fb05ee3464d8c255227ad55794bbb29` ("TESTLOG: features wave 1 — the record
+that produced the nine-red fix batch"). Working tree at time of this pass carried only
+untracked screenshot directories (`screenshots/critic/`, `screenshots/current-*.png`,
+`screenshots/reference-match/final5/`) — no uncommitted code, confirmed by `git status --short`.
+
+Prior wave: `.data/testlog-drafts/T3-features.md`, GREEN across all six checks (after a
+correction pass this draft read in full before starting, so as not to repeat: quote a file
+verbatim including any bug it contains, never re-derive a per-file test count from a combined
+run, cite only the exact §-range a claim rests on). Batch under test: four commits landed since
+that pass —
+
+| commit | what it fixed |
+|---|---|
+| `5ba1bbf` | Split `staticAgency`/`modeAgency` (demo mode's static-agency RED from T1); `/api`-only rate-limit scoping |
+| `d8ba413` | Stale plan geometry surviving a failed re-plan (T2's RED) |
+| `5ea35f3` | Six Design Critic REDs + eleven minors |
+| `bba517f` | Screenshot evidence for the above two fix passes |
+
+Tester: T3, independent of the builder. No file under test was modified by this pass.
+Every citation below was read at the pinned HEAD above, not carried over from the prior draft.
+
+## VERDICT: five of six checks GREEN. One (rate-limit documentation) is PARTIAL — the figures
+still match exactly, but the batch's new `/api`-scoping and unmatched-route policy has no
+documentation entry at all. One batch-specific claim (DECISIONS §45 §7's stale claim) is RED:
+the doc was never corrected and no new DECISIONS entry exists for the fix, contrary to what the
+brief assumed going in.
+
+---
+
+## 1. Attribution contract (DECISIONS §45 vs `web/src/lib/api.ts` / `useLive.ts`) — GREEN, unchanged
+
+None of the files this check rests on were touched by the batch: `git diff --stat 5fb2fd4 HEAD
+-- shared/types.ts web/src/hooks/useLive.ts web/src/lib/api.ts` reports **zero changes**. The
+prior draft's citations stand at the same lines:
+
+- `shared/types.ts:24` — `ApiErrorKind = 'rateLimited' | 'badRequest' | 'serverError'`.
+- `web/src/hooks/useLive.ts:225-230` — `attributionOf`, demo → ours → theirs, in that order.
+- `server/src/api.ts` still has the single error handler naming `kind: 'rateLimited'` on a 429;
+  it moved (the file grew from the agency-seam work) but the classification is unchanged — now
+  at `server/src/api.ts:640-654` (`app.setErrorHandler`, `status === 429` branch).
+
+Re-ran `node --import tsx --test web/src/lib/api.test.ts` → **17/17 pass**, same tests, same
+count as the prior draft.
+
+---
+
+## 2. Verbatim wording rules — GREEN, one claim now demonstrably true rather than accidentally so
+
+- **"Updated Xs ago"** — `en.ts`/`frCA.ts`/`es.ts` untouched by the batch except the four
+  apostrophe/accent lines in `frCA.ts` addressed in §5 below; the `status.*` pair at the status
+  pill and the vehicle-fix age, and the AlertsPanel `alert.*` non-equivalence the prior draft's
+  correction pass identified, are both unaffected.
+- **The transfer fine-print now matches its OWN rendered order, in code, not by luck.**
+  `PlanView.tsx:361-388` (`res.outcome === 'transfer'` branch): the fine-print paragraph
+  (`plan-fineprint`, line 375) now renders **before** the maps anchor (`plan-maps`, lines
+  378-386) — this is RED-4 from `5ea35f3`, and the file says so in its own comment,
+  `PlanView.tsx:368-374`, quoted here verbatim in full:
+  ```
+  {/* The disclosure comes BEFORE the control it qualifies — which is also the only
+      arrangement that makes its own wording true. `plan.transferFine` says "The link
+      below…", and `PlanState` renders children after the body, so with the link first
+      the caption pointed at something above it, in all three locales. An app that
+      argues it does not print false statements should not mis-state where its own
+      button is. Reordering beats rewording: a privacy disclosure belongs before the
+      action it describes, not after the rider has already tapped it. */}
+  ```
+  Confirmed the copy itself still says "below" in all three, unchanged by the batch:
+  `en.ts:438` `'The link below opens your maps app...'`; `frCA.ts:410`
+  `'Le lien ci-dessous ouvre votre application de cartes...'`; `es.ts:410` `'El enlace de
+  abajo abre tu app de mapas...'`. Before this fix the anchor rendered first and the fine
+  print after it — so "below" was describing something above it in the DOM, in all three
+  locales at once, which is exactly the false-statement class this project treats as a
+  first-class defect. It is now literally true in the render order for the one component
+  that owns all three strings.
+- **Ghost copy isolation.** `server/src/ghost_copy.test.ts` untouched by the batch. Ran directly
+  → **5/5 pass**, same as the prior wave.
+- **DEMO badge phrasing** (`status.demoNote`) untouched, `en.ts:53` unchanged.
+
+---
+
+## 3. Search spec (v4): Recents · Stops · Routes — GREEN, citations moved but the contract held
+
+`web/src/lib/search.ts` itself is untouched by the batch (`git diff --stat` empty); only
+`SearchSheet.tsx` and `Primitives.tsx` changed, both for Design Critic REDs unrelated to the
+search *logic*. Re-verified against the current file, at its shifted lines:
+
+- **Three sections still correctly built**: recents pushed whenever any exist
+  (`SearchSheet.tsx:166-171`), then `saved` (empty query) or `stops`+`routes`
+  (`SearchSheet.tsx:172-193`ish, same structure as before, unchanged logic).
+- **Distance still absent-not-guessed**: `SearchSheet.tsx:506`, `{distanceM != null && (...)}`.
+- **Next-departure chip still highlighted-row-only, debounced 300 ms, cached**:
+  `PEEK_DEBOUNCE_MS = 300` (`SearchSheet.tsx:41`), `peekStopId`/debounce effect at
+  `SearchSheet.tsx:204-218`.
+- **Zero results still honest**: `noResults` at `SearchSheet.tsx:338`, rendered block at
+  `SearchSheet.tsx:449-451`, copy `search.noResults` (`en.ts:25`, unchanged, verbatim: `'Nothing
+  matches "{{q}}".'` — curly quotes in source).
+- **Keyboard map intact**: `onInputKey` at `SearchSheet.tsx:316`, wired to the input at line
+  388; `search.clear` (`en.ts:19`: `'Clear'`) and `search.close` (`en.ts:18`: `'Close'`) both
+  render as real, working `<button>`s (`SearchSheet.tsx:390-395`).
+- **RED-1 fix, and it is a UI-affordance fix, not a spec-fidelity issue, but it touches this
+  section's own honesty claim so it is recorded here**: the leading icon that used to cross-fade
+  into a dead ✕ is now a static `<SearchIcon>` with no click handler (`SearchSheet.tsx:368-370`);
+  `CloseIcon` no longer appears anywhere in this file (confirmed by grep — zero hits). The file's
+  own comment (`SearchSheet.tsx:352-366`) explains this is the same "does not show riders things
+  that are not true" principle the file's header (`SearchSheet.tsx:1-8`) already states for the
+  field itself — a dead ✕ was a second instance of the same defect class the field was built to
+  eliminate, now closed.
+
+Ran `node --import tsx --test web/src/lib/search.test.ts` in isolation → **19/19 pass**, same
+count as the prior wave (file untouched, so this is expected, not coincidental).
+
+---
+
+## 4. Plan spec — GREEN
+
+`web/src/lib/plan.ts` is untouched by the batch (confirmed by `git diff --stat`); only
+`PlanView.tsx` (the component, `d8ba413`) changed, and that change is the stale-geometry fix
+(T2's RED) plus the fine-print reorder (§2 above), neither of which touches the deep-link
+construction itself.
+
+- **Deep link still destination-only.** `plan.ts:161-171` (unchanged, same lines as the prior
+  draft cited): `transitDirectionsUrl` takes only `{ lat, lon }` for the destination, returns a
+  URL with exactly one coordinate parameter (`destination=`), never `origin=`/`saddr=`. Call
+  site `PlanView.tsx:380`, `href={transitDirectionsUrl(res.to)}` (line number moved from `292`
+  to `380` because of the intervening `d8ba413` diff, same call, same argument, `res.to`).
+- Ran `node --import tsx --test web/src/lib/plan.test.ts` in isolation → **18/18 pass**, same
+  count as the prior wave, including `the maps deep link carries the destination and NOTHING
+  about the rider` (unchanged assertion).
+- **New this pass — a failed plan no longer draws the previous plan's geometry (DECISIONS §45
+  §8, the fix landed in `d8ba413`).** `PlanView.tsx` inverts the old `phase.kind === 'done'`
+  gate; the fix is a client-side state-management change with no dedicated `plan.test.ts`
+  assertion (that logic lives inside the React component, not `lib/plan.ts`), so it is verified
+  by the screenshot evidence in `bba517f` (`screenshots/planfail/`, five frames: ride → transfer
+  → transfer-again → ride-again → fetch-error, `walkNodes` 1/0/0/1/0) rather than a unit test.
+  This is consistent with the project's existing pattern of screenshot-verifying React
+  components rather than unit-testing them (no `PlanView.test.tsx` exists either before or
+  after this batch).
+
+---
+
+## 5. i18n parity — GREEN
+
+- `npx tsc --noEmit` → **0 errors**. `Dict` type parity (`en.ts:471` `export type Dict = typeof
+  en`) still enforced structurally; `frCA.ts`/`es.ts` still typed against it.
+- **frCA accents intact (the `6803c2c` fix has not regressed).** Current lines:
+  `frCA.ts:181` `'...est occupé ou redémarre...'`; `frCA.ts:182` `'...Il reprendra de lui-même
+  dans un instant...'`; `frCA.ts:185` `'L'arrêt le plus proche...'` (typographic apostrophe, see
+  below); `frCA.ts:213` `'...n'arrive pas à joindre...'`. All four accented forms
+  (occupé/redémarre/réessaie/à afficher/arrête/arrive) are present and correct.
+- **The builder's apostrophe normalization (new this pass) — checked against the actual diff,
+  not just the commit message.** `git show 5ea35f3 -- web/src/i18n/frCA.ts` touches exactly four
+  lines (`apiDownBody`, `apiDownThrottled`, `noCoverageNearest`, `vUnseenApiDown`), each
+  converting a straight `'` to a typographic `'`. Confirmed all four now read with `'` at their
+  current lines (181, 182, 185, 213 above). **Caveat, filed honestly rather than silently
+  matched to the claim:** `frCA.ts:6`, `tagline: "L'horaire est une promesse...."`, still carries
+  a straight apostrophe — `git blame` traces this line to the very first commit that added the
+  file (`5f64c81`, 2026-07-24), well before either the accent fix or this apostrophe pass, so it
+  is pre-existing style debt outside the scope of "the new strings" this batch touched, not a
+  gap in the batch's own normalization work. Flagging it here rather than either silently
+  broadening the claim to cover it or silently ignoring that the file is not, in fact, 100%
+  typographic-apostrophe-clean end to end.
+- No hardcoded English re-swept in `SearchSheet.tsx`/`PlanView.tsx`/`Primitives.tsx` — same zero
+  hits as the prior pass; the batch's JSX changes (RED-1/2/4/5/6, M2-M15) are all either
+  structural (flex/sizing) or route through existing `t(...)` keys, no new literal strings
+  introduced in JSX.
+
+---
+
+## 6. Rate-limit documentation — PARTIAL (figures exact; new scoping behavior undocumented)
+
+**The three figures DECISIONS §45 §1 states are still exact**, unaffected by `5ba1bbf`, which
+did not change any of the three numbers:
+
+| DECISIONS §45 claim | `server/src/api.ts` (current) | match |
+|---|---|---|
+| "The ceiling is now 600/min" (`DECISIONS.md:3789`) | `GLOBAL_MAX_PER_MIN = 600` (`api.ts:554`) | exact |
+| "`/api/plan` — 60/min" (`DECISIONS.md:3796`) | `PLAN_MAX_PER_MIN = 60` (`api.ts:568`) | exact |
+| "`/api/stops` — 120/min" (`DECISIONS.md:3798`) | `SEARCH_MAX_PER_MIN = 120` (`api.ts:569`) | exact |
+
+**But `5ba1bbf` shipped a real, separate rate-limit fix that DECISIONS.md says nothing about at
+all — not a stale number, an entirely undocumented behavior change.** `git diff --stat 5fb2fd4
+HEAD -- DECISIONS.md` returns empty: DECISIONS.md has not been touched since `b5b4fb4`, three
+commits before this batch. The fix itself, read directly from `server/src/api.ts:571-617`:
+
+- The limiter now covers `/api/` only; the app shell (`index.html`, hashed assets) is exempt, so
+  a rider reloading mid-throttle still gets served the app that explains the throttle instead of
+  raw 429 JSON (`api.ts:572-583`, comment block, verbatim in part: `"THE LIMITER COVERS /api/
+  ONLY. THE APP SHELL IS NEVER RATE-LIMITED."`).
+- The exemption is gated on the fastify-matched **routed path** (`routeOptions.url` /
+  `routerPath`), never on the raw `req.url` — `api.ts:596-602` explains this closes a real bypass
+  (`GET /%61pi/plan` decodes to `/api/plan` at the router but reads as "not /api" if tested
+  against the raw string).
+- **Unmatched-route policy**: when there is no matched route at all, the fallback
+  (`api.ts:609-617`) decodes the raw path defensively and treats anything it cannot positively
+  confirm as non-`/api` as **subject to the limiter** — i.e., ambiguous or `/api`-shaped 404s are
+  rate-limited, not waved through.
+
+None of this — the scoping change, the routed-path-vs-`req.url` distinction, or the
+unmatched-route fallback policy — appears anywhere in DECISIONS.md. The only place it is
+documented at all is the inline comment at its own call site. **Verdict on this specific ask:**
+the existing documented numbers are not contradicted (still accurate), but "rate-limit
+documentation matches the new `/api` scoping and unmatched-route policy" is false as stated —
+there is no DECISIONS entry to match against, because none was written. This is the same root
+cause as the §45 §7 finding below: real fixes landed in this batch without a corresponding
+DECISIONS update.
+
+**Also worth naming: no automated regression test exists for this fix.** Searched
+`server/src/*.test.ts` for `%61`, `allowList`, `routerPath`, `routeOptions` — zero hits. The
+commit message's own verification ("Measured on a running server: ... both `/api/stops?q=King`
+and `/%61pi/stops?q=King` return 429, while `GET /` returns 200") is a manual claim, not a
+pinned test. This is outside T3's own lens (adversarial coverage is T2's job), so it is flagged
+rather than adjudicated here.
+
+---
+
+## Batch-specific claims (beyond the six standing checks)
+
+### A. `staticAgency`/`modeAgency` split matches DECISIONS §44's rule — GREEN
+
+`server/src/api.ts:361-392` (comment + declaration): `staticAgency = STATIC_AGENCY` (always
+`'ttc'`), `modeAgency = poller.getMode().agency`. Cross-checked against `server/src/demo.ts:31-34`
+(rule 5), quoted here in part — the full rule continues one clause further ("Rule 1 is thereby
+enforced by the primary keys, not by convention."), omitted below only for length:
+`` "DEMO ROWS LIVE IN THEIR OWN NAMESPACE. Everything a demo process writes is tagged `agency =
+'ttc-demo'` (DEMO_AGENCY). The static schedule is read under 'ttc' because a schedule is not an
+observation and there is only one published board." `` — the api.ts split is the same rule
+applied consistently across every endpoint, not a new policy.
+
+Traced every call site in `server/src/api.ts` — `grep -c` confirms `staticAgency` appears on
+**20** lines and `modeAgency` on **15** (declaration + every comment + every query call site
+combined; two lines, 388 and 1354, mention both names). Line 1214 binds `staticAgency` twice in
+one array literal, so a raw pattern-match count reads 21 for that name; the line count is 20.
+Static tables (`stops`,
+`routes`, `trips`, `stop_times`, `shapes`, `calendar`, `calendar_dates`) bind `staticAgency` at
+every site (e.g. `api.ts:409,414,417,465,722,743,785,830,857,986,1068,1105,1192,1202,1214,1220`);
+observation/derived tables (`trip_delay_obs`, `ghosts`, `agg_delay`, `agg_delay_route`,
+`service_alerts`) bind `modeAgency` at every site (`api.ts:448,486,872,879,1123,1126,1265,1358,
+1399,1400,1401`). The one query that joins both
+(`/api/ghosts/feed`, `api.ts:1351-1354`) binds them as two separate parameters: `g.agency=$1`
+(modeAgency) and `t.agency = $2` (staticAgency), with its own comment (`api.ts:1341-1350`)
+explaining why — quoted in full: `"THE ONE QUERY THAT CROSSES THE SEAM, so it names both sides
+explicitly... The seam test cannot catch this by inspecting $1 alone, which is exactly why the
+two agencies are separate bound parameters here."`
+
+The forecast denominator and the `/api/plan` self-join — the two sites the task singled out —
+both classify correctly: forecast's `trips`/`stop_times` scan binds `staticAgency`
+(`api.ts:465`), its watched-hours and ghosts scans bind `modeAgency` (`api.ts:448`, `486`); plan's
+`stop_times`/`trips` self-join binds `staticAgency` (`api.ts:1068`, `1105`), its `agg_delay`/
+`agg_delay_route` evidence lookups bind `modeAgency` (`api.ts:1123`, `1126`).
+
+### B. The seam test pins agency PER TABLE across eight endpoints — GREEN, and it would catch the regression the old one enshrined
+
+Read the actual pre-fix test (`git show 5ba1bbf^:server/src/api.test.ts`, lines 578-595), quoted
+in full:
+```
+test('every query is scoped to the POLLER\'s agency, not the literal "ttc"', async () => {
+  ...
+  const db = fakeDb([{ when: 'FROM routes', rows: ROUTE_ROWS }]);
+  const app = await buildApi({ db, poller: demoPoller });
+  try {
+    await app.inject({ method: 'GET', url: '/api/alerts' });
+    const scoped = db.calls.filter((c) => c.sql.includes('agency=$1'));
+    assert.ok(scoped.length > 0, 'expected agency-scoped queries');
+    for (const call of scoped) {
+      assert.equal(call.params[0], 'ttc-demo', `"${call.sql.slice(0, 48)}…" bound the wrong agency`);
+    }
+  } finally {
+    await app.close();
+  }
+});
+```
+This test fires exactly one request, `/api/alerts` — an observation-only endpoint (`agg_delay`/
+`service_alerts` family) — and blanket-asserts every scoped call binds `'ttc-demo'`. Because it
+never touches a static-table endpoint, a code path that bound `modeAgency` (`'ttc-demo'`)
+*everywhere*, including `stops`/`routes`/`trips`, would pass this test cleanly while being
+exactly the bug the batch shipped and then fixed. The test did not merely fail to catch the bug —
+its own blanket assertion, had it been run against a wider set of endpoints, would have required
+the buggy blanket-`modeAgency` code to exist in order to pass. That is what "actively enshrined
+the bug" means here, verified by reading the test rather than taking the commit message's word
+for it.
+
+The current test, `'DEMO MODE reads the static schedule under "ttc" and observations under
+"ttc-demo"'` (`server/src/api.test.ts:629-675`), fires **eight** endpoints (`api.test.ts:638-647`:
+`/api/stops`, `/api/stops/nearby`, `/api/stops/:id/arrivals`, `/api/routes/:id/shape`,
+`/api/alerts`, `/api/ghosts/feed`, `/api/stats`, `/api/plan`) and classifies every scoped call by
+which table it drives (`seamSideOf`, `api.test.ts:613-622`, keyed off `STATIC_TABLES`/
+`OBSERVATION_TABLES`, `api.test.ts:609-610`), asserting `'ttc'` for static and `'ttc-demo'` for
+observation — with an explicit floor (`assert.ok(statics >= 6...)`, `assert.ok(observations >=
+3...)`, `api.test.ts:670-671`) that the test actually exercised both sides rather than passing
+vacuously. Two more tests pin the exact regressions by name: `'a DEMO instance still finds the
+stops around a rider — the bug that made it useless'` (`api.test.ts:677-698`, using a
+`whenParams` fixture that answers only when bound to `'ttc'`, reproducing the King & Spadina
+symptom) and `'the ghost feed keeps its headsigns in demo mode — the one join that crosses the
+seam'` (`api.test.ts:700-730`, asserting `call.params[0] === 'ttc-demo'` AND
+`call.params[1] === 'ttc'` on the one cross-seam join). A fourth, `'LIVE mode binds one agency on
+both sides of the seam'` (`api.test.ts:732-746`), is the mirror check that a live poller still
+collapses both names to one value. Ran `node --import tsx --test server/src/api.test.ts` in
+isolation → **56/56 pass**.
+
+### C. PlanView's fine-print render order matches all three locales — GREEN
+
+Covered in full in §2 above.
+
+### D. The new `--ours-text` token, and the `--accent` comment — GREEN
+
+`web/src/styles/tokens.css:33-40` (dark) and `:168-169` (light) define `--ours-text` (`#6aa2ff`
+dark / `#1f5fd0` light) with a comment naming the exact defect: `"The state used a blue TINT
+with '--accent' (purple) TEXT — two meaning-locked families spent on one meaning..."` The
+consuming rules, `web/src/styles/app.css:148` (`.sp-catchup { background: rgba(52, 120, 246,
+0.16); color: var(--ours-text); }`) and `:484` (`.feed-banner-ours { background: rgba(52, 120,
+246, 0.14); color: var(--ours-text); }`), both carry their own corrected comments
+(`app.css:144-147`, `:480-483`) that explicitly name `--accent` and say it is no longer used
+here: `` "The TEXT is `--ours-text`, not `--accent`: `--accent` is the brand PURPLE..." `` The
+`--accent` token's OWN comment (`tokens.css:96-99`) no longer mentions "catching up" at all — it
+now describes only its general purpose (text-safe purple for words: wordmark, tabs, saved star),
+confirmed by 13 other consumers in `app.css` (tab-active, saved-star, plan-date, etc.), none of
+them the "catching up" surfaces. The correction is real in both the code and its comments, not
+just the commit message.
+
+### E. DECISIONS §45 §7's old claim — RED: not corrected, no new entry exists
+
+**This is where the task's framing and the repository disagree, and the repository wins.** The
+task describes "the new DECISIONS entry" documenting the `staticAgency`/`modeAgency` split as if
+it exists. It does not. `git log --oneline -- DECISIONS.md` shows the file's last commit is
+`b5b4fb4`, three commits before this batch; `git diff --stat 5fb2fd4 HEAD -- DECISIONS.md`
+confirms zero lines changed since before the batch. `grep -n "staticAgency\|modeAgency" 
+DECISIONS.md` returns nothing.
+
+DECISIONS §45 §7 (`DECISIONS.md:3945-3951`) still reads, unedited, verbatim in full:
+
+> `AGENCY` now comes from `poller.getMode().agency`, not the literal `'ttc'`. Verified bug: a
+> demo instance sharing a database with live TTC rows would have read the *live* rows and served
+> them under the amber DEMO badge — the badge attached to data it does not describe, which is
+> the same lie as a recording labelled live. One read at boot is correct for the process's whole
+> life, because `mode` is immutable after boot (§44).
+
+This is now a materially incomplete — arguably misleading — description of what the code does.
+It states, unqualified, that `AGENCY` comes from `poller.getMode().agency` "now" (a single,
+process-wide value), which was true only between whatever commit made that change and `5ba1bbf`,
+and is no longer true: the code no longer has one `AGENCY` constant at all, it has two
+(`staticAgency`, always `'ttc'`; `modeAgency`, the poller's agency), specifically because the
+blanket version this paragraph describes broke the demo static tables. The code's own comment at
+the split (`api.ts:376-389`) says so candidly: `"Using the mode agency everywhere (the fix that
+overshot, caught by testers) meant a demo instance read the static tables under 'ttc-demo'...
+That is the same dishonesty this attribution work exists to prevent, produced by a namespace bug
+instead of a copy bug."` **That acknowledgment exists in the code. It does not exist in
+DECISIONS.md.** No new §, no amendment, no forward-reference from §45 §7 to wherever the real
+fix landed. Checked the neighboring numbered sections (§46, §47) and confirmed neither addresses
+this; `§47` is the unrelated `npm run eval` entry. Also checked the other local branch
+(`claude/eloquent-bardeen-123514`) in case the correction landed there instead — it is a much
+older, unrelated snapshot of the repo (pre-dates Demo Mode entirely), not a parallel edit to
+current `main`.
+
+**Verdict: this is a real doc-vs-code mismatch**, of the same kind T3's mandate exists to catch,
+and it is the batch's own doing — the four fix commits changed code and tests but never touched
+`DECISIONS.md`, `BLOCKERS.md`, `STATUS.md`, or any other doc file (confirmed by the `git show
+--stat` output for all four commits: only `.ts`/`.tsx`/`.css` and `screenshots/` paths appear).
+
+### F. frCA accents + apostrophe normalization — GREEN (see §5 above for full detail, including the one out-of-scope pre-existing exception at `frCA.ts:6`)
+
+### G. Rate-limit documentation vs. new `/api` scoping and unmatched-route policy — RED, same root cause as (E)
+
+Covered in full in §6 above. Restating the verdict for completeness: no contradiction found (the
+existing 600/60/120 figures are exact), but no DECISIONS entry documents the scoping change
+`5ba1bbf` shipped, so there is nothing to "match" — the claim in the task brief that documentation
+matches the new policy cannot be verified true, because the documentation does not address the
+new policy at all.
+
+---
+
+## Test runs performed this pass (all against the real, unmodified files; per-file counts, not combined)
+
+```
+node --import tsx --test web/src/lib/api.test.ts          → 17/17 pass
+node --import tsx --test web/src/lib/search.test.ts        → 19/19 pass
+node --import tsx --test web/src/lib/plan.test.ts          → 18/18 pass
+node --import tsx --test server/src/ghost_copy.test.ts     →  5/5 pass
+node --import tsx --test server/src/api.test.ts            → 56/56 pass
+npm test  (full repo suite: server + web, current HEAD)    → 334/334 pass
+npx tsc --noEmit                                            → 0 errors
+```
+
+The full-suite count rose from **331/331** (prior wave, HEAD `b5b4fb4`) to **334/334** here —
+net +3, which reconciles exactly: `5ba1bbf` deleted the one old blanket agency test and added
+four new seam tests (`'DEMO MODE reads the static schedule...'`, `'a DEMO instance still finds
+the stops...'`, `'the ghost feed keeps its headsigns...'`, `'LIVE mode binds one agency...'`),
+a net of +3 in `server/src/api.test.ts`. No other `.test.ts` file changed test count in this
+batch (confirmed: `search.test.ts` 19/19, `plan.test.ts` 18/18, `ghost_copy.test.ts` 5/5, `api.test.ts`
+(client) 17/17 all match the prior wave's counts exactly, because none of those four files were
+touched).
+
+## Final per-check verdicts
+
+1. **Attribution contract** — **GREEN**, unchanged (17/17).
+2. **Verbatim wording rules** — **GREEN**. The transfer fine-print's "below" claim is now true
+   by construction (render order fixed, `PlanView.tsx:368-388`), not just true by luck.
+3. **Search spec (v4)** — **GREEN** (19/19). The dead-✕ fix (RED-1) removed a second instance of
+   the exact false-affordance defect class this section's own header names.
+4. **Plan spec** — **GREEN** (18/18). Deep-link construction untouched; the fine-print/link
+   ordering now matches in all three locales; the stale-geometry-on-error fix is verified by
+   screenshot evidence rather than a unit test, consistent with how this component has always
+   been tested.
+5. **i18n parity** — **GREEN** (`tsc` clean). frCA accents from `6803c2c` intact; the batch's own
+   four-line apostrophe normalization is internally consistent; one unrelated, pre-existing
+   straight apostrophe (`frCA.ts:6`, dating to the file's first commit) is out of scope for this
+   claim and noted rather than silently absorbed either way.
+6. **Rate-limit documentation** — **PARTIAL / RED on completeness**. The 600/60/120 figures are
+   still exact. The batch's new `/api`-only scoping, routed-path gating, and unmatched-route
+   policy have zero documentation in `DECISIONS.md` — nothing to check the claim against.
+
+## Summary of RED items
+
+**Two, both documentation gaps rather than code defects, and both the same root cause: the
+four-commit batch shipped real, correct code fixes without a matching DECISIONS.md update.**
+
+- **DECISIONS §45 §7** (`DECISIONS.md:3945-3951`) still states, unqualified, that `AGENCY` comes
+  from `poller.getMode().agency` — a claim that was superseded by `5ba1bbf`'s
+  `staticAgency`/`modeAgency` split and is now materially incomplete. The code's own comment at
+  the split candidly calls the superseded approach "the fix that overshot, caught by testers"
+  (`server/src/api.ts:382`); DECISIONS.md carries no equivalent acknowledgment, no amendment, and
+  no new section. This is the task's own framing turned around: the brief asked to verify "the
+  new docs acknowledge the overshoot" — there are no new docs to check, and that absence is
+  itself the finding.
+- **Rate-limit documentation** does not mention the `/api`-only scoping, the routed-path-vs-
+  `req.url` distinction, or the unmatched-route fallback policy `5ba1bbf` introduced
+  (`server/src/api.ts:571-617`) — all three are real, all three are correctly implemented, and
+  none of them has a DECISIONS entry. Also flagged in passing (not adjudicated, outside T3's
+  lens): no automated test pins this fix either — its only verification is the commit message's
+  manual curl-loop claim.
+
+Neither finding is a claim that the CODE is wrong — the seam split, the seam test, the fine-print
+reorder, and the `--ours-text` fix were all independently re-verified against the actual source
+and actual test runs above and hold up. Both REDs are that the project's own DECISIONS.md, the
+document T3 exists to check code against, was not kept current by this batch.
+
+## Everything above: file:line citations inline, six tests actually run (not just read), 334/334 full-suite pass.
+
+### Orchestrator adjudication (2026-07-26, on merge)
+
+Merged out of chronological order: this run predates the t3-docs-recheck entry above,
+but its two non-greens routed straight into the fix pipeline before the draft itself
+was merged. Recording it now for completeness of the ledger.
+
+1. **Five of six checks GREEN at da046b9** — attribution contract, agency seam,
+   plan-geometry state machine, Critic-fix spec fidelity, and figures all verified
+   against source at the pinned commit.
+2. **The RED (§45 §7's stale claim, uncorrected) and the PARTIAL (limiter rescope
+   undocumented) are both CLOSED** by the docs chain this run triggered: §48
+   (ead4551), the §45 §7 marker (7b3373e), then — after the t3-docs-recheck found
+   §48's own defect and its successor's — §49 (e1b9fd4) and §50 (ebd217f). Final
+   state verified by the t3-docs-recheck entry above: both original REDs closed,
+   nothing regressed.
+
+---
+
+# DESIGN CRITIC — RERUN at HEAD `da046b9`
+### the six REDs re-verified at their exact selectors · the BLOCKED demo surface photographed at last
+
+Role per `VERIFICATION.md` §3. Authority: `ghostbus-design-reference.png`. Acceptance criteria:
+`DESIGN-TARGET.md` §D (zero-overlap law), §F (the probe), the Apple/Transit rules (4pt scale, one
+accent per state, ≤2 type sizes per card, 44px touch targets), and `DECISIONS.md` §45.
+
+Fixes under review: `5ea35f3`, `5ba1bbf`, `d8ba413`, `bba517f`.
+
+**Artifacts:** `screenshots/critic-rerun/` — 96 full screenshots, `crops/` (345 element crops at
+**3× device pixels**), `zoom/` (3 magnified comparisons), and 9 machine-readable result files
+(`main-`, `nearby-`, `coverage-`, `storm-`, `down-desktop-`, `down-mobile-`, `demo-`, `apidown-`,
+`red3-backdrop.json`). Harness: `.data/critic_dcr.cjs`, `.data/dcr_red3.cjs`,
+`.data/dcr_apidown.cjs`, `.data/dcr_canvascheck.cjs`, `.data/dcr_zoom.cjs` (throwaway,
+gitignored). Logs: `.data/dcr_{main,nearby,coverage,storm,down_desktop,down_mobile,apidown}.log`.
+
+---
+
+## VERDICTS
+
+| surface | wave 1 | HEAD | crop caption |
+|---|---|---|---|
+| **Search sheet** | RED ×3 | **matches reference** | `crops/search-desktop-dark-en-bar.png`, `crops/search-mobile-dark-frCA-chip.png`, `zoom/AFTER-route-band.png` |
+| **Plan — ride** | 3 MINOR | **matches reference** | `crops/planride-mobile-dark-frCA-evidence.png` |
+| **Plan — transfer refusal** | RED ×1, 1 MINOR | **matches reference** | `crops/plantransfer-desktop-dark-en-card.png` |
+| **Attribution — catching up / server-down** | RED ×3, 3 MINOR | **matches reference** | `crops/catchingup-desktop-dark-frCA-pill.png`, `crops/catchingup-mobile-dark-frCA-banner.png` |
+| **Out-of-coverage** | 4 MINOR | **matches reference** | `crops/coverage-desktop-light-frCA-card.png` |
+| **DEMO badge + banner** | **BLOCKED — unrenderable** | **UNBLOCKED · matches reference** | `crops/demo-desktop-dark-en-banner.png`, `demo-mobile-light-frCA.png` |
+| **`empty.apiDown*` state card** | never captured | **matches reference** (first capture) | `crops/apidown-desktop-dark-frCA-card.png` |
+| **Reload during a throttle** (wave-1 RED-7) | raw JSON, no app | **serves the app, 8/8** | `reload-during-throttle-*.png` |
+
+**Zero open REDs. No new RED filed.** Six non-blocking observations are recorded at the end,
+two of which are corrections to my own wave-1 report.
+
+---
+
+## METHOD — what was actually run
+
+| item | value |
+|---|---|
+| build | production `dist/` built at HEAD; asserted **no file under `web/src` or `shared` is newer than `dist/index.html`** (newest source 19:17:50Z, `dist/index.html` 19:42:30Z) |
+| server | `node --import tsx server/src/server.ts` on **port 8813** — never 8799 (another session's server holds it; confirmed LISTENING under pid 31000 and left alone) |
+| database | `DATABASE_URL=` forced empty → PGlite on a **throwaway dir `.data/pglite-dcr`**, copied from the idle `.data/pglite-dc`. `dbDriver: pglite`, board `20260726..20260905`, live feeds real (cycle 1: vehicles=1337, tripUpdates=1650, alerts=38) |
+| demo instance | a **second** server, `GHOSTBUS_DEMO=1`, port **8814**, its own throwaway dir `.data/pglite-dcr-demo` (PGlite is single-writer — the live dir was never shared) |
+| browser | real Chrome via Playwright, headless, **`deviceScaleFactor: 3`** |
+| render assert | every context asserted `bodyTextLen > 200` **and** a real `.stop-name`/`.state-title` before any probe ran |
+| combinations | 8 per surface: {1280×800, 390×844} × {light, dark} × {en, fr-CA} |
+| 429 storm | **real**: 111 510 requests, **110 362 answered 429**, `retryAfterSec: 43`; 8/8 contexts captured **while still in the state** |
+| server-down | server genuinely stopped (`curl` code 000 confirmed before the shots), run in two batches of four |
+| DEMO | `health.mode: "demo"`, fixture `ttc-demo-20260726-1040.json.gz`; the recorded notice is **rendered** — in the banner text and the pill's `aria-label`, both captured — but it is **not** on the health payload (`wire.demoNotice` is `null` in all 8) |
+
+### Instrument corrections made DURING this pass — stated, not hidden
+
+1. **Wave 1's `.dep-row` selector matched nothing.** `DepartureRow.tsx:95` renders `.dep-card`.
+   Wave 1's `.dep-row` measurement read `null` in every context and was never a real number —
+   my own defect, inherited into this harness and corrected here. The board is re-shot at its
+   real selector in a dedicated `nearby` mode (`crops/board-*`).
+2. **Visible-element selection.** `querySelector('.status-pill')` on a phone returns the HIDDEN
+   desktop copy, which is why **wave 1's four mobile pill widths all read `0px`**. `vis()` now
+   walks to the first painted element, so the mobile numbers below are real (109 / 152.2px).
+3. **A containment probe was added.** §F is pairwise and skips ancestor/descendant pairs, so it
+   is blind to a child overflowing its own parent — precisely RED-2. `trueOverlaps: 0` is not
+   "nothing is out of its box", so RED-2 is verified by direct measurement instead.
+4. **RED-3 is measured, not argued — and it has a control.** A code review of my harness caught
+   that hiding `.maplibregl-canvas` cannot distinguish "opaque glass" from "no map ever
+   mounted" (`MapCard` is lazy). So canvas existence is now asserted (1 canvas, 960×740, sheet
+   covering it **100%**), and the sheet's rect is photographed **three** ways: over the live
+   map, with the map hidden, and with the sheet closed. The third is the control — it proves
+   there was a red route there to read through.
+5. **A backtick inside a template literal aborted two modes.** My `.dep-card` comment was placed
+   inside `STATE_PROBE`, which is itself a template literal; the backticks terminated the string
+   and `coverage` + `nearby` both died at load with `ReferenceError: card is not defined`. Fixed
+   and both modes re-run clean.
+6. **Chrome died twice holding eight concurrent WebGL contexts.** The first `demo` run lost six
+   of eight contexts and wrote no results at all; the first `down` run lost the eighth. Added
+   per-case recovery with browser relaunch, incremental result writes, and a batch filter, then
+   re-ran. **All eight contexts are present for every surface reported below.**
+
+### Caveats that limit what these numbers prove
+
+* The **truncation guard is more permissive than it looks**: `textOverflow` computes to `clip`
+  on every element, so the test effectively reduces to `scrollWidth > clientWidth`. It over-
+  reports rather than under-reports, which makes `truncatedNodes: 0` a strong result but means
+  a non-zero reading would have needed interpretation. It never went non-zero.
+* The **clip probe ignores `visibility: hidden`**, so with a modal open it could in principle
+  report hits for content behind `:root[data-modal]`. It can only ADD hits, never hide them;
+  it returned 0 everywhere, so nothing is masked by this.
+* The **backdrop differential under-reports slightly**: the map-hidden frame falls back to
+  `.map-card`'s own base colour rather than a neutral, so the measured delta is a floor. The
+  control frame (sheet closed) is what carries the verdict.
+* `hue()` reports HSV saturation beside HSL lightness (mislabelled) and ignores alpha. Ignoring
+  alpha is **valid here**: a computed `rgba(52,120,246,0.16)` carries the unpremultiplied base,
+  so its hue is directly comparable to an opaque text colour. Only `l` is uninformative.
+* **Server stops used `taskkill /F`.** `VERIFICATION.md` names hard-killing a PGlite holder as a
+  trap. The dirs killed were my own throwaways (`.data/pglite-dcr`, `.data/pglite-dcr-demo`);
+  `.data/pglite-dcr` **rebooted clean** immediately afterwards (migrations ran, board restored,
+  live feeds resumed), so nothing was corrupted. Recorded because the rule exists.
+
+---
+
+## §F OVERLAP PROBE — every state × 8
+
+| surface | combos | `trueOverlaps` | `hScroll` | §D5 `clipHits` | clipped descenders |
+|---|---|---|---|---|---|
+| nearby (baseline) | 8 | **0** | false | 0 | 0 |
+| search sheet, real results | 8 | **0** | false | 0 | 0 |
+| plan — ride | 8 | **0** | false | 0 | 0 |
+| plan — transfer refusal | 8 | **0** | false | 0 | 0 |
+| catching up (real 429 storm) | 8 | **0** | false | 0 | 0 |
+| **reload during throttle** (new) | 8 | **0** | false | 0 | 0 |
+| server-down | 8 | **0** | false | 0 | 0 |
+| out-of-coverage | 8 | **0** | false | 0 | 0 |
+| DEMO board (new) | 8 | **0** | false | 0 | 0 |
+| DEMO search sheet (new) | 8 | **0** | false | 0 | 0 |
+| **`empty.apiDown*` card** (new) | 8 | **0** | false | n/a | n/a |
+
+**88 measured contexts across 11 states. `trueOverlaps: 0`, `hScroll: false`, zero clipped boxes,
+zero amputated glyphs — everywhere.** Confirmed by eye on the 3× crops: `Rattrapage en cours`
+(g, p), `GhostBus rattrape son retard` (p, y), `redémarre`/`réessaie`/`occupé` (é, p, q),
+`Replaying` (p, y, g), `naviguer` (g), `DÉMO` (É). Every tail and accent fully rendered.
+
+The new `mask-image` fade on `.search-results` (M3) is **not** a clip: it feathers alpha, it does
+not change `scrollHeight`/`clientHeight` and it amputates no ink. Recorded so it is not misread
+as a regression here.
+
+---
+
+# THE SIX REDs — verified at their exact selectors
+
+## RED-1 ✅ — a single static magnifier, and the dead ✕ is gone
+**Selector:** `.search-glyphs` · **8/8 combinations** · **Crop: `crops/search-desktop-dark-en-bar.png` — matches reference**
+
+| measurement | wave 1 | HEAD |
+|---|---|---|
+| `svg` count inside `.search-glyphs` | 2 (magnifier + `CloseIcon`) | **1** |
+| cross-fade spans (`.search-glyph`/`.glyph-on`/`.glyph-off`) | 2 | **0** |
+| rendered geometry | crossed lines when `q` non-empty | **`circle,path`** — a magnifier, with `king` in the field |
+
+Read as geometry rather than as a class name: with text in the field the glyph is still a circle
+plus a handle. The `.search-glyph`/`.glyph-on`/`.glyph-off` rules are deleted from `app.css` and
+`CloseIcon` is no longer imported by `SearchSheet.tsx`.
+
+The builder chose the second of the two diffs I offered — keep the magnifier, delete the
+`CloseIcon` branch — and its reason is the right one: promoting the span to a button would have
+shipped **two** clear affordances for one action, and the named `Clear` button already has an
+accessible name and a verified focus contract. The sheet now has exactly one clear control, and
+it says what it is.
+
+## RED-2 ✅ — the chip is a pill again, contained on every mobile combination
+**Selector:** `.search-chip` inside `.search-row` · **8/8** · **Crop: `crops/search-mobile-dark-frCA-chip.png` — matches reference**
+
+Measured by a containment probe walking every `.search-row` descendant against its row's border
+box (§F cannot see this class of defect at all):
+
+| viewport / locale | row border box | chip width | `flex` | overhang past row's right border |
+|---|---|---|---|---|
+| 390px en (wave 1) | 358 px | 334 px | `1 0 100%` | **+34.0 px — escaped** |
+| **390px en (HEAD)** | 358 px | **162.6 px** | **`0 0 auto`** | **−137.4 px (inside)** |
+| **390px fr-CA (HEAD)** | 358 px | **147.2 px** | **`0 0 auto`** | **−152.8 px (inside)** |
+| 1280px en / fr-CA (HEAD) | 528 px | 162.6 / 147.2 px | `0 0 auto` | −12.0 px (inside) |
+
+**Total escaping descendants across all 8 contexts and every row measured: 0.** The probe is
+demonstrably sensitive to the original defect — it reports `overRight` directly — so this is a
+measured zero, not a blind one.
+
+Both halves of the complaint are answered: the chip no longer leaves its parent's surface, and
+it no longer draws a 334px bar around ~120px of content. It now hugs its content at exactly the
+desktop width, indented to the text column, as the phone rule intended.
+
+## RED-3 ✅ — the dark sheet is a pane; the map no longer reads through
+**Selector:** `.search-sheet` / `--glass` · **8/8** · **Crops: `zoom/BEFORE-route-band.png` vs `zoom/AFTER-route-band.png` — matches reference**
+
+`--glass` dark is `rgba(31, 34, 48, 0.88)` (was `0.70`); light unchanged at `0.78`.
+
+The control first — **there was something to read through.** With the sheet CLOSED, the exact
+rect the sheet occupies contains:
+
+| context | distinct colours behind the sheet | strong-red pixels (the 504 stroke) |
+|---|---|---|
+| desktop-dark-en | 557 | **49 560** |
+| desktop-dark-frCA | 544 | **49 801** |
+| desktop-light-en | 520 | **52 790** |
+| mobile-dark-en | 542 | **44 386** |
+
+With the sheet OPEN, over that same live map:
+
+| context | distinct colours | strong-red px | high-chroma px | mean Δ vs map-hidden | % of px Δ>16 | % Δ>32 |
+|---|---|---|---|---|---|---|
+| desktop-dark-en | 129 | **0** | 14 325 | 2.31 | **0.00** | 0.00 |
+| desktop-dark-frCA | 129 | **0** | 14 329 | 2.32 | **0.00** | 0.00 |
+| desktop-light-en | 124 | **0** | 14 301 | 3.51 | 0.75 | 0.00 |
+| desktop-light-frCA | 123 | **0** | 14 305 | 3.53 | 0.82 | 0.00 |
+| mobile-dark-en | 116 | **0** | 14 310 | **0.00** | 0.00 | 0.00 |
+| mobile-light-frCA | 100 | **0** | 14 286 | **0.00** | 0.00 | 0.00 |
+
+The decisive number is the third column against the fourth: **high-chroma pixels inside the open
+sheet are identical to the map-hidden frame** (14 325 = 14 325). Every remaining colour in the
+sheet is the sheet's own UI — route badges, the purple active row — and none of it is map. In
+dark, **fewer than 0.005 % of pixels** differ from the no-map frame by more than 16/255 (largest
+single-pixel delta **46**). On mobile the sheet is fully opaque and the delta is exactly **0**
+(`maxDelta: 0`).
+
+By eye at 2× (`zoom/`): wave 1's red 504 stroke ran as a legible salmon band straight across
+"Bathurst St at King St West", with the map's stop card, its purple tile and the `504` badge all
+readable behind rows 3–5. At HEAD the same band is a faint tonal seam with no colour identity,
+and the buildings are gone — distinct colours in that band drop 188 → 104.
+
+## RED-4 ✅ — the disclosure now comes before the link it describes
+**Selector:** `.plan-fineprint` vs `.plan-maps` · **8/8** · **Crop: `crops/plantransfer-desktop-dark-en-card.png` — matches reference**
+
+| measurement | wave 1 | HEAD |
+|---|---|---|
+| DOM order | link, then fine print | **fine print, then link** (8/8) |
+| geometry | fine print below the link | **`fineTop 452.2` < `linkTop 524.0`** — fine print above (8/8) |
+
+The rendered order is now warning-free glyph → title → body → *"The link below opens your maps
+app with the destination only. Your own position never leaves this device."* → **`Open in a maps
+app`**. The builder took the better of the two diffs: it moved the element rather than rewording,
+so a privacy disclosure is read before the action rather than after the rider has already tapped
+it.
+
+**Locale scope, stated precisely.** The 8 combinations are 2 viewports × 2 themes × {en, fr-CA},
+so the sentence was **photographed in two locales**, not three. The reorder is structural in
+`PlanView.tsx` rather than per-locale, and the Spanish string is correct at source
+(`es.ts:410`, *"El enlace de abajo abre tu app de mapas solo con el destino…"*) — but `es` is
+**verified by reading the source, not by a screenshot.**
+
+## RED-5 ✅ — catching-up is one colour family
+**Selectors:** `.sp-catchup`, `.feed-banner-ours` · **8/8 of the 429 storm AND 8/8 of server-down** · **Crops: `crops/catchingup-desktop-dark-frCA-pill.png`, `crops/catchingup-mobile-dark-frCA-banner.png` — matches reference**
+
+New token `--ours-text` (dark `#6aa2ff`, light `#1f5fd0`) replaces `--accent`.
+
+| | fill | text | fill hue | text hue | one family? |
+|---|---|---|---|---|---|
+| wave 1, dark | `rgba(52,120,246,.16)` | `rgb(177,104,224)` purple | 219° | **277°** | ❌ |
+| wave 1, light | `rgba(52,120,246,.16)` | `rgb(123,47,158)` purple | 219° | **281°** | ❌ |
+| **HEAD, dark** | `rgba(52,120,246,.16)` | **`rgb(106,162,255)`** | 219° | **217°** | ✅ |
+| **HEAD, light** | `rgba(52,120,246,.16)` | **`rgb(31,95,208)`** | 219° | **218°** | ✅ |
+
+A 1–2° hue delta between fill and text, in all 8 combinations of both states. The banner's
+`WarningIcon` measures the same colour as its text (`currentColor`), so the glyph moved with it.
+The blue fill was kept and the purple text replaced — which is the correct half to change:
+`DECISIONS.md` §45 makes blue the informational family, and amber and red stay reserved. The
+brand purple is now back to meaning only the brand.
+
+## RED-6 ✅ — the pill is a chip again, and nothing truncates
+**Selector:** `.status-pill` · **8/8 of both states** · **Crop: `crops/catchingup-desktop-dark-frCA-pill.png` — matches reference**
+
+`inlineDetail` is now `kind === 'stale'` only (`Primitives.tsx`). Measured at the **visible**
+pill, which wave 1 could not do:
+
+| context | wave 1 | HEAD | % of window | inline detail | truncated nodes |
+|---|---|---|---|---|---|
+| desktop en | 366.4 px | **111.0 px** | 8.7 % | false | **0** |
+| desktop fr-CA | 384.0 px | **154.2 px** | 12.0 % | false | **0** |
+| mobile en | *(read 0 — hidden twin)* | **109.0 px** | 27.9 % | false | **0** |
+| mobile fr-CA | *(read 0 — hidden twin)* | **152.2 px** | 39.0 % | false | **0** |
+
+The fr-CA mid-word `nouvelle te…` is gone. The pill no longer re-proportions the chrome: against
+its own Live state it is **1.77–1.81×**, which is simply the length of "Catching up" /
+"Rattrapage en cours" versus "Live" / "En direct" — not 4.3×. The sentence is no longer printed
+twice on one screen: it lives once, in full, in the banner, and the pill's `aria-label` still
+carries it (`"Catching up — GhostBus is catching up — retrying automatically"`), so nothing is
+lost to assistive tech.
+
+---
+
+# THE BLOCKED SURFACE — now photographed
+
+## DEMO badge, banner and provenance line ✅ — matches reference
+**8/8** · **Crops: `crops/demo-desktop-dark-en-banner.png`, `crops/demo-desktop-light-en-banner.png`, full: `demo-mobile-light-frCA.png`**
+
+Wave 1 could not render this at all: `AGENCY` bound the static schedule to `'ttc-demo'`, so every
+static query returned nothing and all 8 contexts showed the out-of-coverage card. `5ba1bbf` split
+`staticAgency` from `modeAgency`. On the wire from the demo instance:
+
+| | wave 1 | HEAD |
+|---|---|---|
+| `/api/stops/nearby` at King & Spadina | `count: 0` | **29 stops**, nearest `15647` at 225 m |
+| `/api/stops?q=king` | `count: 0` | real results |
+| rendered board | out-of-coverage card | **King St West at Spadina Ave West Side**, 1 real 504 departure |
+| `.demo-badge` | `null` | **`DEMO` / `DÉMO`** (8/8) |
+| `.feed-banner-demo` | `null` | **present** (8/8) |
+
+The **§45(c) provenance line is stated first**, above the board, exactly as the contract requires:
+*"Replaying a recorded slice of real TTC data. Nothing here is live."* / *"Rejoue une tranche
+enregistrée de vraies données TTC. Rien ici n'est en direct."*
+
+Design verdict on the surface itself: **one amber family throughout** — badge fill, banner tint
+and pill all from the same hue, with the badge a solid chip against a 0.16 wash so it reads as a
+label rather than a status. The badge is top-aligned to line 1 of the two-line message (M13's
+treatment). `DÉMO`'s É renders in full. The demo instance also passes §F on both its board and
+its search sheet. **The false statement wave 1 caught — telling a rider standing at King &
+Spadina that there are no stops within 800 m — is gone.**
+
+## `empty.apiDown*` state card ✅ — first capture, matches reference
+**8/8** · **Crop: `crops/apidown-desktop-dark-frCA-card.png`**
+
+Wave 1 listed this as something the next loop must re-shoot, and it was right about why it could
+not: RED-7 meant a cold load during a throttle never reached the app. Worth stating plainly —
+**a fully-dead server does not reach it either.** With nothing serving the shell, Chrome shows
+its own error page (measured: `title=null`, empty body, all four desktop contexts). The state's
+real precondition is *shell loads, API does not*, so it was isolated by aborting `**/api/**` at
+the browser against a healthy server.
+
+Rendered, all 8: title *"GhostBus is catching up"* / *"GhostBus rattrape son retard"*; body
+*"Our own server is busy or restarting… this is us, not the TTC."*; fine print *"Retrying…"*.
+The card carries `state-card state-down` — the **amber** tone, correct under M8's new `tone`
+split, because an unreachable planner is a genuine fault rather than a normal answer. §F zero,
+no horizontal scroll.
+
+**The fr-CA accents wave 1 flagged from source are restored and now verified on screen:**
+`occupé`, `redémarre`, `récent à afficher`, `réessaie`, and in the sibling string `a demandé`,
+`lui-même` — plus typographic apostrophes (`n’y`). A grep for unaccented French across the whole
+of `frCA.ts` returns one hit, `{{recent}}`, which is an interpolation placeholder, not prose.
+
+## Reload during a throttle (wave-1 RED-7) ✅ — the app is served
+**8/8** · **`reload-during-throttle-*.png`**
+
+Against a real 110 362-response 429 storm, navigating to `/` returns:
+
+| | wave 1 | HEAD |
+|---|---|---|
+| document | raw JSON `{"statusCode":429,…}` | **the app** |
+| `document.title` | `null` (all 4 attempted) | **"GhostBus — the schedule is a promise"** (8/8) |
+| `body.innerText.length` | *(a JSON viewer)* | **421 – 734** (8/8) |
+
+**Two** contexts painted a *"GhostBus is catching up"* card — `desktop-dark-en` from the throttle,
+and `desktop-light-en` via the apiDown path (its body is the "Our own server is busy or
+restarting…" variant rather than the 429 one). The other six had recovered to Live by then.
+Either way the shell loaded, which was the whole defect. `"catchupPill"` occurs **10×** in
+`storm-results.json` — the 8 storm contexts plus exactly these 2 reload contexts.
+
+One wrinkle, stated so a reader who greps that context does not find an apparent contradiction:
+**`reload-desktop-light-en`'s pill flipped between probes.** Its `state` block reads
+`pill: "Live"` / `sp-live`, while the `tap`, `red5` and `red6` blocks captured moments later in
+the same context read `sp-catchup`, `"Catching up"`, 111 px. Both readings are in the file and
+both are real — the pill lagged the state card, which had already painted the catching-up copy
+while the pill still showed Live.
+
+The builder's gating on the **routed** path rather than `req.url` is the stronger fix — it closes
+the `/%61pi/stops` decode bypass at the same time.
+
+---
+
+## THE MINORS — 13 taken, 2 skipped
+
+Measured before/after, wave-1 artifacts against HEAD:
+
+| minor | wave 1 | HEAD | verdict |
+|---|---|---|---|
+| M2 `.search-clear` min-height | 36 px | **44 px** | ✅ |
+| M2 `.search-clear` padding | `7px 13px` | **`10px 16px`** | ✅ |
+| M2 `.search-close` box @390px | 57.2 × **36** | 63.2 × **44** | ✅ |
+| M3 scroll edge fade | none, last row guillotined | **mask-image, last 24 px feathered** | ✅ (by eye, `search-mobile-dark-frCA.png`) |
+| M4 `.search-rows` / `.search-text` gap | 2 px | **4 px (`--s1`)** | ✅ |
+| M5 grade chip stranded above its caption | yes | **on line 1, sentence wraps under itself** | ✅ (crop pair below) |
+| M6 `.evidence-chip` font | 11.5 px | **12.5 px** = `.plan-leg-sub` | ✅ two sizes |
+| M7 clock split from meridiem | possible | **`fmtClock` emits NBSP** for every caller | ✅ at source |
+| M8 brand-purple warning triangle on a refusal | yes | **route glyph, neutral tone; faults get amber `state-down`** | ✅ |
+| M9 coverage buttons | desktop: 232.3 / 175 (en), 248 / 206.3 (fr) | desktop **248 / 248**, mobile **318 / 318** — both locales in each case | ✅ equal *width* |
+| M10 uniform 8 px, no grouping | yes | **grouped** (`margin-top` on first `.btn` and `.state-fine`) | ✅ |
+| M11 `.state-fine` third size | 12.5 px | **14 px** = `.state-body` | ✅ two sizes |
+| M13 banner glyph centred against 2 lines | `center` | **`flex-start` + `margin-top: 2px`** | ✅ |
+| M14 `.feed-banner` padding | `9px 16px` | **`8px 16px`** | ✅ on scale |
+| M15 `.status-pill` padding | `6px 13px` | **`6px 12px`** = `.pill` | ✅ |
+
+M5 is the clearest of them: `crops/planride-mobile-dark-frCA-evidence.png` (HEAD) against
+`../critic/crops/planride-mobile-dark-frCA-evidence.png` (wave 1) — the 26px `—` chip sat alone
+on line 1 with the whole sentence pushed to line 2; it now shares line 1 and the sentence wraps
+beneath itself.
+
+One qualifier on M9, so "equal" is not read as "identical box": the minor asked for equal
+**width** and got it, but the two buttons are not equal **height** in fr-CA desktop —
+`.btn-primary` is `[248, 52]` against `.btn-quiet`'s `[248, 44]`, because the primary's label
+wraps to two lines (`crops/coverage-desktop-light-frCA-card.png`). Wave 1 measured the same 52px
+there, so this is unchanged behaviour and not a regression.
+
+### The skips — both defensible, but the tally is wrong
+
+**M1 (stop direction in search rows) — defensible.** I verified the claim rather than taking it:
+`/api/stops` and `/api/stops/nearby` both return `{stopId, name, lat, lon, wheelchairBoarding,
+distanceM}` and carry no direction field. The direction the stop header prints comes from
+`/api/stops/:id/arrivals` (`directionLabel`), a different endpoint — so surfacing it in search
+really is an endpoint change, not a CSS one. I flagged the same caveat myself. **The honest list
+ships.**
+
+**M12 (visual weight on "Browse downtown" over "Check my location again") — defensible.** I
+raised it explicitly as a hierarchy *question*, not a defect, and the builder answered it with a
+coherent product rationale: the primary is the action that always produces a working board,
+while re-locating usually returns the same answer, and filling the button that mostly changes
+nothing would be the worse promise. That reasoning is sound and it is the builder's call to make.
+
+**The bookkeeping is inaccurate, in the generous direction.** `5ea35f3` claims "MINORS TAKEN (11
+of 15)" and "MINORS SKIPPED (4)", then names **13** taken (M2, M3, M4, M5, M6, M7, M8, M9, M10,
+M11, M13, M14, M15) and only **2** skipped (M1, M12). 13 + 2 = 15. Its third skip bullet —
+*"M1's sibling concerns and the remaining two are cosmetic-only and did not survive triage
+against the deadline"* — describes minors that do not exist as unaddressed; every numbered minor
+is accounted for. I verified all 13 independently (11 by measurement, M3 and M8 by crop). **The
+work is complete; the summary of it undercounts itself and should be corrected rather than
+trusted as written.**
+
+---
+
+## Evidence gaps — figures in this report with no stored artifact
+
+These are **gaps, not corrections**: nothing below is contradicted by the data, but none of it is
+reproducible from the artifact set, because the scripts that produced it printed to console and
+wrote no log or JSON. Declared so no reader mistakes a console figure for a stored measurement.
+`VERIFICATION.md` is explicit that a green needs an artifact at a path — so where a number has no
+path, it carries no verdict here.
+
+* **G1 · The canvas-existence assertion** (METHOD instrument correction 4: *1 canvas, 960×740,
+  sheet covering it 100 %*). `.data/dcr_canvascheck.cjs` emits exactly these fields, but it wrote
+  no log and no JSON — `960`, `740` and `pctOfSheetOverMap` appear in **no stored file**. This is
+  the control that rules out "the map never mounted" as an explanation for clean glass, so it is
+  the gap worth closing if anyone re-runs. **RED-3's verdict does not rest on it:**
+  `red3-backdrop.json`'s three-frame control — and specifically the sheet-closed frame recording
+  ~49 600 strong-red pixels behind the sheet — carries the finding on its own, from stored data.
+* **G2 · The zoom band figure** (RED-3: *distinct colours in that band drop 188 → 104*).
+  `.data/dcr_zoom.cjs` produced only the three PNGs in `zoom/`; neither 188 nor 104 is in any
+  stored file. The before/after **images** support the qualitative claim and are stored; only the
+  two numbers are unbacked. Read that sentence as an eye comparison, not a measurement.
+* **G3 · N4's "13px" glyph size.** `glyphFill: "none"` and `glyphColor === color` are both stored
+  and carry the actual correction; the size was not measured. Cosmetic, non-blocking.
+* **G4 · Process hygiene, not design findings.** The build-freshness timestamps (newest source
+  `19:17:50Z` vs `dist/index.html` `19:42:30Z`) and the "8799 held by pid 31000, left alone"
+  observation are console-only. Both are contract compliance rather than evidence for a verdict.
+
+Scope note: the apiDown paragraph says "all four desktop contexts" for the dead-server cold load.
+**Eight** were captured (4 desktop + 4 mobile), all with `bodyLen: 0` and `title=null` — the
+statement understates its own evidence rather than over-claiming.
+
+---
+
+## Non-blocking observations
+
+* **N1 · The fine print is now the same size as body copy.** `.state-fine` at 14px equals
+  `.state-body` at 14px, distinguished by colour alone, so on the transfer-refusal card the
+  privacy disclosure reads as a second body paragraph rather than as fine print. This is the
+  direct consequence of **my own M11**, which asked for the third size to go; the card is
+  compliant with the ≤2-sizes rule and I am not going to file a RED against the fix I requested.
+  Recorded so the trade-off is visible: if the disclosure needs to read as subordinate, weight or
+  leading is the lever now, not size.
+* **N2 · Light is now the more transparent of the two glass surfaces** (0.78 vs dark's 0.88). At
+  2× (`zoom/AFTER-light-route-band.png`) a faint pink band from the route survives where dark
+  shows almost nothing; strong-red pixels are still **0** and nothing legible carries through, and
+  this is the value I passed in wave 1. Not a defect — but the two themes are no longer
+  symmetric, and light is the one to watch if the map's palette ever gets more saturated.
+* **N3 · The mobile fr-CA catching-up pill is 39 % of a 390px window** (152.2px). Nothing
+  truncates and the ratio against its own Live state is 1.78×, so this is string length, not the
+  chrome re-proportioning — but it is the widest the pill gets anywhere and worth knowing.
+* **N4 · Correcting my own wave-1 wording on the DEMO pill glyph.** I wrote that the signal glyph
+  was "near-invisible in dark mode, amber-on-amber". Measured, the glyph is
+  `rgb(255,176,32)` — **identical** to its label. What differs is stroke weight: a 13px stroked
+  icon beside 700-weight letterforms. The description was wrong; the observation (it reads
+  weaker than the label) stands, and it is cosmetic.
+* **N5 · Pre-existing, unchanged, not this builder's surfaces.** The mobile map is still
+  full-bleed with square top corners rather than the reference's inset card, and the map
+  attribution box still sits over map content (§F "what still needs fixing" item 3).
+* **N6 · Wave 1's `.dep-row` crops never existed.** Any downstream reader of
+  `screenshots/critic/` should know that the board was never element-cropped in wave 1 — the
+  selector matched nothing. `screenshots/critic-rerun/crops/board-*` is the first real set.
+
+---
+
+## What a next loop would still need to shoot
+
+Nothing is outstanding from wave 1: every RED, the BLOCKED surface, the `empty.apiDown*` card and
+the RED-7 reload path are all captured and green. The open items are N5 (pre-existing map
+chrome, someone else's surface) and, if anyone wants it, a by-eye pass on map **label**
+collisions, which §F excludes by construction and which no probe in either wave has covered.
+
+### Orchestrator adjudication (2026-07-26, on merge)
+
+Merged after a full citation review (verdict MERGE-WITH-CORRECTIONS: every headline
+number that exists in a stored result file matched exactly to the decimal, including
+the wave-1 baselines; ten crops opened and confirmed; §F independently re-swept — 104
+probe blocks across the 9 result JSONs, zero non-zero readings, 88 mapping to the 11
+named states) and after all five corrections plus the evidence-gaps disclosure were
+applied and self-re-verified by the Critic against the actual files.
+
+1. **All six Critic REDs verified fixed at their exact selectors; zero new REDs; the
+   demo surface is unblocked** (29 real stops at King & Spadina, badge + banner +
+   provenance line). Every features surface carries a crop captioned "matches
+   reference."
+2. **Commit-message erratum, recorded here rather than by rewriting history:**
+   5ea35f3's message says "11 of 15 minors taken, 4 skipped"; the message itself
+   names 13 taken and 2 skipped (M1, M12), 13+2=15 — confirmed independently by the
+   citation reviewer. The work verified; both real skips are defensible (M1: the
+   endpoint genuinely carries no direction field; M12 was raised as a question).
+   The tally in the commit message is wrong in the builder's favor and stays wrong
+   in git; this note is the correction of record.
+3. **Wave-1 Critic entry corrections of record:** wave 1's `.dep-row` board
+   measurements were null (selector never matched; the real class is `.dep-card`),
+   its four mobile pill widths read a hidden desktop twin (0px), and its
+   "amber-on-amber near-invisible" DEMO-glyph wording overstated (same colour as its
+   label; the weakness is stroke weight). This rerun's numbers supersede those
+   readings; the wave-1 entry stands as written per append-only rules.
+4. Evidence gaps G1-G4 are disclosed in the entry; RED-3's verdict rests on
+   red3-backdrop.json's stored three-frame control alone, which is sufficient.
