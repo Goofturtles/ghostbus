@@ -19,7 +19,9 @@ import type { VehicleDto, RouteShapeResponse } from '@shared/types';
 import { api, type Bbox } from '@/lib/api';
 import { useLive, selectedNearbyStop, DEFAULT_LOCATION, isBackedOff, noteFailure } from '@/hooks/useLive';
 import { useStore, resolveTheme, paceMps } from '@/store';
-import { walkSeconds } from '@/lib/format';
+import { walkLegSeconds, type MeasuredWalk } from '@/lib/walk';
+import { pathMidpoint } from '@/lib/walkRoute';
+import { resolveWalkLeg } from './walkPath';
 import { buildStyle, type MapTheme } from './mapStyle';
 import { makeVoxelSprite, spriteId, kindForRouteType, SPRITE_SIZE_PX, type VehicleKind } from './sprites';
 import {
@@ -44,7 +46,15 @@ import {
   removeVoxelTreeLayers,
   setVoxelTreeTheme,
   syncVoxelTrees,
+  voxelTreeStats,
 } from './voxelTrees';
+import {
+  addVoxelVehicleLayers,
+  removeVoxelVehicleLayers,
+  setVoxelVehicleTheme,
+  setVoxelVehicles,
+  type VoxelVehicle,
+} from './voxelVehicles';
 import { readableOn } from '@/components/Primitives';
 import { PlusIcon, MinusIcon, NavIcon, LayersIcon } from '@/components/icons';
 
@@ -66,6 +76,13 @@ const BADGE_LIFT_PX = Math.round(SPRITE_SIZE_PX * 0.42) + 5;
  *  map at once (DESIGN-TARGET §D). Measured against the card, not the window, so
  *  a narrow map inside a wide desktop window is treated as narrow. */
 const NARROW_CARD_PX = 480;
+/** Floor between two tile-driven city rebuilds, in ms. Low enough that the city
+ *  visibly fills in as tiles land, high enough that a burst of twenty tiles does
+ *  not rebuild the whole instance buffer twenty times. */
+const CITY_BUILD_MIN_MS = 120;
+/** How often the (invisible) sprite source is refreshed while the 3D models are
+ *  drawing. It exists only to keep the tap hit-test honest — see the rAF loop. */
+const VEH_DATA_MIN_MS = 200;
 
 type LngLat = [number, number];
 
@@ -113,6 +130,10 @@ export default function MapCard() {
   const expanded = useStore((s) => s.mapExpanded);
   const setExpanded = useStore((s) => s.setMapExpanded);
   const pace = useStore((s) => s.pace);
+  /** Staircases are not a route for every rider. The three profiles that say so in
+   *  Settings get a step-free walk or none at all — never a flight of stairs drawn
+   *  as if it were pavement. */
+  const access = useStore((s) => s.access);
   const quality = useStore((s) => s.quality);
   /** User's own layers toggle. The quality setting is the ceiling — Reduced and
    *  Lite never get extrusions at all — and this is the switch inside it. */
@@ -201,10 +222,24 @@ export default function MapCard() {
     return near?.distanceM ?? haversineM(geo.lat, geo.lon, boarding.lat, boarding.lon);
   }, [geo, boarding]);
   const walkable = walkDistM != null && walkDistM <= WALKABLE_MAX_M && !planUnresolved;
-  const walkMin = useMemo(() => {
-    if (walkDistM == null || !walkable) return null;
-    return Math.max(1, Math.round(walkSeconds(walkDistM, paceMps(pace)) / 60));
-  }, [walkDistM, walkable, pace]);
+
+  /**
+   * THE GATE STAYS ON THE STRAIGHT LINE; ONLY THE DRAWING IS ROUTED.
+   *
+   * A routed walk is longer than the straight one, so a stop 1,400 m away as the crow
+   * flies routes past 1,500 m and would fall off a gate measured on the route. That
+   * would be the wrong question. `WALKABLE_MAX_M` mirrors the planner's own
+   * `PLAN_MAX_RADIUS_M`, which the server applies as a straight-line radius — it asks
+   * "does this app consider these two points connected on foot at all", and that
+   * answer must not change because the pavement wanders. The route then tells the
+   * truth about the walk inside the gate, however long it turns out to be.
+   *
+   * The walk the map has drawn, and the numbers that describe it. `null` whenever no
+   * walk is drawn — which is every state the plan-geometry machine calls unresolved.
+   */
+  const [walkLeg, setWalkLegState] = useState<MeasuredWalk | null>(null);
+  const publishWalkLeg = useStore((s) => s.setWalkLeg);
+  const walkMin = walkLeg == null ? null : Math.max(1, Math.round(walkLeg.seconds / 60));
 
   /**
    * Which route line to draw in red — the reference's defining stroke, and the only
@@ -241,6 +276,40 @@ export default function MapCard() {
   // registered long before this render (see the note on applyWalk).
   const walkableRef = useRef(walkable);
   walkableRef.current = walkable;
+  const paceRef = useRef(pace);
+  paceRef.current = pace;
+  const avoidStepsRef = useRef(false);
+  avoidStepsRef.current = access === 'wheelchair' || access === 'walker' || access === 'stroller';
+  /** The line as drawn, so the walker glyph can sit ON it rather than on the midpoint
+   *  of two ends it no longer runs between. */
+  const walkPathRef = useRef<[number, number][] | null>(null);
+
+  /**
+   * Coalesce the tile-arrival rebuilds to at most one per `CITY_BUILD_MIN_MS`.
+   * Tiles land in bursts, `build()` rewrites the whole instance buffer from every
+   * feature the source holds, and the picture from the first tile of a burst is the
+   * same picture as the picture from the last.
+   *
+   * TRAILING EDGE, and that is the whole point — the first version of this DROPPED
+   * any request that arrived inside the window, on the reasoning that `idle` would
+   * clean up later. Measured, that was the worst of both: the burst's first tile
+   * built a city 18.7% of its final size, every other tile in the burst was
+   * discarded, and the frame then sat at 18.7% for a further 1.5-2 s until `idle`
+   * finally fired. Deferring instead of dropping means every tile is folded in, at
+   * most one rebuild per window.
+   */
+  const cityBuildTimer = useRef<number | null>(null);
+  const cityBuiltAt = useRef(0);
+  const vehDataAt = useRef(0);
+  function scheduleCityBuild(map: maplibregl.Map) {
+    if (cityBuildTimer.current !== null) return;
+    const wait = Math.max(0, CITY_BUILD_MIN_MS - (performance.now() - cityBuiltAt.current));
+    cityBuildTimer.current = window.setTimeout(() => {
+      cityBuildTimer.current = null;
+      cityBuiltAt.current = performance.now();
+      syncVoxelCity(map);
+    }, wait);
+  }
 
   // ============================ map init (once) ============================
   useEffect(() => {
@@ -267,6 +336,11 @@ export default function MapCard() {
     // about this map once — DECISIONS §28 — so every proof runs against `vite
     // build`), and this adds nothing to `window`.
     (wrapRef.current as HTMLDivElement & { _gbMap?: maplibregl.Map })._gbMap = map;
+    // Second verification handle, same expando and same reasoning: the tree/building
+    // fix has to be provable with a NUMBER (how many canopies were rejected, and for
+    // which reason) rather than by a reviewer squinting at a screenshot, and the
+    // custom layers are not reachable through `getStyle()`.
+    (wrapRef.current as HTMLDivElement & { _gbTreeStats?: typeof voxelTreeStats })._gbTreeStats = voxelTreeStats;
     // The GL canvas is aria-hidden; make it truly inert so keyboard focus can't land on it.
     map.getCanvas().setAttribute('tabindex', '-1');
     // `compact: false`, NOT compact-plus-force-expanded. The compact control renders
@@ -302,24 +376,84 @@ export default function MapCard() {
       setMapFailure(styleOkRef.current ? 'tiles' : 'engine');
     }, 9000);
     map.on('movestart', (e: { originalEvent?: unknown }) => { if (e.originalEvent) userMoved.current = true; });
-    map.on('moveend', () => scheduleFetch());
+    map.on('moveend', () => {
+      scheduleFetch();
+      // The models carry a zoom-keyed legibility gain, so a zoom changes their drawn
+      // size. On `moveend` rather than `move`: this walks the fleet, and the per-move
+      // budget is already spent on `collide()`.
+      if (voxelOnRef.current) pushVoxelVehicles(map);
+    });
+    // THE WALK IS ROUTED OVER TILES THAT HAVE LANDED, so it is retried when they do.
+    //
+    // The first attempt happens the moment a fix and a stop exist, which is routinely
+    // before the vector tiles carrying the footways have arrived — and a route asked
+    // for over an empty source is a route that does not exist, which would strand the
+    // rider on the straight-line fallback for the whole session. `idle` is the exact
+    // "nothing is moving and every tile has landed" signal, and it is the ONLY event
+    // this may hang off: see the contract on `resolveWalkLeg`. A successful route is
+    // cached per endpoint pair, so every later idle is a free lookup.
+    map.on('idle', () => applyWalk(map));
     // Trees are re-planted from whatever roads are on screen, so they can only be
     // recomputed when the camera SETTLES. `idle` is the exact "nothing is moving
     // and every tile has landed" signal; doing this per frame would be absurd.
     map.on('idle', () => {
       if (!voxelOnRef.current) return;
-      syncVoxelTrees(map);
-      // The 3D city reads its geometry straight out of the vector tiles, so it has
-      // the same "only when new tiles have landed" trigger as the trees. Panning and
-      // zooming need no rebuild at all — the blocks live in world space.
+      // CITY FIRST, THEN TREES — the order is load-bearing now that a tree refuses
+      // to be planted inside a building (`syncVoxelTrees` asks the city where its
+      // blocks are). Planting first would test each tree against the PREVIOUS
+      // frame's buildings, so every newly-arrived tile would get one round of trees
+      // growing through its towers before the next idle corrected them.
       syncVoxelCity(map);
+      syncVoxelTrees(map);
     });
 
-    map.on('load', () => {
+    // THE CITY IS BUILT AS TILES LAND, NOT ONLY WHEN EVERYTHING HAS SETTLED.
+    //
+    // `idle` means "nothing is moving AND every tile has arrived". It was the only
+    // rebuild trigger, and measured on the shipped build it first fires 1.8-2.5 s
+    // after the map is usable — so on any link slower than this machine's, the
+    // rider watched an empty ground plane while the buildings they had already been
+    // sent sat parsed in the source, waiting for the last tile in the viewport.
+    //
+    // Each arriving tile now folds itself in instead. Coalesced to one rebuild per
+    // frame with a floor between builds: a batch of tiles lands together, and
+    // `build()` rewrites the whole instance buffer, so running it per tile would be
+    // the same picture drawn twenty times.
+    map.on('sourcedata', (e) => {
+      if (e.sourceId !== 'omt' || !voxelOnRef.current) return;
+      if (!e.tile && !e.isSourceLoaded) return;
+      scheduleCityBuild(map);
+    });
+
+    // Add the city the moment the STYLE IS APPLIED, rather than at `load`.
+    //
+    // MapLibre's `load` is "the first complete render has happened", and that waits
+    // on the label GLYPHS — a second network chain to the font server that the
+    // buildings do not depend on at all. Measured, it cost the city most of a second
+    // of pure waiting for fonts. Everything `installLayers` does needs only the
+    // style's sources and layers to exist.
+    //
+    // THE READINESS TEST IS THE SOURCE, NOT `isStyleLoaded()`, and the difference is
+    // not pedantry — the first version of this shipped `isStyleLoaded()` and left the
+    // map with NO GhostBus layers at all. `Style.loaded()` is false until every
+    // source cache has its tiles AND the image manager is done, but `styledata` stops
+    // firing once the style spec itself is stable. So the last `styledata` routinely
+    // arrives while `isStyleLoaded()` is still false, the one-shot never fires again,
+    // and nothing is ever installed. `getSource('omt')` returning an object means
+    // `Style._loaded` is true, which is the real precondition for `addLayer`.
+    //
+    // `load` stays wired as a backstop, and `installLayers` is idempotent, so the
+    // worst case is the behaviour this replaced rather than a broken map.
+    const installOnce = () => {
+      if (styleOkRef.current) return;
+      if (!map.getSource('omt')) return;
       styleOkRef.current = true;
+      map.off('styledata', installOnce);
       installLayers(map, theme);
       fetchVehicles();
-    });
+    };
+    map.on('styledata', installOnce);
+    map.on('load', installOnce);
 
     // vehicle selection with a generous hit radius (no precision taps)
     map.on('click', (e: maplibregl.MapMouseEvent) => {
@@ -344,6 +478,7 @@ export default function MapCard() {
 
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      if (cityBuildTimer.current !== null) clearTimeout(cityBuildTimer.current);
       if (pollRef.current) clearInterval(pollRef.current);
       if (moveTimerRef.current) clearTimeout(moveTimerRef.current);
       if (failTimerRef.current) clearTimeout(failTimerRef.current);
@@ -403,9 +538,18 @@ export default function MapCard() {
 
     // The beads' own drop shadow, so the walk path sits ON the ground plane rather
     // than floating flat over it (the reference's beads are 3D purple pucks).
+    // THE TWO WALK LAYERS ARE TWO DIFFERENT CLAIMS, and the filter is what keeps them
+    // apart. `kind: 'routed'` is a line along real ways and gets the reference's beads.
+    // `kind: 'direct'` is the straight line drawn when no walkable route could be
+    // found: a thin, pale dash that no one would read as a suggested route, and it is
+    // labelled as an estimate wherever its minutes appear. A straight line dressed as
+    // a route is the defect this whole wave exists to remove; it must never come back
+    // wearing the beads.
+    const IS_ROUTED: maplibregl.FilterSpecification = ['!=', ['get', 'kind'], 'direct'];
+    const IS_DIRECT: maplibregl.FilterSpecification = ['==', ['get', 'kind'], 'direct'];
     if (!map.getLayer('walk-shadow')) {
       map.addLayer({
-        id: 'walk-shadow', type: 'line', source: 'walk-path',
+        id: 'walk-shadow', type: 'line', source: 'walk-path', filter: IS_ROUTED,
         layout: { 'line-cap': 'round', 'line-join': 'round' },
         paint: {
           'line-color': 'rgba(0,0,0,0.5)',
@@ -419,7 +563,7 @@ export default function MapCard() {
     }
     if (!map.getLayer('walk-line')) {
       map.addLayer({
-        id: 'walk-line', type: 'line', source: 'walk-path',
+        id: 'walk-line', type: 'line', source: 'walk-path', filter: IS_ROUTED,
         layout: { 'line-cap': 'round', 'line-join': 'round' },
         paint: {
           // Round caps + a zero-length dash = a row of separated round BEADS, which
@@ -429,6 +573,21 @@ export default function MapCard() {
           'line-width': ['interpolate', ['linear'], ['zoom'], 14, 7, 16.6, 12, 18, 15],
           'line-dasharray': [0, 1.55],
           'line-opacity': 0.98,
+        },
+      });
+    }
+    // The straight-line fallback. Deliberately WEAK: a hairline, a long open dash, no
+    // shadow, no beads, no walker glyph riding it. It has to be visible enough to say
+    // "the stop is that way" and quiet enough that nobody follows it into a wall.
+    if (!map.getLayer('walk-direct')) {
+      map.addLayer({
+        id: 'walk-direct', type: 'line', source: 'walk-path', filter: IS_DIRECT,
+        layout: { 'line-cap': 'butt', 'line-join': 'round' },
+        paint: {
+          'line-color': purple,
+          'line-width': ['interpolate', ['linear'], ['zoom'], 14, 1.6, 16.6, 2.2, 18, 2.6],
+          'line-dasharray': [2.5, 3],
+          'line-opacity': thm === 'dark' ? 0.62 : 0.55,
         },
       });
     }
@@ -520,7 +679,13 @@ export default function MapCard() {
           'icon-image': ['get', 'img'],
           'icon-allow-overlap': false,
           'icon-ignore-placement': false,
-          'icon-padding': 6,
+          // RAISED 6 -> 14. The gap between a street name and a marker card was the
+          // SUM of this and the label layer's own `text-padding`, and that padding
+          // came down from 44 to 14 so the map could actually name its streets
+          // (mapStyle.ts). Taking this up keeps the clearance where it was: §D2 says
+          // no map element may sit under the app's own chrome, and a name tucked
+          // right against the edge of the You card reads as touching it.
+          'icon-padding': 14,
           'icon-pitch-alignment': 'viewport',
           'icon-rotation-alignment': 'viewport',
         },
@@ -757,6 +922,20 @@ export default function MapCard() {
       const added = addVoxelCityLayers(map, thm);
       if (!added) { removeVoxelTreeLayers(map); return; }
       setVoxelCityTheme(map, thm);
+      // THE VEHICLES BECOME 3D EXACTLY WHEN THE CITY DOES. One gate, one quality
+      // ceiling, one layers button — a voxel bus in a flat map would be the only
+      // object in frame with walls, and a sprite in the diorama is the RED this
+      // replaces. Inserted before `marker-blockers` so the models draw over the
+      // route and the city while the invisible collision boxes that keep street
+      // names off the app's marker cards stay the last symbol layer.
+      if (addVoxelVehicleLayers(map, thm, map.getLayer('marker-blockers') ? 'marker-blockers' : undefined)) {
+        setVoxelVehicleTheme(map, thm);
+        // The sprite layer stays in the style, invisible: it is still the hit-test
+        // target for taps (MapLibre places its collision boxes regardless of paint
+        // opacity) and it is what renders again the moment 3D is switched off.
+        setSpriteVisible(map, false);
+        pushVoxelVehicles(map);
+      }
       // Re-frame rather than just tipping the camera: turning 3D on changes how much
       // ground is visible, so the marker set has to be re-fitted at the new pitch.
       if (centeredOnGeo.current && !userMoved.current) frameCamera(false);
@@ -766,10 +945,51 @@ export default function MapCard() {
     } else {
       removeVoxelTreeLayers(map);
       removeVoxelCityLayers(map);
+      removeVoxelVehicleLayers(map);
+      setSpriteVisible(map, true);
       resetVoxelCamera(map, false);
       if (centeredOnGeo.current && !userMoved.current) frameCamera(false);
     }
     collide();
+  }
+
+  /** Show or hide the flat sprite layer without removing it — it stays in the style
+   *  as the tap target and as the flat map's renderer. */
+  function setSpriteVisible(map: maplibregl.Map, on: boolean) {
+    if (!map.getLayer('vehicles')) return;
+    try {
+      map.setPaintProperty(
+        'vehicles', 'icon-opacity',
+        on ? ['coalesce', ['feature-state', 'op'], 1] : 0,
+      );
+    } catch { /* style swap in flight */ }
+  }
+
+  /**
+   * Hand the 3D layer the current tweened fleet.
+   *
+   * This is the cheap per-frame path, and replacing the expensive one is the point:
+   * the rAF loop used to re-upload the ENTIRE vehicle FeatureCollection to the
+   * GeoJSON source on every frame, which re-parses and re-tiles it. The 3D layer
+   * takes plain numbers and writes instance matrices, so a frame costs one buffer
+   * upload regardless of fleet size.
+   */
+  function pushVoxelVehicles(map: maplibregl.Map) {
+    const now = performance.now();
+    const out: VoxelVehicle[] = [];
+    for (const a of animsRef.current.values()) {
+      const [lon, lat] = posOf(a, now);
+      const op = a.fadeStart > 0 ? Math.max(0, Math.min(1, (now - a.fadeStart) / FADE_MS)) : 1;
+      out.push({
+        lon, lat,
+        heading: a.heading,
+        color: a.color,
+        kind: a.kind,
+        selected: (a.feat.properties as { sel?: number }).sel === 1,
+        opacity: op,
+      });
+    }
+    setVoxelVehicles(map, out);
   }
 
   useEffect(() => {
@@ -931,6 +1151,10 @@ export default function MapCard() {
     }
 
     vehSource(map)?.setData(vehFCRef.current);
+    // A poll that adds or removes vehicles without starting a tween (nothing moved
+    // far enough to animate) still has to reach the 3D layer, or a newly-appeared
+    // vehicle waits for the next thing that happens to move.
+    if (voxelOnRef.current) pushVoxelVehicles(map);
     startRaf();
     updateBadge();
   }
@@ -964,7 +1188,25 @@ export default function MapCard() {
           else { map.setFeatureState({ source: 'vehicles', id: (a.feat.properties as { id: string }).id }, { op: 1 }); a.fadeStart = 0; }
         }
       }
-      src.setData(vehFCRef.current);
+      // THE PER-FRAME UPLOAD IS NOW CONDITIONAL, and this is the hot loop of the map.
+      //
+      // `setData` re-parses and re-tiles the whole FeatureCollection. With the flat
+      // sprites that cost buys the only picture there is, so it stays exactly as it
+      // was. With the 3D models on, the sprite layer is INVISIBLE and its geometry is
+      // needed for one thing only — the tap hit-test — so it is flushed on a timer
+      // instead of every frame. At a bus's ~10 m/s and a 200 ms flush that is 2 m of
+      // staleness against a tap radius of 14 px (~9 m here), i.e. inside the pad that
+      // already exists. The final frame always flushes, so the resting position is
+      // never stale.
+      if (voxelOnRef.current) {
+        pushVoxelVehicles(map);
+        if (!active || now - vehDataAt.current > VEH_DATA_MIN_MS) {
+          vehDataAt.current = now;
+          src.setData(vehFCRef.current);
+        }
+      } else {
+        src.setData(vehFCRef.current);
+      }
       updateBadge();
       if (active) { rafRef.current = requestAnimationFrame(tick); }
       else { rafRef.current = null; }
@@ -1139,8 +1381,13 @@ export default function MapCard() {
       const card = youMarker.current.getElement().querySelector('.you-card') as HTMLElement;
       (card.querySelector('b') as HTMLElement).textContent = t('map.you');
       const sub = card.querySelector('i') as HTMLElement;
-      sub.textContent = walkMin != null ? t('stop.walk', { min: walkMin }) : '';
+      // A measured walk states its minutes; an unrouted one wears the '~' the whole
+      // app now uses for "this is an estimate, not a measurement" (`stop.walkEst`).
+      // Two strings, one line, and the difference is legible without a legend.
+      sub.textContent = walkMin == null ? ''
+        : t(walkLeg?.kind === 'direct' ? 'stop.walkEst' : 'stop.walk', { min: walkMin });
       sub.style.display = walkMin != null ? '' : 'none';
+      sub.dataset.estimate = walkLeg?.kind === 'direct' ? '1' : '0';
     } else if (youMarker.current) {
       youMarker.current.remove(); youMarker.current = null;
     }
@@ -1171,10 +1418,18 @@ export default function MapCard() {
     }
 
     // --- the walker node sitting partway along the beaded walk path ------------
-    // Gated on the same `walkable` test as the path: a walker glyph floating with no
-    // path under it would be the same claim with worse draughtsmanship.
-    if (geo && boarding && walkable) {
-      const mid: LngLat = [(geo.lon + boarding.lon) / 2, (geo.lat + boarding.lat) / 2];
+    // Gated on the same `walkable` test as the path AND on the path being a real
+    // route: a walker glyph floating with no path under it would be the same claim
+    // with worse draughtsmanship, and one riding the straight-line fallback would
+    // re-make the claim the fallback exists to withdraw.
+    //
+    // It sits at the ARC-LENGTH midpoint of the drawn line, not at the midpoint of
+    // the two ends. On a route that turns a corner those are different places, and
+    // the second one is out in the middle of a block.
+    const walkMid = walkLeg?.kind === 'routed' && walkPathRef.current
+      ? pathMidpoint(walkPathRef.current) : null;
+    if (geo && boarding && walkable && walkMid) {
+      const mid: LngLat = [walkMid[0], walkMid[1]];
       if (!walkMarker.current) {
         const el = document.createElement('div');
         el.className = 'walk-node';
@@ -1195,7 +1450,7 @@ export default function MapCard() {
       frameCamera(true);
     }
     collide();
-  }, [geo, boarding, walkMin, walkable, t]);
+  }, [geo, boarding, walkMin, walkLeg, walkable, t]);
 
   // A new boarding stop is a new picture: re-frame it (unless the user has taken
   // the camera themselves).
@@ -1222,16 +1477,41 @@ export default function MapCard() {
     if (!src) return;
     const g = geoRef.current;
     const b = boardingRef.current;
-    // NOT WALKABLE -> NO GEOMETRY. An absence claims nothing; a city-spanning beaded
-    // line claims "walk this", which would be false. See the note on WALKABLE_MAX_M.
-    if (g && b && walkableRef.current) {
-      src.setData({
-        type: 'Feature', properties: {},
-        geometry: { type: 'LineString', coordinates: [[g.lon, g.lat], [b.lon, b.lat]] },
-      });
-    } else src.setData(emptyFC());
+    // NOT WALKABLE -> NO GEOMETRY, AND NO NUMBERS EITHER. An absence claims nothing; a
+    // city-spanning beaded line claims "walk this", which would be false. The published
+    // leg is cleared in the same breath, so nothing downstream can go on quoting the
+    // minutes of a walk that is no longer drawn. See the note on WALKABLE_MAX_M and
+    // DECISIONS §45 §8.
+    if (!g || !b || !walkableRef.current) {
+      src.setData(emptyFC());
+      setWalkLegState(null);
+      publishWalkLeg(null);
+      return;
+    }
+    // Straight through `resolveWalkLeg`: a hit is free, a miss is one synchronous
+    // build. It is called from settled events only — see that function's contract.
+    const leg = resolveWalkLeg(map, g, b, { avoidSteps: avoidStepsRef.current });
+    src.setData({
+      type: 'Feature',
+      // The style reads this: a routed line is drawn as the reference's purple beads,
+      // a straight-line fallback as a thin dash that could not be mistaken for one.
+      properties: { kind: leg.kind },
+      geometry: { type: 'LineString', coordinates: leg.coordinates },
+    });
+    walkPathRef.current = leg.coordinates;
+    const measured: MeasuredWalk = {
+      kind: leg.kind,
+      distanceM: leg.distanceM,
+      seconds: walkLegSeconds(leg.kind, leg.distanceM, paceMps(paceRef.current)),
+      stopId: b.id,
+    };
+    setWalkLegState(measured);
+    publishWalkLeg(measured);
   }
-  useEffect(() => { const m = mapRef.current; if (m) applyWalk(m); }, [geo, boarding, walkable]);
+  useEffect(() => { const m = mapRef.current; if (m) applyWalk(m); }, [geo, boarding, walkable, pace, access]);
+  // The map holds no walk once it is gone: a leg left in the store would be quoted by
+  // a stop header long after the map that measured it was unmounted.
+  useEffect(() => () => { useStore.getState().setWalkLeg(null); }, []);
 
   // ============================ route shape (red line + stop dots) ============================
   useEffect(() => {
