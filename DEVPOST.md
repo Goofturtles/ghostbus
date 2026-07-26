@@ -661,9 +661,15 @@ pair is worth re-reading against the source before any submission or any camera.
   says the TTC feed is unreachable and that you are looking at scheduled times.
 - **Map tiles failing** flips a *"Map tiles unavailable — showing list only"* overlay over the
   ground colour, so a slow tile never flashes a checkerboard.
-- **The walk path is honestly a straight line.** There is no routing engine in this tier, so the
-  path from You to the boarding stop is a beaded as-the-crow-flies indicator — deliberately not
-  drawn as a street-following route it isn't.
+- **The walk path follows streets, and says so when it cannot.** A rider testing the live app
+  pointed out that the old straight line cut through buildings — it did. The beaded path is now
+  routed with a client-side A* over the basemap's own vector tiles: the same OpenStreetMap ways
+  already downloaded and decoded to draw the roads under it, so routing costs **zero new
+  network**, needs no key or third-party service, and behaves identically in Demo Mode. Walk
+  minutes come from the geometry actually drawn. When the ways are not on the device — no map
+  card mounted, tiles not yet in, a rider genuinely off the network — it falls back to the
+  straight line and **marks it `≈`**, with the app stating in its own copy that `≈` means a
+  padded estimate and everything else is measured.
 - **Two complete themes.** The light theme is a real daylight map style hand-painted for
   navigational contrast (`web/src/map/mapStyle.ts`), not an inverted dark theme.
 - **Three complete locales**: en, fr-CA, es — **324 leaf keys each, key sets identical**
@@ -837,7 +843,17 @@ worth more than one someone found for you.
 7. **Toronto only.** One agency, one timezone, one feed dialect. The multi-city engine was
    deleted rather than left half-working (`DECISIONS.md` §10). Every measured feed quirk above is
    a TTC quirk; none of it is claimed to generalise.
-8. **The walk path is a straight line**, not a walking route. There is no routing engine.
+8. **Walking is routed from the tiles on the device, which is a real limit as well as a real
+   feature.** The path is a shortest-walk A* over the basemap's own `transportation` layer
+   (footways, crossings, service lanes, residential streets), so it follows pavement instead of
+   cutting through buildings — but **where there is no map there is no route**. Nothing here
+   fetches: it reads tiles MapLibre has already loaded. So a leg the map never drew (the Plan
+   tab on a phone, with the map card unmounted) and the alighting leg at the far end stay
+   straight-line estimates, marked `≈` and padded by the 1.25 route factor; a routed walk drops
+   that factor, because re-applying a correction for an error no longer being made would bill a
+   measured 620 m as 775 m. No external routing engine exists in this project, and none is
+   claimed — no Valhalla, no OSRM, no API. Also absent, deliberately: turn-by-turn, one-way
+   rules (irrelevant on foot), traffic signals and elevation (`DECISIONS.md` §51).
 9. **Web-only, foreground-only.** No background tracking, no push notifications; the app says as
    much in its own copy (`ride.keepOpen`).
 10. **~~The seeded schedule has holes~~ — FIXED.** This limitation described a rolling

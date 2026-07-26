@@ -288,12 +288,23 @@ tier plan, not a claim about the current build.
   data (`is_accessibility`); the surfaced feature is not built.
 - **Offline schedule-slice cache** — the PWA shell caches the app, not the timetable.
 - **Capacitor Android shell.**
+
 ### Since landed
 
-Six things this list used to carry have shipped and were verified against a running
+Seven things this list used to carry have shipped and were verified against a running
 build: the **PWA** (manifest, icons, service worker), the **Alerts tab / Ghost Feed**
 with trust and forecast chips, the **3D voxel city** (the map is a lit isometric diorama,
-not flat 2D), **search and the trip planner**, **Saved places**, and **Demo Mode**.
+not flat 2D), **search and the trip planner**, **Saved places**, **street-following walk
+routing**, and **Demo Mode**.
+
+**The walk path follows streets.** It used to be a straight line from You to the boarding
+stop, which a rider correctly observed cuts through buildings. It is now a shortest-walk
+A* over the basemap's own vector tiles — the same OpenStreetMap ways already on the device
+to draw the roads underneath — so it costs no new network, needs no routing key, and works
+the same in Demo Mode. Walk minutes are read off the geometry drawn. Where those ways are
+not loaded, the app falls back to the straight line and marks it `≈`, which its own copy
+defines as an estimate. It is not turn-by-turn and there is no external routing service
+(`DECISIONS.md` §51).
 
 **Search and Plan.** ⌘K (or `/`) opens a real search sheet: stops come from
 `/api/stops`, routes are built from departure boards already held — so every route row
