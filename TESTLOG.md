@@ -3515,3 +3515,429 @@ deployed config unmatched GET/HEAD requests (including /api-prefixed ones) match
 pattern. T2's empirical finding (unmatched requests are never limited, at any budget
 state) and its RED verdict stand unchanged — same observable, corrected explanation.
 See DECISIONS §50 / commit ebd217f.
+
+---
+
+# T1 (Functional) RERUN — Reliability + Search + Plan (features A/B/C) — DRAFT
+(not yet appended to TESTLOG.md)
+
+Agent: T1 Functional tester (independent test agent; builder was the fix agent for
+commits `5ba1bbf` "Split the agency seam: a schedule is not an observation", `d8ba413`
+"A failed plan FETCH takes the geometry too, not just a failed plan ANSWER", `5ea35f3`
+"Design Critic REDs...", `bba517f` "Evidence for the RED remediation pass" — differs, per
+VERIFICATION.md). This is a **from-scratch rerun**: no prior result was assumed to still
+hold; every one of wave 1's checks was re-executed against a fresh build/seed/instance,
+plus the four fixes' specific repros.
+
+Build under test: HEAD `da046b9b1fb05ee3464d8c255227ad55794bbb29` ("TESTLOG: features wave
+1 — the record that produced the nine-red fix batch") — the tip of the branch at the time
+of this run, strictly after all four fix commits. **The branch is a moving target** (other
+testers' T2/T3 reruns are landing concurrently): as of finalizing this correction pass, five
+more commits have landed on top (`ead4551`, `7b3373e`, `e1b9fd4`, `2440568`, `ebd217f` —
+DECISIONS §48, a citation-marker fix, DECISIONS §49, a TESTLOG merge for the separate
+T2-features rerun, and DECISIONS §50, respectively). Re-checked directly rather than
+trusting any commit's own "runtime-identical" claim: `git diff da046b9..HEAD --name-only`
+touches `DECISIONS.md`, `SECURITY.md`, `TESTLOG.md`, **and `server/src/api.ts`** — that
+last one is not a no-op path and was read in full rather than waved through: `ebd217f`'s
+diff on `api.ts` is two `/**`/`//` comment blocks only (verified line-by-line — every `+`/`-`
+line in the diff is a comment line; the `allowList` function's actual executable lines are
+byte-identical before and after). So, re-verified at today's actual HEAD rather than just at
+da046b9: zero runtime *behaviour* has changed in the whole span, though one runtime *file*
+has (in comments only). This rerun's build-under-test still holds. Production web build:
+`npx vite build` (rebuilt
+fresh at HEAD; succeeded, 102 modules, `dist/`). Server run via the project's real
+production entrypoint (`node --import tsx server/src/server.ts`; `npm run build` only
+`tsc --noEmit`s the server side, so this is the same lens `npm start` runs in production).
+
+## Setup (own throwaway everything — never touched :8799 or any other agent's dir/port)
+
+```
+npx vite build
+# -> dist/ built, 102 modules
+
+DATABASE_URL= PGLITE_DIR=C:/Users/arjun/Music/Documents/Desktop/Website/ghostbus/.data/pglite-ft1r \
+  GHOSTBUS_SEED_SKIP_DOWNLOAD=1 node --import tsx server/src/seed_toronto.ts
+# -> .data/ft1r-artifacts/seed.log (67.7s, driver=pglite, 233 routes, 9,361 stops,
+#    132,570 trips, 4,175,275 stop_times, board 20260726..20260905 -- complete board)
+```
+
+All server instances run on **my own port 9401** (never 8799, and a fresh port from wave
+1's 9301 to avoid any ambiguity about which run produced which log), via my own
+disposable in-process-SIGINT wrapper `.data/ft1r-artifacts/run_server.mjs` (same pattern
+documented by every prior tester on this Windows machine: no external signal reliably
+reaches a console-less background Node process here, so the wrapper dynamically
+`import()`s the real, unmodified `server/src/server.ts` and calls `process.emit('SIGINT')`
+in-process when a sentinel file appears).
+
+```
+node --import tsx .data/ft1r-artifacts/run_server.mjs server/src/server.ts .data/ft1r-artifacts/STOP_FT1R
+```
+
+`run_server.mjs` optionally (`FT1_BLOCK_TTC=1`) monkeypatches `globalThis.fetch` **before**
+importing `server.ts` so requests to `bustime.ttc.ca` fail while everything else passes
+through unchanged — this exercises the real `poller.ts` `fetchFeed()` code path for a
+genuine feed outage without touching any OS-level network/DNS/firewall setting.
+
+Browser: real Chrome via Playwright (`chromium.launch({ channel: 'chrome' })`, resolved
+through the cached npx-installed `playwright` package at
+`C:/Users/arjun/AppData/Local/npm-cache/_npx/9833c18b2d85bc59/node_modules/playwright`,
+confirmed working with a throwaway smoke check before use). Geolocation spoofed via
+`context.setGeolocation`: Toronto `{43.6511, -79.3832}` (at Union Station itself) for all
+located flows, Mississauga `{43.5890, -79.6441}` for the out-of-coverage check. Every
+script asserts `document.body.innerText.length > 200` before trusting any other probe
+(VERIFICATION.md's "assert the app rendered" rule).
+
+My disposable driver scripts (gitignored under `.data/`, not app code, written fresh for
+this rerun — not reused verbatim from wave 1's scripts, though the selectors were
+cross-checked against the same current source): `ft1r_live.cjs` (Search + out-of-coverage
++ storm/reload-during-throttle + Plan/stale-geometry, modes `search`/`coverage`/`storm`/
+`planstale`), `ft1r_feeddown.cjs` (feed-down locale check), `ft1r_demo.cjs` (demo mode
+fix-specific data check + badge/provenance locale check). **Every script was reviewed by
+a code-reviewer subagent before being run** (not the builder), and every finding raised
+was fixed before execution:
+- A blocker: the storm test's agency-blame regex (`/TTC feed/i`) would have false-flagged
+  the HONEST English throttle string itself ("...the TTC feed is fine.") once the new
+  reload-during-throttle check was added (a real page reload while still throttled resets
+  `arr` to `null`, surfacing that exact string) — narrowed to the real blame phrases only,
+  re-verified by hand against all three locales' actual dictionary strings.
+- A probe-defect gap in the stale-geometry repro's final destination pick (`picked` could
+  silently be `null`) — now surfaces an explicit `probeDefect` flag.
+- Missing `assertRendered` on the real-reload check, and no try/finally around browser
+  cleanup — both fixed.
+- **A genuine probe mistake I made and caught myself, not the reviewer**: my first
+  `planstale` run (`run-planstale.log`) reused bba517f's own `planfail.cjs` destination
+  ("Dundas West Station") for the "ride must come back" step, and got `walkNodes=0` —
+  investigated rather than reported as a regression: an independent direct `/api/plan`
+  call confirmed Dundas West is a `transfer` (0 candidates) from **this** harness's
+  Toronto coordinate (Union Station), whereas bba517f's script used a different starting
+  coordinate where it is a direct ride. Not a bug — my own reused test data didn't
+  transfer between geolocations. Re-verified seven candidate destinations via direct
+  `/api/plan` calls first (`Osgoode Station` -> `{"outcome":"ride","candidates":20}`,
+  `Dundas West Station` -> `{"outcome":"transfer","candidates":0}`, five others also
+  checked — saved verbatim in `reachability-probe.json`, regenerated a second time against
+  a fresh instance to confirm the same result, byte-identical to the first) and reran with
+  Osgoode Station substituted; see Feature C below for the corrected result.
+
+---
+
+## FEATURE B — Search — GREEN
+
+Real `<input>`, `⌘K`/`/` shortcuts, debounced live results with distance + next-departure
+chips, keyboard nav, selection navigates (stop changes + map focuses), recents persist —
+**plus the RED-1 fix**: the magnifier must stay static (never cross-fade into a ✕) even
+with text in the field.
+
+### Assertions checked (`ft1r_live.cjs search`, against a rendered, asserted DOM)
+
+1. **`/` opens** the sheet from neutral focus (clicked body first) — `slashOpens: true`.
+   **`Escape` closes it** — `escapeCloses: true`. **`Control+K` opens it** again —
+   `ctrlKOpens: true`. All three PASS.
+2. **Real debounced results, live from `/api/stops`.** Typing "union" produced 12 real rows,
+   sorted by real distance from the spoofed Union Station fix: `630 m` → `650 m` → `680 m`
+   → `690 m` → `700 m` → `710 m` (six real Union-area platforms), then a hard jump to
+   `9.8 km` / `24.4–24.5 km` for unrelated "Union"-named stops across the city
+   (Credit Union Dr at 9.8 km, then five Port Union Rd stops at 24.4–24.5 km) — the
+   distances are genuinely measured, not decorative. Next-departure chip present
+   on the first measurement this time (`chipCount: 1`).
+3. **THE FIX-SPECIFIC CHECK: the magnifier stays static.** Glyph count in `.search-glyphs`
+   was **1 before typing and still 1 after typing "union"**, and
+   `hasCloseGlyphAfterTyping: false` (checked the actual SVG `path d` against the
+   `CloseIcon`'s path, not just a count) — confirms RED-1's fix holds: no dead ✕ affordance
+   cross-fades in once the field has text.
+4. **Keyboard nav.** `ArrowDown, ArrowDown, ArrowUp` on the 12-row list moved the active
+   index `0 → 1 → 2 → 1` exactly.
+5. **Enter selects, closes the sheet, and genuinely navigates.** Chosen row: "Union Station
+   - Northbound Platform Towards Finch". After Enter: `searchClosedAfterEnter: true`, stop
+   header updated to that exact name (`r-s03-after-selection.png`).
+6. **Recents persist**, immediately (reopening showed the just-selected stop as the top
+   row, `r-s04-recents-open.png`) and **across a full page reload**
+   (`r-s05-recents-after-reload.png`, same row, same order).
+
+### Artifacts
+`.data/ft1r-artifacts/r-s01-loaded.png`, `r-s02-search-results.png`,
+`r-s03-after-selection.png`, `r-s04-recents-open.png`, `r-s05-recents-after-reload.png`,
+`search-results.json`.
+
+**Verdict: GREEN.** Every listed Search behaviour observed working with a stored artifact,
+including the RED-1 magnifier fix, which is exactly what this rerun exists to confirm.
+
+---
+
+## FEATURE C — Plan — GREEN
+
+Single-ride planner: reachable trip → real legs with honest ETAs; unreachable → the
+transfer message with NO route-like geometry; recents persist — **plus the two fix-specific
+repros**: transfer → transfer (the `target`-dependency desync d8ba413 fixed) and the T2
+repro (a failed re-plan after the server dies must not leave the PREVIOUS plan's walk
+geometry drawn under the error).
+
+### Assertions checked (`ft1r_live.cjs planstale`, same rendered/asserted session)
+
+1. **Reachable: real legs, honest ETA.** Destination "Union Station - Northbound Platform
+   Towards Vaughan Metropolitan Centre" (Stop 13815). Result: **3 legs**, `plan-total`:
+   "About 9 min door to door", `plan-arrive`: "Arrive around 4:23 PM" — real clock
+   arithmetic. Evidence line: `grade="—"` / `evidence="schedule only — not enough live
+   history yet"` — an honest, not-yet-graded ETA, matching spec. `walkNodes(map)=1` — a
+   real beaded walk path drawn (`r-s06-plan-ride.png`).
+2. **Plan recents populate on clear.** Clearing showed the Union Station trip under Recent
+   Trips (`r-s07-plan-idle-recents.png`).
+3. **Unreachable: honest transfer message, zero route-like geometry.** Destination
+   "Aberfoyle Cres at Islington Ave (Islington Station)", 11.3 km away. Result:
+   `stateTitle: "This trip needs a transfer"`, `planMaps: true` (the maps deep-link is
+   present). **`walkNodes(map)=0`** (`r-s08-plan-transfer.png`).
+4. **Recents persist across reload**, both trips shown, most-recent-first
+   (`r-s09-plan-recents-after-reload.png`).
+5. **FIX REPRO 1 — transfer → transfer, no desync.** Immediately picked a second,
+   different unreachable destination ("Eglinton Ave East at Kennedy Station") straight
+   after the first transfer, with no ride in between. `walkNodes=0` — **PASS**. This is
+   d8ba413's specific fix: `unresolved` previously stayed `true` across a transfer→transfer
+   destination change (a stale `target` dependency meant the effect never re-ran), which
+   this rerun's back-to-back-transfer sequence exercises directly.
+6. **Geometry comes back on a real ride.** Picked "Osgoode Station" next (independently
+   confirmed reachable via a direct `/api/plan` call before the browser test:
+   `{"outcome":"ride","candidates":20}` from this exact spoofed coordinate).
+   `walkNodes=1`, `legs=3` — **PASS**, geometry correctly reappears
+   (`r-pf-ride-again.png`).
+7. **FIX REPRO 2 — the T2 stale-geometry repro, end to end.** With a resolved ride on
+   screen (Osgoode, walkNodes=1), wrote the sentinel file to gracefully SIGINT **my own**
+   server, waited 6s for the port to actually die, then — in the SAME already-open tab —
+   picked a different remembered destination ("Eglinton Ave East at Kennedy Station",
+   confirmed a genuine distinct pick via `rowCountSeen: 4`, `probeDefect: false`, i.e. the
+   click definitely fired against a different row than the current target). The resulting
+   `/api/plan` fetch failed against the dead server. Result: `stateTitle: "Can't reach the
+   planner"`, `stateBody: "The trip planner is unreachable right now. Nothing here is
+   cached, because a replayed plan looks exactly like a live one."`, **`walkNodes=0`** —
+   the previous plan's beaded walk path from the Osgoode ride is **NOT** left drawn under
+   the error (`r-pf-fetch-error-after-kill.png`). `statusPill: "Catching up"`,
+   `blamesAgency: false` — the honest "ours" family, not a TTC-blaming message, even under
+   this compound failure. This is the exact T2 defect d8ba413 fixed (`unresolved` was
+   gated on `phase.kind === 'done'`, which is false-by-construction for every network
+   failure, so nothing could ever re-arm it) — independently reproduced from scratch on
+   this rerun's own instance, not assumed from the fix commit's own evidence.
+
+### Artifacts
+`.data/ft1r-artifacts/r-s06-plan-ride.png`, `r-s07-plan-idle-recents.png`,
+`r-s08-plan-transfer.png`, `r-s09-plan-recents-after-reload.png`,
+`r-pf-transfer-again.png`, `r-pf-ride-again.png`, `r-pf-fetch-error-after-kill.png`,
+`planstale-results.json` (also `run-planstale.log`, the FIRST run that caught my own
+Dundas-West probe mistake, kept for the record, superseded by `run-planstale2.log`),
+`reachability-probe.json` (the independent `/api/plan` check that caught and corrected
+the mistake, regenerated a second time against a fresh instance with byte-identical
+results).
+
+**Verdict: GREEN.** Every listed Plan behaviour observed working, including both
+fix-specific repros (transfer→transfer desync, and the T2 stale-geometry-after-server-death
+repro) reproduced independently from scratch and holding clean.
+
+---
+
+## FEATURE A — Honest error attribution — GREEN
+
+Three states: **ours** (429/5xx/unreachable → "catching up", never blames TTC), **theirs**
+(health.feeds-driven feed-down copy, permitted to name the agency), **demo** (amber badge
+off health.mode) — **plus the fix-specific check**: demo mode must now serve real static
+rows (previously all zero, per wave 1's finding), and a hard reload during a closed
+throttle window must serve the app shell, not raw 429 JSON (the rate-limiter fix in
+5ba1bbf).
+
+### (a) OURS — 429 storm, unreachable, self-recovery, all 3 locales — GREEN
+
+`ft1r_live.cjs storm` against my own instance:
+
+1. **Real 429, forced.** A same-origin `fetch` burst hit the real limiter: **590 requests
+   sent, first 429 at request #589**, body
+   `{"statusCode":429,"kind":"rateLimited","error":"Too many requests to the GhostBus API
+   from this address.","retryAfterSec":51,"limit":600}` — confirms `GLOBAL_MAX_PER_MIN=600`
+   (`server/src/api.ts:554`) for real.
+2. **THE FIX-SPECIFIC CHECK: hard reload during the closed window serves the app shell.**
+   A direct `fetch('/')` while still throttled returned `{"status":200,"contentType":
+   "text/html; charset=UTF-8","looksLikeHtml":true,"looksLikeJson429":false}`. A REAL
+   `page.reload()` (not just a fetch probe) in the same window landed on a rendered page
+   (`bodyTextLen: 429`, `title: "GhostBus — the schedule is a promise"`,
+   `r-a02b-reload-during-throttle.png`) — this is the exact regression wave 1 found and
+   5ba1bbf fixed (the limiter was registered at root scope with no exemption for the
+   static bundle, so a reload during a throttle used to get a bare 429 JSON body instead
+   of the app shell that exists to explain the throttle). **Independently reproduced as
+   fixed**, not assumed from the fix commit's own message.
+3. **English**: pill "Catching up"; after the real reload landed on the full-page
+   `apiDownThrottled` state (no cached `arr` yet post-reload — a different code path than
+   wave 1 exercised, and a stricter one since it renders the OTHER honest string too):
+   "GhostBus asked its own server for too much at once and is waiting its turn. It will
+   resume by itself in a moment — **the TTC feed is fine**." — the converse-proof
+   sentence, explicitly absolving the agency (`r-a02-throttled-en.png`).
+   **Note on my own harness**: my first regex for "does this blame the agency" was a bare
+   `/TTC feed/i`, which would have flagged this exact honest sentence as blame — caught by
+   a code-reviewer subagent before running, narrowed to the real blame phrases only (see
+   Setup section above). This is the same class of self-caught methodology trap
+   VERIFICATION.md asks testers to name.
+4. **Locale switching, via the real Settings UI** (`.profile-btn` → `.segmented
+   button:has-text(...)`), not a reload. **fr-CA**: "...le flux de la TTC fonctionne."
+   (`r-a03-throttled-frCA.png`). **es**: "...la fuente de la TTC funciona bien."
+   (`r-a04-throttled-es.png`). Neither trips the blame regex.
+5. **Self-recovery, no reload, no click.** Switched back to English, waited ~65s
+   untouched: pill read **"Live"** again on its own (`r-a05-recovered.png`) — the shared
+   backoff genuinely clears itself.
+
+### (b) THEIRS — feed-down, real poller code path, all 3 locales — GREEN
+
+Own instance restarted with `FT1_BLOCK_TTC=1`. Confirmed via server log: 15 injected
+`bustime.ttc.ca` failures across 5 sustained cycles (vehicles/trips/alerts × 5), and
+`/api/health`: `ok:false`, all three feeds `status:"down"`, `mode:"live"` (not demo) —
+the genuine server-side condition.
+
+`ft1r_feeddown.cjs`:
+- **en**: pill "Scheduled", banner **"TTC feed unreachable — showing scheduled times."**
+  (`r-a06-feeddown-en.png`) — correctly names the agency, the one state permitted to.
+- **fr-CA**: "À l’horaire / Flux TTC injoignable — affichage des horaires prévus."
+  (`r-a07-feeddown-frCA.png`).
+- **es**: "Programado / Fuente de TTC inaccesible — mostrando horarios programados."
+  (`r-a08-feeddown-es.png`).
+
+Instance stopped via the graceful sentinel wrapper; integrity re-verified after
+(`stops: 9361`, unchanged) before the next instance touched the directory.
+
+### (c) DEMO — amber badge + provenance line + THE FIX-SPECIFIC DATA CHECK — GREEN
+
+Instance restarted with `GHOSTBUS_DEMO=1` against the real bundled fixture
+(`fixtures/ttc-demo-20260726-1040.json.gz`), sharing the same seeded `ft1r` pglite
+directory as every other instance this session. `/api/health` → `mode:"demo", ok:true`
+(per-feed statuses were fetched but not saved for this instance — `ft1r_demo.cjs:74`
+fetches the full `/api/health` body, but only `.mode`/`.ok` are persisted to
+`demo-results.json`; unlike `feeddown-results.json`, which stores all three feeds'
+statuses, this run has no stored per-feed evidence for demo mode).
+
+**This is the check this whole rerun exists to prove**, since wave 1 found demo mode
+returned **zero rows** from every static table (stops/routes/trips/shapes), because
+`server/src/api.ts` bound one dynamic `AGENCY` (the poller's `'ttc-demo'`) for both static
+schedule queries and per-mode observation queries, while `seed_toronto.ts` only ever seeds
+static tables under the literal `'ttc'`. Commit `5ba1bbf` split this into `staticAgency`
+(always `'ttc'`) and `modeAgency` (the poller's mode). Result, hit directly against the
+live demo instance:
+
+```
+GET /api/stops/nearby?lat=43.6511&lon=-79.3832&radius=800  -> 50 real stops  (was 0)
+GET /api/stops?q=King                                       -> 25 real stops  (was 0)
+GET /api/plan?fromLat=43.6452&fromLon=-79.3806&toLat=43.6535&toLon=-79.3839
+                                                              -> outcome:"ride", candidates:12  (was "noStopsNearYou", [])
+GET /api/routes/504/shape                                    -> 119 real coordinate points, color ED1C24  (was {"error":"no shape for route"})
+```
+(saved verbatim: `demo-fix-repro.json`)
+
+Visually confirmed too (`r-a09-demo-en.png`): loading the demo instance at the exact
+Toronto coordinate that previously produced the false "No TTC stops within 800 m of you"
+now shows a real board — stop "Richmond St West at York St", real 100 m / 2-min-walk
+distance, a real "501 Queen — Humber" nearby departure with a real scheduled time — with
+the amber `DEMO` badge (`backgroundColor: rgb(255, 176, 32)`) and the provenance banner
+("Replaying a recorded slice of real TTC data. Nothing here is live.") both rendering
+correctly above it, in all three locales:
+- **en**: `DEMO` / "Replaying a recorded slice of real TTC data. Nothing here is live."
+  (`r-a09-demo-en.png`)
+- **fr-CA**: `DÉMO` / "Rejoue une tranche enregistrée de vraies données TTC. Rien ici n’est
+  en direct." (`r-a10-demo-frCA.png`)
+- **es**: `DEMO` / "Reproduciendo un tramo grabado de datos reales de TTC. Nada aquí es en
+  vivo." (`r-a11-demo-es.png`)
+
+Search and Plan, which wave 1 found "completely non-functional" in demo mode as a direct
+consequence of the same bug, are confirmed working above (`/api/stops?q=King` → 25 rows,
+`/api/plan` → a real ride). Instance stopped via the graceful wrapper; integrity verified
+after (`stops: 9361`, unchanged).
+
+**Verdict for (c): GREEN**, reversing wave 1's RED. The narrow assignment (amber badge +
+`health.mode`) was already GREEN in wave 1 and remains so; the confirmed, reproducible,
+in-source-located bug that made wave 1 call Feature A's overall verdict RED is
+independently re-verified fixed here, at the exact endpoints wave 1 named, from a fresh
+seed and a fresh instance.
+
+### Out-of-range location — GREEN
+
+`ft1r_live.cjs coverage`, geolocation spoofed to Mississauga `{43.5890, -79.6441}`:
+**`title: "No TTC stops within 800 m of you"`, `body: "The nearest stop GhostBus covers is
+Markland Dr (West) at Bloor St West North Side, about 6.8 km away."`**
+(`r-s10-out-of-coverage.png`) — the honest, correct use of that exact card, contrasted
+against the demo-mode case above where the SAME card was previously shown falsely at a
+location that DOES have coverage. Matches wave 1's finding exactly, confirming this path
+was never broken.
+
+### Artifacts (all under `.data/ft1r-artifacts/`)
+`r-a01`–`r-a05` (storm/reload/recovery/locale), `r-a02b-reload-during-throttle.png`,
+`r-a06`–`r-a08` (feed-down/locale), `r-a09`–`r-a11` (demo/locale, now showing a REAL
+board), `r-s10-out-of-coverage.png`, `storm-results.json`, `feeddown-results.json`,
+`demo-results.json`, `demo-fix-repro.json`, `coverage-results.json`, `seed.log`,
+`server-live.log`, `server-live2.log`, `server-feeddown.log`, `server-demo.log`.
+
+---
+
+## Server-directory integrity (checked after every stop, before every next start)
+
+| point | stops | trip_delay_obs |
+|---|---:|---:|
+| after seed | 9,361 | 0 |
+| after live instance #1 stopped (search/coverage/storm + the FIRST planstale attempt; ends by killing its own server) | 9,361 | 0 |
+| after live instance #2 stopped (corrected planstale rerun; ends by killing its own server) | 9,361 | 0 |
+| after feed-down instance stopped | 9,361 | 0 |
+| after demo instance stopped | 9,361 | 6 |
+| after live instance #3 stopped (brief, `reachability-probe.json` regeneration only; final check) | 9,361 | 6 |
+
+Every stop in this session was the graceful in-process-SIGINT wrapper — zero hard kills.
+`stops` never drifted from the seeded 9,361 at any point. Port 9401 used throughout
+(fresh from wave 1's 9301), confirmed free before first use and after every shutdown;
+`:8799` (the user's live production instance, PID 31000 unchanged throughout this entire
+session) was never queried, reloaded, or touched — confirmed via `netstat` before writing
+this table.
+
+## Verdict summary
+
+| Feature | Verdict | Notes |
+|---|---|---|
+| B — Search | **GREEN** | Every listed behaviour observed with artifacts, including the RED-1 static-magnifier fix (glyph count 1 before/after typing, never the CloseIcon path). |
+| C — Plan | **GREEN** | Reachable/unreachable/recents all confirmed, plus both fix-specific repros: transfer→transfer desync (d8ba413) stays clean (`walkNodes=0` both times, no stale-true gap), and the T2 stale-geometry-after-server-death repro (`unresolved` inversion, also d8ba413) reproduced end-to-end on a fresh instance — a resolved ride's walk geometry does NOT survive under the resulting "Can't reach the planner" error. |
+| A — Honest error attribution | **GREEN** — **reverses wave 1's RED.** | Ours/theirs/coverage all GREEN with strong evidence across all 3 locales (as in wave 1), self-recovery confirmed. The wave-1-blocking bug (demo mode's static-schedule queries returning zero rows because of the `AGENCY` binding wave 1 traced to `server/src/api.ts:376`) is independently re-verified FIXED: `/api/stops/nearby` (50 rows), `/api/stops?q=King` (25 rows), `/api/plan` (`outcome:"ride"`, 12 candidates), and `/api/routes/504/shape` (119 points) all now serve real data on a fresh demo instance sharing the same seed. The secondary finding wave 1 named (the global rate limiter also refusing the static app shell during a throttle) is independently re-verified FIXED: a real `page.reload()` during a closed throttle window renders the app shell (`bodyTextLen: 429`, not a raw 429 JSON body). |
+
+**Overall: all three features GREEN.** This closes the loop opened by wave 1's RED on
+Feature A: the nine-item fix batch (5ba1bbf, d8ba413, 5ea35f3, bba517f) is confirmed to
+have fixed the specific defects named, reproduced from scratch rather than assumed, with
+one self-caught methodology correction along the way (the agency-blame regex false
+positive risk, and the Dundas-West-Station geolocation-mismatch probe mistake) named
+rather than silently worked around, per VERIFICATION.md.
+
+## Citation gaps (disclosed, not closed)
+
+Flagged by an independent citation review (`.data/testlog-drafts/citation-review-T1-rerun.md`).
+None of these change a verdict; none has been retroactively patched by gathering new
+evidence after the fact — they are named as gaps in what this session actually stored,
+not closed:
+
+1. **"102 modules" (Setup section) has no stored build log.** `npx vite build`'s output was
+   read from the terminal at the time but never redirected to a file under
+   `.data/ft1r-artifacts/`. The number is an honest transcription of what was seen, not a
+   fabrication, but there is no `vite-build.log` a later reader could check it against.
+2. **The `:8799` / PID 31000 "never touched" claim (integrity section) has no stored
+   `netstat` output.** `netstat` was run repeatedly during the session and its output read
+   directly, but never saved to a file. The claim rests on an observation made in the
+   moment, not a stored artifact.
+3. **`reachability-probe.json`'s "byte-identical to the first" claim is unverifiable
+   from stored evidence.** The regeneration wrote to the same filename and overwrote the
+   original; only the second copy survives on disk. The two runs were watched side-by-side
+   at the time and produced the same seven values, but nothing on disk lets a later reader
+   confirm that independently — the comparison itself was never saved.
+
+### Orchestrator adjudication (2026-07-26, on merge)
+
+Merged after a full citation review (verdict MERGE-WITH-CORRECTIONS: nothing
+fabricated, all 50 cited artifacts resolve, all 21 quoted UI strings byte-exact
+including fr-CA apostrophes and accents, all three GREEN verdicts supported by the
+evidence opened) and after all five required corrections were applied and
+independently recounted by the tester against the raw logs.
+
+1. **All three features GREEN: Search, Plan, and honest error attribution** — the
+   last reverses wave 1's RED on the user-reported bug. The 429 path renders the
+   server-busy copy in all three locales, and the harness's blame-detector regex
+   provably fires on the mislabel family, so the negative is a real negative.
+2. **Demo Mode blocker confirmed fixed** on a fresh instance: real board, real
+   search/plan/shape rows, amber DEMO badge with the §45(c) provenance line.
+3. **Three citation gaps stand disclosed, not closed** (no stored build log for
+   "102 modules"; no stored netstat behind the :8799 isolation claim; the
+   reachability probe overwrote its original). No retro-evidence was manufactured.
+4. Build-under-test: da046b9 runtime, re-verified by the tester against the actual
+   current HEAD (ebd217f) including a line-by-line read of the one code-file diff
+   in between (comment-only). The greens hold at HEAD.
