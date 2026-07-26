@@ -3012,3 +3012,506 @@ fabricated claim.
    shell-stays-200 fix; §49's navigation-exempt design supersedes it.
 3. The draft's "decided and underway" phrasing for the disposition is now stale in the
    good direction: §49 is fully landed, not in flight.
+
+---
+
+# T3 — docs-only re-check (spec/doc fidelity)
+
+**Assigned commit:** `7b3373ecfa159ac4f71964ff71cc17bc976ccfac`
+**Commit at completion:** `e1b9fd43a25488492e931bece90c4d06dcb909d5` (`git rev-parse HEAD`)
+**Date:** 2026-07-26
+**Scope:** NARROW. Only the two documentation REDs from the prior T3 features rerun.
+
+**HEAD moved mid-pass.** This check was assigned against `7b3373e`. While it was running, `e1b9fd4`
+("DECISIONS §49: withdraw the 'unmatched routes are limited' claim…") landed and acted on the RED
+this pass raised. Both states are therefore reported: the verdict as it stood at the assigned
+commit, and a re-verification of the new §49 at HEAD. All DECISIONS.md citations below are against
+**HEAD**; §48's body shifted **+9 lines** when §49's marker was inserted, so any citation carried
+over from an earlier draft of this report will be nine short.
+
+**Runtime neutrality confirmed at HEAD:** `git diff --name-only 5ea35f3..HEAD` restricted to
+`server/`, `web/`, `shared/` is **empty**. The full changed set across `5ea35f3..HEAD` is
+`DECISIONS.md`, `TESTLOG.md`, `SECURITY.md` and `screenshots/**` — all documentation. No runtime
+byte changed, so the prior GREENs stand undisturbed and every finding below is doc-side.
+
+**Method:** docs fact-checked AGAINST source, never the reverse. Where a doc claim asserted a
+*runtime* behaviour that reading could not settle (§48 §6, §49 §1), it was settled by a read-only
+probe against the repo's own installed dependencies rather than by argument.
+
+---
+
+## Check 1 — Both doc sections exist and are reachable
+
+**VERDICT: GREEN**
+
+| item | doc (HEAD) |
+|---|---|
+| §48 heading | `DECISIONS.md:4093` |
+| §48 body | `DECISIONS.md:4093-4294` |
+| §45 §7 heading | `DECISIONS.md:3945` |
+| PARTLY SUPERSEDED marker on §45 §7 | `DECISIONS.md:3947-3951` (marker lines; 6-line insertion with its trailing blank) |
+| PARTLY SUPERSEDED marker on §48 (new, `e1b9fd4`) | `DECISIONS.md:4095-4102` (marker lines; `:4103` is the trailing blank) |
+
+The §45 §7 marker is a forward pointer (`see §48`) placed directly above the four bullets, so a
+reader landing where the stale claim lives cannot read it without first reading that it was
+superseded. The prior RED is closed.
+
+**Both markers exist, are correctly placed and correctly scoped — that is what this check covers,
+and it passes.** Separately, the §48 marker's *explanatory* sentences at `DECISIONS.md:4097-4099`
+repeat the mechanism error described in **Check 3d**; that is counted there, not here, but it is
+flagged at both ends so neither reads as a clean bill for those three lines.
+
+`7b3373e` also replaced §48's line-number citation with the prose anchor now at
+`DECISIONS.md:4113`. Verified necessary, and immediately vindicated: `e1b9fd4`'s marker shifted
+§48's body by nine lines, which would have invalidated the citation a second time.
+
+---
+
+## Check 2 — §48's staticAgency / modeAgency description vs `server/src/api.ts`
+
+**VERDICT: GREEN**
+
+### Counts
+
+Doc `DECISIONS.md:4156-4160` — 17 static binding lines, 12 mode, one in both, "counted as binding
+lines in `api.ts` with comments stripped". Re-measured with comment lines and the two `const`
+declarations excluded:
+
+* `staticAgency` — **17** lines
+* `modeAgency` — **12** lines
+* both on one line — **1**: `server/src/api.ts:1354`
+
+**All three counts match exactly.**
+
+### The two constants
+
+* Doc `DECISIONS.md:4151` — "`STATIC_AGENCY` is now exported from `poller.ts`".
+  Source `server/src/poller.ts:73` `export const STATIC_AGENCY = 'ttc';`, imported `api.ts:18`. ✔
+* Source `api.ts:391-392`: `const staticAgency = STATIC_AGENCY;` /
+  `const modeAgency = poller.getMode().agency;` ✔
+
+### staticAgency spot-checks (7 checked, 4 required)
+
+Doc table `DECISIONS.md:4156` binds staticAgency to
+`stops, routes, trips, stop_times, shapes, calendar, calendar_dates`.
+
+| # | source line | table(s) bound | matches |
+|---|---|---|---|
+| 1 | `api.ts:409` | `routes` | ✔ |
+| 2 | `api.ts:414` / `:417` | `calendar` / `calendar_dates` | ✔ |
+| 3 | `api.ts:743` | `stops` (nearby bbox) | ✔ |
+| 4 | `api.ts:1068` | `stop_times` ⋈ `stop_times` ⋈ `trips` (plan self-join) | ✔ |
+| 5 | `api.ts:1202` | `shapes` | ✔ |
+| 6 | `api.ts:1214` | `trips` | ✔ |
+| 7 | `api.ts:1220` | `stop_times` ⋈ `stops` | ✔ |
+
+All seven documented static tables covered; no staticAgency site binds a table outside the list.
+
+### modeAgency spot-checks (5 checked, 3 required)
+
+Doc table `DECISIONS.md:4157` binds modeAgency to
+`trip_delay_obs, ghosts, agg_delay, agg_delay_route, service_alerts`.
+
+| # | source line | table bound | matches |
+|---|---|---|---|
+| 1 | `api.ts:448` | `trip_delay_obs` | ✔ |
+| 2 | `api.ts:486` | `ghosts` | ✔ |
+| 3 | `api.ts:872` / `:879` | `agg_delay` / `agg_delay_route` | ✔ |
+| 4 | `api.ts:1265` | `service_alerts` | ✔ |
+| 5 | `api.ts:1399-1401` | `trip_delay_obs`, `ghosts` (/api/stats) | ✔ |
+
+All five documented observation tables covered; no modeAgency site binds a table outside the list.
+
+### The two "easy to get wrong" sites
+
+* **`/api/plan`'s self-join is static** (`DECISIONS.md:4165-4167`). Source `api.ts:1057-1061` —
+  `FROM stop_times b JOIN stop_times a ON a.agency = b.agency … JOIN trips t ON t.agency = b.agency
+  … WHERE b.agency = $1`, bound `[staticAgency, …]` at `api.ts:1068`. All three legs inherit
+  `b.agency`, as documented. Negative-probe variant `api.ts:1100-1105` likewise static. ✔
+* **The forecast denominator is mixed, bound per query** (`DECISIONS.md:4168-4170`). `api.ts:465`
+  binds `staticAgency` for the `trips`⋈`stop_times` count; `api.ts:448` (`trip_delay_obs`) and
+  `api.ts:486` (`ghosts`) bind `modeAgency` — three bindings inside one `refreshForecast()`. ✔
+
+### The cross-seam join (§48 §3)
+
+Doc `DECISIONS.md:4179-4190` quotes
+`FROM ghosts g LEFT JOIN trips t ON t.agency = $2 AND t.trip_id = g.trip_id WHERE g.agency = $1`.
+Source `api.ts:1351-1354` matches, bound `[modeAgency, staticAgency, sinceIso, GHOSTS_MAX_EVENTS]`
+— `$1 = modeAgency`, `$2 = staticAgency`. Quote faithful. ✔
+
+### §48 §4's claims about the tests
+
+Doc `DECISIONS.md:4204-4213`. All present:
+
+* `api.test.ts:629` — seam-per-table test; its URL list is exactly **eight** endpoints ✔
+* `api.test.ts:677` — rider-symptom test, `/api/stops/nearby` at lat `43.64354` / lon `-79.39699`
+  (King & Spadina), fixture gated `whenParams: (p) => p[0] === 'ttc'` at `api.test.ts:685` ✔
+* `api.test.ts:700` — cross-seam headsign test ✔
+* `api.test.ts:732` — "LIVE mode binds one agency on both sides of the seam" (the mirror) ✔
+* `api.test.ts:264-277` — the `whenParams` predicate ✔
+
+### Supporting citations §48 makes about other files
+
+* `DECISIONS.md:4123` — "`seed_toronto.ts:60` hardcodes `const AGENCY = 'ttc'`".
+  Source `server/src/seed_toronto.ts:60` = `const AGENCY = 'ttc';` — exact ✔
+* `DECISIONS.md:4141-4143` — quotes demo.ts rule 5. Source `server/src/demo.ts:31-33` carries the
+  quoted text verbatim (full rule runs to `demo.ts:34`); `DEMO_AGENCY` at `demo.ts:64` ✔
+* `DECISIONS.md:4145` — "`poller.ts` had implemented that split since Demo Mode landed".
+  Source `poller.ts:73-75`, `:245`, `:273-274` ✔
+
+Mirrored in-source at `api.ts:361-390`, which makes the same argument in the same terms.
+
+---
+
+## Check 3 — the limiter rescope
+
+**VERDICT at assigned commit `7b3373e`: RED.**
+**VERDICT at HEAD `e1b9fd4`: the original RED is CLOSED; a NEW, narrower RED remains.**
+
+### 3a. What was RED at `7b3373e`, and why
+
+§48 §6 asserted (now `DECISIONS.md:4265-4267`):
+
+> "a request with no matched route has no pattern, and treating "unknown" as exempt is how the
+> bypass comes straight back. So anything not positively identifiable as non-API is **limited** —
+> including 404s, which is precisely what a scanner generates."
+
+Measured false. Probe replicating `api.ts:585-618` verbatim against the repo's own installed
+fastify 4.29.1 / @fastify/static 7.0.4 / @fastify/rate-limit 9.1.0 / find-my-way 8.2.2.
+`dist/index.html` **exists** (`DIST_CANDIDATES[0]`, `api.ts:42-45`), so `webDist` is non-null at
+`api.ts:1419` and `fastifyStatic` IS registered at `api.ts:1427` — the deployed state.
+
+```
+=== fastifyStatic registered (the deployed state) ===
+GET  /api/stops?q=King     routed=/api/stops  LIMITED
+GET  /%61pi/stops?q=King   routed=/api/stops  LIMITED   <- encoded bypass CLOSED
+GET  /api/plan?fromLat=1   routed=/api/plan   LIMITED
+GET  /api/bogus            routed=/*          EXEMPT    <- contradicted the doc
+GET  /                     routed=/*          EXEMPT
+GET  /assets/index-abc.js  routed=/*          EXEMPT
+GET  /wp-admin             routed=/*          EXEMPT
+GET  /stop/15647           routed=/*          EXEMPT
+GET  /%ZZ                  routed=undefined   allowList NOT CALLED (Fastify 400s first)
+HEAD /wp-admin             routed=/*          EXEMPT
+POST /api/bogus            routed=undefined   allowList NOT CALLED
+OPTS /api/bogus            routed=undefined   allowList NOT CALLED
+PUT  /%61pi/stops          routed=undefined   allowList NOT CALLED
+```
+
+(Replica caveat: the probe's `setNotFoundHandler` is a simplified stand-in, so the *status* column
+is not reproduced here at all — real `api.ts:1439-1441` 404s asset-shaped paths and
+`api.ts:1443-1445` gates the shell on GET/HEAD. The `routed` and `allowList` columns, which are
+what this check turns on, come from the verbatim `api.ts:585-618` hook and are unaffected.)
+
+### 3b. What §48 §6 got RIGHT, and still does
+
+* **The `%61pi` encoded bypass is genuinely closed.** find-my-way decodes before matching, so the
+  encoded target reaches `allowList` already resolved to the pattern `/api/stops` and is refused by
+  the same budget. This is the security-relevant claim and it holds.
+* §48's measured block at `DECISIONS.md:4269-4276` is **corroborated in mechanism**: the two `/api`
+  rows are confirmed *subject to* the budget, the two static rows confirmed exempt. The literal
+  `429` statuses were NOT reproduced — the probe never exhausted a budget. Mechanism verified;
+  recorded status codes taken on trust.
+* The `/api`-only rescope and all three ceilings are accurate: `GLOBAL_MAX_PER_MIN = 600`
+  (`api.ts:554`, applied `:586`), `PLAN_MAX_PER_MIN = 60` (`api.ts:568`, applied `:940`),
+  `SEARCH_MAX_PER_MIN = 120` (`api.ts:569`, applied `:715`), matching `DECISIONS.md:4236-4241`.
+
+### 3c. `e1b9fd4` closes the original RED — verified
+
+§49 (`DECISIONS.md:4296-4407`) withdraws the exact sentence, and the §48 marker at
+`DECISIONS.md:4095-4102` scopes the withdrawal to that one sentence while preserving the rest.
+The withdrawal, its scoping, the exposure analysis and the decision are all verified accurate
+below. (The *mechanism* sentences — `DECISIONS.md:4320-4322` in §49 §1 and `:4097-4099` in the
+marker — are the exception, and are the subject of 3d.)
+
+* §49 §2's four-branch exposure table (`DECISIONS.md:4336-4341`) matches the not-found handler:
+  `/api` JSON 404 → `api.ts:1433`; asset-extension JSON 404 → `api.ts:1439-1441`;
+  non-navigation JSON 404 → `api.ts:1443-1445`; navigation → SPA shell via **synchronous, uncached
+  `readFileSync`** → `api.ts:1447`. ✔ (There is a fifth exit, `if (!webDist)` at `api.ts:1434`,
+  unreachable in the deployed configuration where `dist/index.html` exists — its omission from a
+  table about real exposure is correct, not a gap.)
+* §49 §1's two `node_modules/` citations are exact: `@fastify/rate-limit/index.js:11`
+  `const defaultHook = 'onRequest'`; `fastify/lib/fourOhFour.js:34-35`, the separate `FindMyWay`
+  instance with the comment "404 router, used for handling encapsulated 404 handlers". ✔
+* §49 §4's tracking claim is real: `SECURITY.md:238` is the "§8. Known open items, in priority
+  order" heading; the item itself is **`SECURITY.md:247-261`**, filed lowest with the rationale §49
+  gives. ✔
+* §49 §3's reason for not changing the code is sound and self-consistent: `preHandler:
+  app.rateLimit()` on the not-found handler would answer 429 for the SPA shell during an exhausted
+  budget, re-breaking the §48 §5 guarantee. Correct — the shell is served from that handler
+  (`api.ts:1447`) for every client-side route.
+* §49 §4's cross-reference correction (§28 not §26 for the stale-shell failure, §27 for the
+  service-worker half) is **correct**, verified against the sections themselves rather than against
+  the source comments: `DECISIONS.md:437` is §26's "production build is unaffected" claim;
+  `DECISIONS.md:491-497` is §27 measuring that claim false; `DECISIONS.md:540-547` is §28's Fix 2,
+  the SPA-fallback/asset-404 change with the service-worker consequence. §49 was right to check
+  rather than copy the hand-off's "§26". ✔
+
+**The original Check 3 RED is closed.** The false sentence is withdrawn, correctly scoped, and the
+real exposure is documented more precisely than this pass had established.
+
+### 3d. NEW RED — §49 §1's mechanism is right for one path and wrong for the dominant one
+
+**Doc `DECISIONS.md:4320-4322`:**
+
+> "An unmatched request is dispatched by that second router, which never fires the main router's
+> `onRequest` chain. **The limiter's hook is not called at all, so the `allowList` callback — and
+> therefore the careful fallback branch §48 §6 describes — is never consulted.**"
+
+`@fastify/rate-limit` attaches **per-route via `onRoute`** (`node_modules/@fastify/rate-limit/index.js:126`
+— `fastify.addHook('onRoute', (routeOptions) => {`), not as a bare root-level hook. So it attaches
+to `@fastify/static`'s `/*` route like any other. Measured:
+
+```
+static REGISTERED (deployed state, dist/index.html exists):
+  GET  /wp-admin     allowList fired: true    routeOptions.url seen: /*
+  GET  /.env         allowList fired: true    routeOptions.url seen: /*
+  POST /wp-admin     allowList fired: false   (hook never ran)
+
+static NOT registered (webDist === null):
+  GET  /wp-admin     allowList fired: false   (hook never ran)
+  GET  /.env         allowList fired: false   (hook never ran)
+  POST /wp-admin     allowList fired: false   (hook never ran)
+```
+
+**In the deployed configuration, a GET/HEAD scanner request is not dispatched by the 404 router at
+all.** It matches `/*` on the main router, the limiter's hook **does** fire, and `allowList` **is**
+consulted — it returns exempt because the pattern `/*` does not start with `/api`. Only *after*
+`@fastify/static` fails to find the file does the request fall through to the not-found handler.
+§49's stated mechanism describes only non-GET/HEAD traffic (or the `webDist === null` case).
+
+This matters because §49 §2 names the affected traffic as "a scanner spraying `/admin`, `/.env`,
+`/wp-login.php`" (`DECISIONS.md:4345-4346`) — all GETs, i.e. precisely the path where the stated
+mechanism does not apply.
+
+**The same claim has propagated to four places**, so a fix has to touch all of them:
+
+| # | location | wording |
+|---|---|---|
+| 1 | `DECISIONS.md:4320-4322` | §49 §1, quoted above |
+| 2 | `DECISIONS.md:4097-4099` | the §48 marker — "Fastify routes them on a separate internal 404 router that never fires the `onRequest` hook the limiter attaches to, so the `allowList` fallback it describes is never consulted" |
+| 3 | `SECURITY.md:248-250` | §8 item 5 — "Fastify dispatches them on a separate internal 404 router that never fires the `onRequest` hook `@fastify/rate-limit` attaches to, so the limiter's `allowList` is never consulted on that path" |
+| 4 | `TESTLOG.md:2757-2783` | T2's root-cause paragraph — "nothing that 404s can structurally ever be rate-limited… `allowList` is never even consulted for these requests" |
+
+Carrier 2 is why **Check 1 passes the marker on placement and scoping only** and defers those three
+lines here.
+
+**Carrier 4 also rests on non-discriminating evidence, which is worth recording because it explains
+how three documents agreed on a wrong mechanism.** T2 qualifies its claim "(confirmed by the
+complete absence of `x-ratelimit-*` response headers, not merely their showing 'allowed')". That
+observation cannot distinguish the two cases: `@fastify/rate-limit/index.js:195-203` returns from
+the `allowList` branch **before** any header is set (`max`, `current` and the header writes all come
+after, from `:205` on). An exempted request and a request whose hook never fired both produce zero
+`x-ratelimit-*` headers. The header absence is therefore consistent with the measured reality — hook
+fired, exempted on the `/*` pattern — and was read as proof of the stronger claim.
+
+T2's own text in fact notes that "every registered route (including `@fastify/static`'s own wildcard
+registration for the SPA shell) has a defined `routeOptions.url` by the time its hook runs" — the
+correct observation — and then concludes "a genuinely unmatched request never reaches any rate-limit
+hook in the first place". Both are true; the slip is treating a GET 404 as "genuinely unmatched"
+when it matches `/*`.
+
+**What survives unaffected** — the load-bearing conclusions are all still correct, verified across
+both paths:
+
+* Unmatched paths bypass the budget. **TRUE** — by two different mechanisms rather than one.
+* The fallback at `api.ts:613-616` is dead code. **TRUE**, and doubly so: for GET/HEAD `routed` is
+  the string `/*` so the branch is skipped; for every other method the hook never fires. Probed
+  across GET, HEAD, POST, OPTIONS and PUT, in both configurations.
+* The exposure is the `readFileSync` navigation branch. **TRUE.**
+* The decision not to change the code. **Unaffected** — it rests on §49 §2 and §3, both correct.
+
+**Severity: low, and lower than the RED it replaces.** No API budget is bypassed: every genuinely
+routed `/api/*` request is limited, including the encoded form, so nothing reaches Postgres
+unbudgeted. This is a wrong *explanation* attached to a correct *conclusion* and a sound decision.
+
+It is nevertheless a RED under this pass's rules, and worth fixing precisely because §49 §5
+(`DECISIONS.md:4404-4405`) sets the standard itself: *"a claim about what a hook does needs a probe
+that makes the hook fail to fire, not a reading of the code that registers it."* The withdrawal was
+probed; the replacement mechanism was again inferred from reading `fourOhFour.js`, and it is again
+half right.
+
+**Smallest fix, all four carriers** — distinguish the GET/HEAD `/*`-match path (hook fires,
+`allowList` exempts on the pattern) from the non-GET 404-router path (hook never fires), in
+`DECISIONS.md:4320-4322`, `DECISIONS.md:4097-4099`, `SECURITY.md:248-250` and `TESTLOG.md:2757-2783`.
+No conclusion in any of the four needs to change — only the explanation.
+
+**Two further carriers, of the *withdrawn* claim rather than this one, survive in source** at
+`server/src/api.ts:604-607` and `:613`, and §49 mentions neither. See Check 5 — they should be
+corrected in the same pass.
+
+---
+
+## Check 4 — Does the §45 §7 marker's "only the FIRST bullet is superseded" claim hold?
+
+**VERDICT: GREEN** — the other three bullets are all still true against current source.
+
+Marker claim: `DECISIONS.md:3950-3951` — "The other three bullets below stand unchanged."
+
+### Bullet 2 — the data clock (`DECISIONS.md:3958-3963`)
+
+Source `api.ts:404` `const dataNow = (): number => poller.now();`, documented `api.ts:394-403`:
+
+| site | endpoint | clock | expected |
+|---|---|---|---|
+| `api.ts:682` | `/api/health` `serverNowMs` | `dataNow()` | ✔ |
+| `api.ts:708` | `/api/vehicles` `serverNowMs` | `dataNow()` | ✔ |
+| `api.ts:814` | stops/arrivals board | `dataNow()` | ✔ |
+| `api.ts:958` | `/api/plan` | `dataNow()` | ✔ |
+| `api.ts:1249` | `/api/alerts` | `dataNow()` | ✔ |
+| `api.ts:440` | `refreshForecast()` → `trip_delay_obs.ts` | `Date.now()` | ✔ documented exception |
+| `api.ts:1330` | `/api/ghosts/feed` → `ghosts.detected_at` | `Date.now()` | ✔ documented exception |
+| `api.ts:1397/1401/1410` | `/api/stats` → both columns | `Date.now()` | ✔ documented exception |
+
+"and now say so at each site" is literally true: `api.ts:438-439`, `:1324-1329`, `:1392-1395` each
+carry an explicit WALL-clock comment giving the `DEFAULT now()` reason. **Still true.**
+
+(Precision note, not a defect: `/api/ghosts/feed` reports `serverNowMs` off its wall clock at
+`api.ts:1385` because the whole handler stays on one clock by design, stated at `api.ts:1324-1329`
+— the same `Date.now()` call the bullet's own carve-out names.)
+
+### Bullet 3 — `HealthResponse` gained `mode` and `demo` (`DECISIONS.md:3964-3966`)
+
+`shared/types.ts:95` `mode: 'live' | 'demo'`, `:97` `demo: DemoProvenance | null`, `DemoProvenance`
+in the same shared file. The stated reason — the wire contract must not import from `server/` —
+verified: no `server/` import exists anywhere under `shared/`. Emitted `api.ts:680`. **Still true.**
+
+### Bullet 4 — `fakePoller` lost its cast (`DECISIONS.md:3967-3973`)
+
+`api.test.ts:300` `const fakePoller: PollerHandle = {` — a plain annotation. The string
+`as unknown as PollerHandle` survives only inside the explanatory comment at `api.test.ts:293`
+("It used to end in…"), not in code. "The one remaining cast is scoped to that single return value"
+is exact: `api.test.ts:322`. **Still true.**
+
+**Conclusion:** the marker's scoping is correct. Marking the whole subsection superseded would have
+discarded three accurate decisions.
+
+---
+
+## Check 5 — No remaining stale references
+
+**VERDICT: GREEN** (re-run at HEAD, after §49 landed)
+
+* **Stale line citations.** `grep -n "DECISIONS.md:3" DECISIONS.md` → **zero hits**. §49 introduced
+  no new line-number citations; it refers to sections by number throughout.
+* **Unmarked survivals of the superseded agency claim.** Every `getMode()` occurrence accounted for:
+
+| line (HEAD) | context | status |
+|---|---|---|
+| `3953` | the superseded bullet itself | directly under the marker at `3947-3951` ✔ |
+| `3968` | bare `getMode()`, naming a method the test double lacked | unrelated to the agency claim ✔ |
+| `4115` | §48 quoting the superseded claim in a blockquote | explicitly labelled superseded ✔ |
+| `4125` | §48 narrating the overshoot | correct as written ✔ |
+| `4157` | §48's `modeAgency` table row | correctly scoped to observation tables ✔ |
+
+* **"not the literal 'ttc'"** appears at `3953` (marked), `4115` (quoted as superseded) and `4199`
+  (quoting the deleted test's name, historical). No unmarked instance.
+* **The now-withdrawn limiter sentence** at `DECISIONS.md:4265-4267` is reachable only beneath the
+  §48 marker at `:4095-4102`, which names it verbatim. No unmarked survival **in DECISIONS.md**.
+* **But it survives unmarked in source.** `server/src/api.ts:604-607` still states it almost
+  verbatim — *"anything we cannot positively identify as non-API is limited — including 404s, which
+  are exactly what a scanner generates"* — and **§49 never mentions the comment**. §49 §3's decision
+  not to change the code was about the limiter's *behaviour*; it leaves a code comment asserting a
+  protection the code does not provide, which is the same defect §49 exists to correct, one file
+  over. The inline comment at `api.ts:613` — *"No matched route: decode defensively and only exempt
+  a path we are sure is static"* — rests on the same false premise, so the fix is two comments, not
+  one. Strictly these are source comments rather than ledger entries, so they sit at the edge of a
+  docs-only remit — recorded so the coordinator does not inherit them silently. They are the natural
+  companion to the four doc carriers in 3d.
+
+  (Noted for symmetry, about the ledger rather than the source: the §48 marker does cover *that
+  ledger sentence* at `DECISIONS.md:4265-4267`, but sits ~170 lines above it, where §45 §7's marker
+  sits directly on top of the bullet it qualifies. Structurally sound, and a looser bar than Check 1
+  credits §45 §7 with — worth knowing if the convention is ever tightened. No marker of any kind
+  covers the two source comments.)
+
+---
+
+## Claims NOT verified in this pass
+
+Recorded so the verdict is not read as broader than it is:
+
+* `DECISIONS.md:4215-4218` — the demo-instance verification figures (7 search hits, 18 departures,
+  27 plan candidates, 119-point shape, 36 stops).
+* `DECISIONS.md:4294` — "334 tests green, both typechecks clean".
+* `DECISIONS.md:4269-4276` — corroborated in mechanism by probe; the literal `429` status codes
+  were not reproduced (no budget was exhausted).
+
+---
+
+## FINAL VERDICT: RED — 4 of 5 checks GREEN; Check 3 carries a new, narrower RED.
+
+**Read this first, so the verdict is not misread as a regression.** Both prior REDs were
+*"DECISIONS.md never documented X"*. **Both are closed.** Nothing that was GREEN has gone RED, and
+no runtime byte changed anywhere in `5ea35f3..HEAD`. Every RED in this report is a defect *inside
+newly written documentation*, found by fact-checking it — not a reopened old failure.
+
+**Prior RED (a), the staticAgency/modeAgency split — CLOSED, accurately.** All three measured counts
+(17 / 12 / 1), all twelve table bindings, both "easy to get wrong" sites, the cross-seam join quote,
+the test inventory, and the `seed_toronto.ts:60` / `demo.ts` / `poller.ts` citations check out
+against source. The §45 §7 marker's scoping claim is correct — all three remaining bullets
+re-verified and still hold.
+
+**Prior RED (b), the limiter rescope — CLOSED.** §48 §5-§6 documents it; the rescope, the three
+ceilings, the SPA-shell exemption and the `%61pi` encoded-bypass closure are all accurate and were
+confirmed by probe. The one false sentence this pass found in it (`DECISIONS.md:4265-4267`) has
+already been withdrawn by §49 and correctly scoped by the marker at `:4095-4102`.
+
+**New RED — the replacement mechanism, in four places.** "The limiter's hook is not called at all"
+is measured true for non-GET methods and for `webDist === null`, but **false for GET/HEAD in the
+deployed configuration**, where the request matches `@fastify/static`'s `/*` route on the main
+router, the hook fires, and `allowList` exempts it on the pattern. Since `@fastify/rate-limit`
+attaches per-route via `onRoute` (`index.js:126`), it is present on that route. §49 §2 names GET
+scanner traffic as the affected case, so the explanation misses its own primary example. Carried in
+`DECISIONS.md:4320-4322` (§49 §1), `DECISIONS.md:4097-4099` (the §48 marker), `SECURITY.md:248-250`
+(§8 item 5) and `TESTLOG.md:2757-2783` (T2) — whose supporting evidence, the absence of
+`x-ratelimit-*` headers, cannot distinguish the two cases because the `allowList` return at
+`@fastify/rate-limit/index.js:195-203` precedes every header write.
+
+**Everything §49 concludes remains true** — unmatched paths do bypass the budget, `api.ts:613-616`
+is dead code (now confirmed across five methods and both configurations), the exposure is the
+uncached `readFileSync` at `api.ts:1447`, and the decision not to rate-limit the not-found handler
+is sound because doing so would answer 429 for the SPA shell and re-break §48 §5. **No API or
+database budget is bypassed.** This is a wrong explanation attached to a correct conclusion.
+
+Smallest correct fix is doc-side and small: distinguish the two paths in all four carriers listed
+in 3d. No conclusion changes — only the explanation.
+
+**One loose end for the same pass:** the sentence §49 *withdrew* still stands, near-verbatim, in
+source at `server/src/api.ts:604-607` (with `api.ts:613` resting on the same premise), and §49 does
+not mention either. The ledger withdrew the claim; the code comments asserting it did not. Whether to also harden the navigation branch remains the
+coordinator's call, unchanged by this finding.
+
+No project file was modified by this check except this draft.
+
+### Orchestrator adjudication (2026-07-26, on merge)
+
+Merged after an independent reviewer pass (which confirmed the draft's load-bearing
+premise about the deployed `/*` wildcard registration and required three precision
+corrections, all applied) and after the fix this draft's RED demanded had landed.
+
+1. **Both prior REDs from the T3 features rerun are CLOSED** — §48 (ead4551) documents
+   the staticAgency/modeAgency split and limiter rescope accurately per this re-check's
+   checks 2 and 5; the §45 §7 marker (7b3373e) is verified correctly scoped.
+2. **This re-check's RED — §49's wrong mechanism for the dominant path — is CLOSED by
+   DECISIONS §50 (commit ebd217f).** The builder reproduced both paths with a probe
+   instrumenting the real allowList before writing a word: in the deployed config,
+   unmatched GET/HEAD requests route to `/*`, the limiter hook fires, and allowList
+   exempts on the pattern; the hook-never-fires story holds only for other methods and
+   the no-bundle config. All four doc carriers and both api.ts comments corrected
+   (api.ts comment-only, verified line-by-line; 334/334 tests; runtime byte-identical).
+3. The chain this closes is worth naming: §48 shipped an untested claim → §49 withdrew
+   it but explained the mechanism by code-reading → §50 corrected the mechanism by
+   probe. Each layer was caught by a tester enforcing the standard the previous layer
+   wrote down.
+
+### Adjudication appendix to the T2 features rerun entry above (2026-07-26, post-§50)
+
+The T2 entry's §2.3 root-cause narrative — the limiter's hook is never called for
+unmatched routes, attributed to Fastify's internal 404 router — is the mechanism §50
+corrects. It is true for non-GET/HEAD methods and for no-bundle configs, but in the
+deployed config unmatched GET/HEAD requests (including /api-prefixed ones) match
+@fastify/static's `/*` wildcard: the hook DOES fire and allowList exempts on the
+pattern. T2's empirical finding (unmatched requests are never limited, at any budget
+state) and its RED verdict stand unchanged — same observable, corrected explanation.
+See DECISIONS §50 / commit ebd217f.
