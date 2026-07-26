@@ -4020,3 +4020,66 @@ That is §42's own prescription, executed. It typechecks, the 304-test suite is 
 the eight-combination probe is clean on it. Kept, with the stale "§43 ships it"
 cross-references in those files left pointing at the section that actually holds the
 measurements, §42.
+
+## §47 — `npm run eval`: the spec's honest evaluation script, built for a backtest it cannot run yet
+
+STATUS.md's R3 row: `npm run eval` did not exist. It now does, as `server/src/eval.ts` +
+`server/src/eval.test.ts`, wired by one line in `package.json`. Two sections, both computed
+from real rows in the configured DB via the same dual-driver pattern as `aggregate.ts`.
+
+**1. Ghost Forecast backtest (METHODS.md §7).** Holds out the most recent FULL service day
+with a meaningful number of ghost events, trains a (route, hour_of_week) risk model on the
+`WINDOW_DAYS` before it, and scores every departure due on the held-out day into a
+TP/FP/FN/TN confusion matrix. It deliberately does not reimplement the forecast: it imports
+`buildForecast` and `ghostRiskFor` UNMODIFIED from `api.ts`, so this is a backtest of the
+exact mechanism the live app ships, not a parallel algorithm that could quietly drift from
+it. "Meaningful" is a stated, testable bar rather than a vibe: `BACKTEST_MIN_QUALIFYING_DAYS`
+= 2 and `BACKTEST_MIN_EVENTS_PER_DAY` = 5, both exported constants, both printed in the
+"not runnable" message. A day only counts if it clears the event bar AND falls inside the
+actual training window used — a first draft checked the bar against all of history and a
+code-reviewer pass caught that a qualifying day outside the training window would let a
+"RUNNABLE" claim rest on data the model never trains on; the fix (`eval.ts`, the
+`windowQualifying` check) closed it before this shipped, not after.
+
+The confusion-matrix accumulation clamps `ghosts` to `scheduled` per cell rather than
+letting a negative "not-ghosted" count corrupt the totals silently: `scheduled` is
+recomputed from the CURRENT static tables while a ghost's cell comes from its own recorded
+`scheduled_start`, so a re-seed between when a ghost fired and when this eval runs could
+disagree. Clamped cells are counted (`inconsistentCells`) and surfaced as a warning in the
+report rather than absorbed quietly — the same instinct as `voidForInconsistency` in
+`engine.ts`, applied to an eval script instead of the live pipeline.
+
+**REALITY TODAY, unchanged by this section existing:** the `ghosts` table holds zero rows —
+the mass-ghost breaker is still honestly suppressing (§9.4/§9.5) — so this prints:
+
+> Ghost Forecast backtest: not runnable — 0 ghost events recorded across 0 service day(s)
+> observed (breaker suppression: see /api/health). A meaningful eval needs >=2 full service
+> days with >=5 ghost events each (have 0 qualifying day(s), 0 ghost event(s) total, 0
+> service day(s) observed).
+
+That is the actual output against a throwaway seed (`.data/pglite-eval`, static board only,
+`GHOSTBUS_SEED_SKIP_DOWNLOAD=1`), not a description of expected behaviour. The backtest math
+itself is proven against a synthetic fixture in `eval.test.ts`: two Wednesdays seven days
+apart (so they share an hour_of_week cell), a trained 50% ghost rate on ten same-slot static
+trips clearing `GHOST_RISK_MIN_N`, and a held-out day that hand-computes to
+TP=4, FP=6, FN=1, TN=0 — precision 40%, recall 80% — asserted exactly, not approximately.
+
+**2. Honest-ETA within-sample calibration (METHODS.md §6).** Reconstructing "what
+`agg_delay` looked like at observation time" was considered and rejected: no history of the
+aggregate table is retained, so the honest simpler thing is a within-sample statistic — for
+every (route, hour_of_week) bucket with `n >= ROUTE_HOUR_MIN_N` (the estimator's own
+route-hour floor from `eta.ts`), what fraction of THAT bucket's own observations land inside
+THAT bucket's own P25-P75 band. Expected ~50% by construction; it measures band consistency,
+not forecast skill, and the printed report says so in those words rather than letting a
+number imply more than it is. `CALIBRATION_MIN_OBS = 500` gates it; below that it reports
+the real count and nothing else. Against the same static-only throwaway (no collector has
+run against it, so `trip_delay_obs` is empty) it correctly reports "thin data — 0 qualifying
+observation(s)"; `eval.test.ts` proves the arithmetic itself on a 500-observation fixture
+(two qualifying buckets, one sub-threshold bucket padding the total) against percentiles
+computed independently with the already-tested `percentileCont`, landing on exactly 490 of
+500 covered.
+
+Every number either script prints traces to a parameterized, agency-scoped (`'ttc'` only —
+`'ttc-demo'` is never queried) query; both sections exit 0 on thin data, because an honest
+"not enough data yet" is this script's success case, not its failure one. 331 tests green
+(324 pre-existing + 7 new), `tsc -p tsconfig.node.json --noEmit` clean.
