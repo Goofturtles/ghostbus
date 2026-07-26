@@ -3944,6 +3944,12 @@ that is what it is. Nothing moves the rider's location without them pressing som
 
 ### 7. The queued Demo-API items, landed in the same pass
 
+> **PARTLY SUPERSEDED (2026-07-26) — see §48.** The FIRST bullet below overshot: a schedule
+> is not an observation, so `api.ts` now binds `staticAgency` (`'ttc'` always, for the
+> published board) separately from `modeAgency` (the poller's, for observations). Binding
+> every query to the poller's agency made Demo Mode return zero static rows. The other
+> three bullets below stand unchanged.
+
 * **`AGENCY` now comes from `poller.getMode().agency`, not the literal `'ttc'`.** Verified
   bug: a demo instance sharing a database with live TTC rows would have read the *live*
   rows and served them under the amber DEMO badge — the badge attached to data it does not
@@ -4095,7 +4101,7 @@ new entry rather than to quietly improve the old one. This is that entry.
 
 ### 1. The claim that is superseded
 
-**§45 §7 (DECISIONS.md:3945-3951) asserts:**
+**§45 §7's first bullet — now carrying its own PARTLY SUPERSEDED marker — asserts:**
 
 > **`AGENCY` now comes from `poller.getMode().agency`, not the literal `'ttc'`.** Verified
 > bug: a demo instance sharing a database with live TTC rows would have read the *live* rows
