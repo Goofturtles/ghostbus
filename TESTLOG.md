@@ -4902,3 +4902,647 @@ applied and self-re-verified by the Critic against the actual files.
    readings; the wave-1 entry stands as written per append-only rules.
 4. Evidence gaps G1-G4 are disclosed in the entry; RED-3's verdict rests on
    red3-backdrop.json's stored three-frame control alone, which is sufficient.
+
+---
+
+# R4 — CONSOLE-ERROR SWEEP (draft)
+
+**Question:** does GhostBus run with **zero console errors, zero uncaught exceptions, zero
+unhandled rejections and zero unexpected failed resource loads** across every state it has?
+
+**Role:** tester. No product file was changed by this run. Every write is either an artifact
+under `.data/r4-artifacts/` or this draft.
+
+---
+
+## VERDICT — **RED** (one defect, one root cause, one line)
+
+Zero console errors from app code, zero uncaught exceptions, zero unhandled rejections, zero
+renderer crashes, zero app warnings — but **all 10 cold loads fire a guaranteed 404 for a stop
+that does not exist** (11 firings in total; the extra one is the out-of-coverage repeat), which
+is a failed resource load in every rider's DevTools on every visit. Full detail below.
+
+Two of the eleven states **in the sweep matrix** — state 6 (forecast chips) and state 7 (catch
+flow) — could only be reached with an injected payload, because neither occurs on this board's
+live data. Their "clean" result covers the render path, not a naturally occurring state; see
+*Two states could not be swept on live data*. ("Eleven" here is the matrix, not the 11 404
+firings and not the 46 harness states — the three counts are unrelated.)
+
+Across **46 states in 10 runs**, in light and dark, in en / fr-CA / es, with the API healthy
+and with the API dead:
+
+| | |
+|---|---|
+| `console.error` from app code | **0** |
+| uncaught exceptions (`pageerror`) | **0** |
+| unhandled promise rejections | **0** |
+| in-page script errors | **0** |
+| renderer crashes | **0** |
+| `console.warn` from app code | **0** (see reclassification note) |
+| third-party console output | **0** |
+| `/api` responses observed (positive control) | **301** |
+
+> **Reclassification disclosed.** The harness's own counter reports
+> `consoleWarningsApp: 3`, because its `warnApp`/`warnThirdParty` split has no bucket for
+> *"emitted by the test tool itself."* All three are
+> `Service Worker registration blocked by Playwright`, produced by the `serviceWorkers: 'block'`
+> option I set on the two injection contexts, and all three carry a null source URL because
+> Playwright — not page code — emits them. I have re-attributed them to the harness by hand;
+> the raw artifacts still show them as `warnApp`, and that discrepancy is expected, not an
+> error. App-emitted warnings in every non-provoked state: **0**.
+
+The RED is the fourth criterion — *zero unexpected failed loads*:
+
+| | |
+|---|---|
+| **first-party HTTP failures** | **11 — every single one the same URL** |
+| deliberately provoked request failures | 13 (state 11's outage; mine, not the app's) |
+| self-inflicted 429s | **0** (pacing held; no false RED from my own probing) |
+
+---
+
+## Environment
+
+| | |
+|---|---|
+| Commit tested | `faecd2437f6c69e25912d7f0c8f6657b10330c06` (`faecd24`) |
+| Build under test | `npx vite build` at that commit → `index-07r9IsSc.js`, `MapCard-F0yzM5fK.js`, `index-De-0IbCa.css`, `MapCard-lYhkPaB7.css`, `maplibre-gl-worker-xvY6-9zT.js` |
+| Server entry | the real `server/src/server.ts` (unmodified), via `node --import tsx` |
+| Port | **9501** (never 8799 — the user's live instance, confirmed still listening on PID 31000 throughout) |
+| Database | `PGLITE_DIR=<repo>/.data/pglite-r4`, `DATABASE_URL=` (empty string), server logged `driver=pglite` |
+| Pattern cache | own copy, `PATTERN_CACHE_DIR=<pinned tree>/r4-pattern-cache` |
+| Browser | real Chrome **150.0.7871.182** via Playwright `chromium.launch({ channel: 'chrome', headless: true })` |
+| Viewport | 1280×800, `deviceScaleFactor: 1`, `locale: en-CA`, `timezoneId: America/Toronto` |
+| Geolocation | King & Spadina `43.6435, -79.3970` (primary) · Mississauga `43.593, -79.644` (state 10) · St Clair W at Bathurst `43.683061, -79.418852` (state 7) |
+| Node | v24.16.0 |
+
+### Isolation
+
+- `.data/pglite-r4` is this tester's own copy of the complete seeded board
+  (`cp -r .data/pglite-ft1r .data/pglite-r4`; 1.4 GB, 22 entries, board `20260726..20260905`).
+- **Evidence that the server wrote only there — and one honest caveat about it.** During the
+  run I observed 19 files under `.data/pglite-r4` modified inside a 3-minute window against
+  **0** under `.data/pglite` (the `db.ts` default fallback), while `.data/pglite3` was being
+  written throughout by the user's own `:8799` process (PID 31000). **That live survey was
+  read off the terminal and never archived, so it is an observation, not a stored artifact.**
+  The archivable replacement is `.data/r4-artifacts/r4_isolation_survey.txt`, generated after
+  the R4 server was stopped, which independently supports the same claim from mtimes that do
+  persist:
+  - `.data/pglite-r4` — newest write `18:35:33`, and it is `global/pg_control`, the checkpoint
+    a clean PGlite shutdown writes last. It then stops, matching my graceful stop.
+  - `.data/pglite` — newest write `2026-07-25T15:15`, stale by over a day. This is the dir an
+    unset `PGLITE_DIR` would have used, so its staleness is the specific thing worth proving.
+  - `.data/pglite3` — still advancing after my server was down (the user's `:8799` instance),
+    so it is visibly not mine.
+  - Other agents' dirs (`pglite-r5map`, `pglite-r5walk`, `pglite-r5gta-*`) are also advancing
+    on their own; R4 touched none of them.
+- `.data/r4-artifacts/run_server.mjs` prints the effective `PGLITE_DIR`, `PORT`,
+  `DATABASE_URL` (presence only, never the value) and cwd before importing the server, so
+  the artifact carries its own isolation receipt. This matters: the repo's `.env` holds a
+  real non-empty Neon `DATABASE_URL` and `db.ts` calls `loadEnvOnce()` *before* reading it,
+  so an unset variable — not just a wrong one — would have silently pointed the sweep at
+  the shared production database. Every launch was cross-checked against the server's own
+  `driver=pglite` line.
+- **Every shutdown was graceful.** A sentinel file makes the runner fire
+  `process.emit('SIGINT')` in-process so `server.ts`'s own handler runs and PGlite closes
+  cleanly. `[signal] SIGINT — shutting down…` is in the log for each stop, and port 9501 was
+  confirmed released before any restart. **No `taskkill` was used at any point.**
+
+### The build had to be pinned mid-run — and this is itself worth reporting
+
+At 18:08 another agent rebuilt the repo's `dist/` from **uncommitted** working-tree changes
+(`web/src/map/MapCard.tsx`, `web/index.html`, new `web/src/lib/walkRoute.ts`), replacing
+`index-07r9IsSc.js` with `index-CQ9Cdx-A.js` while this sweep was running. The service
+worker's own cache contents in my artifact are what caught it.
+
+Two earlier passes had therefore run against a different bundle than the later ones. Rather
+than report results spanning two builds, the build under test was pinned:
+
+```
+git archive HEAD | tar -x -C <scratch>/gb-head     # HEAD tree, working tree untouched
+New-Item -ItemType Junction <scratch>/gb-head/node_modules -> <repo>/node_modules
+cd <scratch>/gb-head && npx vite build             # reproduced HEAD's exact hashes
+```
+
+The server then ran from that pinned tree (`server/src` is byte-identical to HEAD — the
+uncommitted changes are all under `web/`), so `@fastify/static` serves the pinned `dist/`.
+`GET /` was confirmed to return `/assets/index-07r9IsSc.js` before any pass was recorded.
+**Nothing in the repository was stashed, checked out, or modified to achieve this**; the
+pinned tree is a throwaway extract in the scratch directory. All results below come from
+that single pinned build.
+
+> Note for the orchestrator: a builder rebuilding `dist/` in place invalidates any
+> concurrently running tester's evidence. The pinned-extract technique above is cheap and
+> should probably be standard for every future harness.
+
+---
+
+## Method
+
+`.data/r4-artifacts/r4_sweep.cjs`, run one mode at a time (never in parallel — all modes
+share one `127.0.0.1` rate-limit bucket, and a self-inflicted 429 would be a false RED).
+
+Collected per state:
+
+- every console message at **every** level, with `url:line:col`
+- every `pageerror` (uncaught exception reaching the top level)
+- every `window` `error` and `unhandledrejection`, from **inside** the page, via passive
+  listeners installed by `addInitScript` before the bundle evaluates. They never call
+  `preventDefault`, so Chrome's own reporting and Playwright's `pageerror` channel stay
+  intact and each error is seen through two independent channels.
+- every response with `status >= 400`, and every `requestfailed`
+- a service-worker probe, because `page.on('console')` does **not** carry service-worker output
+- `page.on('crash')` and `page.on('dialog')`
+
+Events are bucketed into states **by their own timestamp** against recorded state marks, not
+by a "current state" variable read at delivery time — otherwise late async output drifts
+into the next state's column.
+
+### How a real error is separated from browser noise
+
+Chrome narrates every failed load onto the console as `type === 'error'`
+("`Failed to load resource: …`"), and Playwright surfaces those through `page.on('console')`.
+Counting them as app errors would produce a false RED; suppressing them blindly would
+produce a false GREEN. So:
+
+1. **Hard floor first.** Anything logged from `/assets/` is the app talking and is **never**
+   suppressed, whatever its text says. Chrome's narration is attributed to the *failing
+   resource's* URL; app code is always attributed to the bundle. This is the line that
+   holds during the server-down state, where a network failure is in flight at literally
+   every instant and a time-proximity rule alone would suppress everything.
+2. **Corroboration required.** A `netNoise` suppression only holds if a network record for
+   that exact URL exists within ±2.5 s. A third-party suppression only holds if the message
+   names a third-party URL *and* a third-party network failure occurred within ±2.5 s.
+   Anything uncorroborated is promoted back to a real app error.
+3. **Origin from the message body, not just its location.** `web/src/map/` registers no
+   `map.on('error')` handler anywhere, so maplibre-gl falls back to
+   `console.error(event.error)` — emitted from *our own bundle* with the failing
+   `tiles.openfreemap.org` URL only in the message text. Classifying on location alone would
+   file every map-CDN hiccup as an app error.
+
+Each record stores its `classification` and the reason, so the artifact shows its work.
+
+### Positive control
+
+`verdict.apiResponsesObserved` counts every observed `/api/` response. Without it,
+"`appHttpFailures: 0`" is ambiguous between *no failure* and *the harness saw no traffic at
+all* — and the service worker calls `clients.claim()`, which is a real way for traffic to
+become invisible to page-level events. A zero is only reported as zero-out-of-N.
+
+### Honest scope
+
+`page.on('console'|'pageerror')` does not carry output from the service worker or from
+maplibre's dedicated tile-parsing Web Workers. The service worker is covered instead by
+install evidence (registration `activated`, and `/__ghostbus-build-id` present in the shell
+cache — `sw.js` writes that key **only** after every hashed asset cached successfully). A
+throw inside the SW's own `fetch` handler on a later request, or inside a maplibre tile
+worker, is **not** covered by this run and is not claimed to be.
+
+### Harness review
+
+Every version of both harness scripts was reviewed by a `code-reviewer` subagent before use
+(three rounds). Findings that materially changed the result, all fixed before the recorded
+passes:
+
+- `ArrowDown`+`Enter` in the search sheet selects the **second** row, and `SearchSheet.tsx`
+  pushes the RECENTS section first even while a query is typed — so the previous harness
+  idiom would have planned to the wrong destination and states 3/4 would have been a coin
+  flip. Replaced with a click inside the STOPS section (`#gb-sec-stops`), plus an assertion
+  that the sheet actually closes.
+- The in-page drain was the last statement of each run, so any earlier abort printed
+  `unhandledRejections: 0` meaning *"never measured"* next to zeros meaning *"none"*. Moved
+  into a `finally`, and `inPageDrained` now records whether it really happened.
+- maplibre logging third-party failures from our own bundle (see above).
+- No positive control on the network verdict (see above).
+- `route.fulfill` with a spread of the original headers re-asserts a stale `content-length`.
+
+---
+
+## RED-1 — every page load fires a guaranteed 404 for a stop that does not exist
+
+**Fired on 10 cold loads out of 10 — one per run, never once absent — plus one extra firing
+out of coverage, for 11 firings in total. Theme-independent, locale-independent,
+build-independent.**
+
+Loads and firings are not the same count, and the difference is the whole of the
+out-of-coverage amplification: every cold load fires it exactly once, and the eleventh firing
+is the Plan-tab repeat in the Mississauga run described below — not an eleventh page load.
+
+Verbatim, as it appears in DevTools:
+
+```
+Failed to load resource: the server responded with a status of 404 (Not Found)
+  @ http://127.0.0.1:9501/api/stops/4197/arrivals:0:0
+```
+
+`GET /api/stops/4197/arrivals` → `404 {"error":"stop not found"}`
+
+### Root cause — `web/src/store.ts:133`
+
+```js
+selectedStopId: '4197',
+```
+
+Stop `4197` is not in the TTC dataset. It is the **design-mockup id** — the same string is
+painted into the reference markup at `web/src/map/voxelLab.ts:213`
+(`'<span class="stop-card"><b>King St W</b><i>Stop 4197</i></span>'`). It reached the store as
+a placeholder initial value and was never replaced with a real one.
+
+It is **not persisted** (`selectStop` at `store.ts:162` calls `set(...)` with no `save(...)`),
+so this is not a one-time first-visit cost: **every page load, for every rider, starts by
+asking the API for a stop that cannot exist.**
+
+### What it costs, beyond the console line
+
+The failure is not silently dropped — it is classified and acted on:
+
+1. `useLive.ts:350` `refetchArrivals()` reads `selectedStopId` → `'4197'`
+2. `api.ts:140` throws `ApiFailure('badRequest', 'stop not found', 404)`
+3. `useLive.ts:368` `noteFailure(e)`
+4. `useLive.ts:542-544` — the `badRequest` branch sets `apiFailure: 'badRequest'`
+
+`apiFailure` is the flag `NearbyPanel.tsx:51` reads to decide the app is in the "our server is
+in trouble" state. So on every cold start the app briefly tells itself its own API is broken,
+on the strength of a request that was never going to succeed. In my runs the board had
+recovered by the 8-second probe (`statusPill: "Live"`, real stop header, no error card), so
+riders on a fast local connection may never see the flash — but the state is genuinely
+entered, and entered for a reason that is not real.
+
+### It is worse out of coverage
+
+In the Mississauga run the 404 fires **twice** — once on cold load and again on entering the
+Plan tab (`r4_coverage.json`, states `s10-out-of-coverage-cold` and
+`s10-plan-from-out-of-coverage`). Out of coverage no nearby stop ever arrives to displace the
+placeholder, so the app keeps returning to it. This is the one place the defect is not
+self-limiting.
+
+### Status over time — FIXED after this sweep, at `fb58d08`
+
+`web/src/store.ts` was being edited by the builder throughout, so this section is timestamped
+rather than stated flat. Every line below was true at the moment given:
+
+| when | state of the line |
+|---|---|
+| commit `faecd24` — **the commit this sweep tested** | `selectedStopId: '4197'` at `store.ts:133` |
+| ~18:57, first recheck at end of run | still `'4197'`, moved to `store.ts:154` in the working tree — defect live |
+| commit `fb58d08`, `2026-07-26T18:48:10-04:00` | **fixed**: `- selectedStopId: '4197',` → `+ selectedStopId: '',` |
+| commit `926484b` | still `'4197'`, at `store.ts:133` (predates the fix) |
+| commit `9bb9733` — HEAD when this section was first written | `selectedStopId: ''` at `store.ts:170` |
+| commit `777b525` — HEAD at final check | `selectedStopId: ''` at `store.ts:171` — value unchanged, line moved |
+
+Commits are cited by sha rather than by "HEAD" on purpose: HEAD moved four times while this
+sweep was being written up, and a report that says "HEAD" ages into a false statement within
+the hour. `fb58d08` is an ancestor of every later sha above, so the fix is in the mainline
+regardless of where HEAD has got to by the time you read this.
+
+So the RED **stands for the build under test** and is fully reproducible from the artifacts,
+and it has **since been fixed on the mainline**.
+
+**`fb58d08` is not a one-line commit, and the table row above is not its whole `store.ts`
+diff.** That commit ("Every walk time now comes from the walk that is drawn") is +48/−1 on
+`store.ts` alone: most of it introduces an unrelated `walkLeg: MeasuredWalk | null` feature
+plus its setter. The RED-1 fix is **one executable line inside it** — `'4197'` → `''` — with a
+documentation comment above it. I am not vouching for the rest of that commit; it was never
+under test here.
+
+**Not yet re-verified by me.** The fix landed after my server was stopped; I have not run a
+sweep against any commit that contains it. See *Rerun trigger* for what needs re-running
+before anyone marks this green.
+
+> **My pre-correction number has been copied into the source.** The comment `fb58d08` adds
+> above the fixed line reads *"Confirmed on 11 of 11 cold loads by the R4 console sweep."*
+> That is the exact loads-vs-firings conflation the citation review caught in this draft
+> (correction C2): it was **10 of 10 cold loads**, with an 11th firing on the Plan tab out of
+> coverage. The rest of that comment — the mockup-id origin, the `badRequest`/`apiFailure`
+> chain, the out-of-coverage double-fire — matches my findings exactly. Only the count is
+> wrong, and it is wrong because it cites me. **The builder should amend that comment**;
+> otherwise a corrected report and an uncorrected code comment will disagree permanently, and
+> the code comment is the one people will find first.
+
+### The shape of the fix — what I suggested vs what the builder shipped
+
+Both rely on the same existing guard, but they are not the identical edit, so:
+
+- **What I suggested while testing:** `selectedStopId: null`, which would take the
+  early-return already present in `refetchArrivals` — `if (!stopId) return;`
+  (`useLive.ts:351`) — and fire no request until the nearby list has picked a real stop. It
+  would have required widening the field to `string | null`.
+- **What actually landed in `fb58d08`:** `selectedStopId: ''`. Because `!''` is also `true`,
+  it hits the *same* early-return and produces the same no-request behaviour — and it needs
+  **no** type change at all, since the field stays `string`. It is the smaller of the two
+  edits, and I prefer it to my own suggestion.
+
+Either way the decision was the builder's, not mine. I record the difference only so nobody
+reads "the fix matches what the tester proposed" into a diff that is genuinely a bit better
+than what the tester proposed.
+
+---
+
+## What is genuinely GREEN, and how strongly
+
+### The server-down state (state 11) — the strongest result in this sweep
+
+Stopped gracefully mid-session (sentinel → in-process SIGINT; `[signal] SIGINT — shutting
+down…` in the log; port released; **no `taskkill`**), left dead ~85 s across the app's own
+poll intervals, exercised through three tab switches while dead, then restarted.
+
+- **App-logged output during the entire outage: nothing at all.** Not one `console.error`,
+  not one `console.warn`, not one uncaught rejection. The brief allowed "a single controlled
+  warn" as acceptable; the app did not even need that.
+- The 13 console lines in the outage window are **all** Chrome narrating
+  `net::ERR_CONNECTION_REFUSED` across **5** distinct URLs — `/api/vehicles` ×6,
+  `/api/health` ×3, `/api/stops/15649/arrivals` ×2, `/api/alerts` ×1, `/api/ghosts/feed` ×1 —
+  and **every one is corroborated by a `requestfailed` record for that exact URL**. Zero were logged from `/assets/`, which is the
+  hard floor the classifier applies before any suppression can run.
+- The UI stayed honest and stayed ours: `statusPill: "Catching up"`, banner
+  `"GhostBus is catching up — retrying automatically"`. **The TTC is not named anywhere** —
+  the DECISIONS §45 attribution rule holds under a real outage.
+- **It self-healed with no reload.** 25 s after the server returned: `statusPill: "Live"`,
+  board repopulated (`s11d-after-restart-self-heal`).
+
+### Everything else
+
+- **Cold load, search, plan-ride, transfer refusal, alerts/ghosts, theme toggle** — clean in
+  both themes. Plan produced a real 3-leg ride ("About 41 min door to door") and a real
+  refusal ("This trip needs a transfer"). Alerts rendered 47–48 real rows.
+- **Theme light → dark → light** — `data-theme` tracked every click, both directions, from
+  both starting themes. Zero output.
+- **Locale en → fr-CA → es → en** — `html.lang` and the tab labels switched correctly
+  (`À proximité / Trajet / Enregistrés / Alertes`, `Cerca / Ruta / Guardados / Alertas`), and
+  each locale was walked across all four tabs. Zero output.
+- **Out of coverage** — honest, specific copy: *"No TTC stops within 800 m of you"* /
+  *"The nearest stop GhostBus covers is Markland Dr (West) at Bloor St West North Side, about
+  6.6 km away."* Zero output beyond the RED-1 404s.
+- **Service worker installed cleanly** — 1 registration, `active: "activated"`, nothing stuck
+  installing or waiting, `ghostbus-shell-v1` = 11 entries, `ghostbus-assets-v1` = 2, and
+  `/__ghostbus-build-id` present. `sw.js:174-177` writes that key **only** after every hashed
+  asset has cached, so its presence proves the install path completed without throwing.
+- **No third-party noise at all** — zero failed loads and zero console output from
+  `tiles.openfreemap.org` in any state, so nothing in this verdict is a map-CDN artifact.
+
+---
+
+## Every console warning in the whole sweep, verbatim (3, all mine)
+
+```
+Service Worker registration blocked by Playwright
+```
+
+- `r4_forecast.json` — state `s6b-forecast-chips-injected-PROVOKED`
+- `r4_catchinject_light.json` — state `s7i-cold-load-PROVOKED-light`
+- `r4_catchinject_dark.json` — state `s7i-cold-load-PROVOKED-dark`
+
+**Attribution: mine, not the app's.** All three come from `serviceWorkers: 'block'`, which I
+set on the two injection contexts only, so an SW-mediated fetch could not bypass
+`page.route()` and silently disarm the injection. They carry no source URL because Playwright
+emits them, not page code. The app emitted **zero** warnings in every non-provoked state.
+
+There were **no other console warnings anywhere in the sweep.**
+
+---
+
+## Two states could not be swept on live data — recorded, not glossed
+
+### State 6 (forecast chips) — no ghost history exists
+
+The API omits `ghostRisk` entirely unless it can back it with samples, and this database
+reports `todayGhosts: 0`, `weekGhosts: 0`, and `[forecast] 340 route-hour cells … 0 ghosts`.
+So `forecastChips = 0` on live data in both themes — correct behaviour, but it means the
+chip's render path went unexercised.
+
+Swept instead in `MODE=forecast` (flagged `provoked` throughout): the arrivals payload was
+rewritten in flight to carry a realistic `GhostRisk` (shape from `shared/types.ts`). The
+**real** `DepartureRow` chip branch then rendered, with real i18n interpolation, in two
+locales — `"Ghost risk: high — vanished 21 of 68 recently"` and
+`"Risque élevé — 21 sur 68 disparus récemment"` — with **zero** console output. The data was
+injected; the code under test was not.
+
+### State 7 (catch flow) — no route's *first* departure was live
+
+`CatchView` opens only from a live row (`DepartureRow.tsx:151`), and `NearbyPanel` renders one
+row per route, so the sheet is reachable only when a route's **earliest** departure carries a
+`liveEtaMs`. Two honest attempts at St Clair W & Bathurst (3 routes) watched the board across
+8 refreshes over 96 s in each theme: `liveCards` was 0 at every single look.
+
+I then checked whether that was a bad stop choice or the board's condition. **Sampling 20
+stops / 25 route groups across five hubs: 0 groups had a live first departure, while 6 groups
+had a live departure further down the list.** So the catch flow was network-wide unreachable
+at that moment — a finding for the functional testers, not a console-sweep result.
+
+Swept instead in `MODE=catchinject` (flagged `provoked`): each route's earliest departure was
+promoted to live in the payload. The real `CatchView` opened (`"You're at the stop"` /
+`"512 in 1 min on the live prediction"`), ran **40 seconds of its 1 s verdict tick** with a
+board refetch landing underneath it, and closed — **zero** console errors, pageerrors or
+rejections, in both themes.
+
+---
+
+## Per-state table
+
+Columns split first-party from third-party, and real app errors from Chrome's network
+narration. `/api 2xx seen` is the positive control: it proves a zero-failure row is
+zero-out-of-N rather than zero-out-of-nothing.
+
+| mode | state | provoked | console.error (app / noise / 3p) | warn (app/3p) | pageerror | rejection | crash | HTTP 4xx/5xx (app/3p) | reqfail (app/3p) | /api 2xx seen |
+|---|---|---|---|---|---|---|---|---|---|---|
+| main_light | `s1-cold-load-light` | no | 0 / 1 / 0 | 0 / 0 | 0 | 0 | 0 | 1 / 0 | 0 / 0 | 9 |
+| main_light | `s6-forecast-chips-light` | no | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 0 |
+| main_light | `s7-catch-flow-light` | no | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 0 |
+| main_light | `s2-search-light` | no | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 3 |
+| main_light | `s3-plan-ride-light` | no | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 10 |
+| main_light | `s4-plan-transfer-light` | no | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 8 |
+| main_light | `s5-alerts-ghosts-light` | no | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 2 |
+| main_light | `s8-theme-toggle-light` | no | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 3 |
+| main_light | `s-settle-light` | no | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 3 |
+| main_dark | `s1-cold-load-dark` | no | 0 / 1 / 0 | 0 / 0 | 0 | 0 | 0 | 1 / 0 | 0 / 0 | 9 |
+| main_dark | `s6-forecast-chips-dark` | no | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 0 |
+| main_dark | `s7-catch-flow-dark` | no | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 0 |
+| main_dark | `s2-search-dark` | no | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 3 |
+| main_dark | `s3-plan-ride-dark` | no | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 10 |
+| main_dark | `s4-plan-transfer-dark` | no | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 9 |
+| main_dark | `s5-alerts-ghosts-dark` | no | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 2 |
+| main_dark | `s8-theme-toggle-dark` | no | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 2 |
+| main_dark | `s-settle-dark` | no | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 4 |
+| catch_light | `s7-catch-cold-load-light` | no | 0 / 1 / 0 | 0 / 0 | 0 | 0 | 0 | 1 / 0 | 0 / 0 | 10 |
+| catch_light | `s7-wait-for-live-row-light` | no | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 28 |
+| catch_dark | `s7-catch-cold-load-dark` | no | 0 / 1 / 0 | 0 / 0 | 0 | 0 | 0 | 1 / 0 | 0 / 0 | 10 |
+| catch_dark | `s7-wait-for-live-row-dark` | no | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 28 |
+| catchinject_light | `s7i-cold-load-PROVOKED-light` | **yes** | 0 / 1 / 0 | 1 / 0 | 0 | 0 | 0 | 1 / 0 | 0 / 0 | 9 |
+| catchinject_light | `s7i-catch-open-PROVOKED-light` | **yes** | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 2 |
+| catchinject_light | `s7i-catch-ticking-PROVOKED-light` | **yes** | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 19 |
+| catchinject_light | `s7i-catch-close-PROVOKED-light` | **yes** | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 1 |
+| catchinject_dark | `s7i-cold-load-PROVOKED-dark` | **yes** | 0 / 1 / 0 | 1 / 0 | 0 | 0 | 0 | 1 / 0 | 0 / 0 | 10 |
+| catchinject_dark | `s7i-catch-open-PROVOKED-dark` | **yes** | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 2 |
+| catchinject_dark | `s7i-catch-ticking-PROVOKED-dark` | **yes** | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 19 |
+| catchinject_dark | `s7i-catch-close-PROVOKED-dark` | **yes** | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 1 |
+| locale | `s9-load-en` | no | 0 / 1 / 0 | 0 / 0 | 0 | 0 | 0 | 1 / 0 | 0 / 0 | 10 |
+| locale | `s9-fr-CA` | no | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 7 |
+| locale | `s9-es` | no | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 5 |
+| locale | `s9-en` | no | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 9 |
+| locale | `s9-settle-en` | no | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 1 |
+| forecast | `s6b-forecast-chips-injected-PROVOKED` | **yes** | 0 / 1 / 0 | 1 / 0 | 0 | 0 | 0 | 1 / 0 | 0 / 0 | 10 |
+| forecast | `s6b-forecast-chips-injected-fr-PROVOKED` | **yes** | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 2 |
+| coverage | `s10-out-of-coverage-cold` | no | 0 / 1 / 0 | 0 / 0 | 0 | 0 | 0 | 1 / 0 | 0 / 0 | 8 |
+| coverage | `s10-settle` | no | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 3 |
+| coverage | `s10-plan-from-out-of-coverage` | no | 0 / 1 / 0 | 0 / 0 | 0 | 0 | 0 | 1 / 0 | 0 / 0 | 4 |
+| serverdown | `s11a-healthy-baseline` | no | 0 / 1 / 0 | 0 / 0 | 0 | 0 | 0 | 1 / 0 | 0 / 0 | 9 |
+| serverdown | `s11a2-waiting-for-orchestrator-still-healthy` | no | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 1 |
+| serverdown | `s11b-server-down-PROVOKED` | **yes** | 0 / 8 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 8 / 0 | 0 |
+| serverdown | `s11c-server-down-interaction-PROVOKED` | **yes** | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 0 |
+| serverdown | `s11c2-waiting-for-restart-PROVOKED` | **yes** | 0 / 5 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 5 / 0 | 0 |
+| serverdown | `s11d-after-restart-self-heal` | no | 0 / 0 / 0 | 0 / 0 | 0 | 0 | 0 | 0 / 0 | 0 / 0 | 5 |
+
+### Matrix coverage
+
+| # | state from the brief | swept | where |
+|---|---|---|---|
+| 1 | Cold load → Nearby board | yes, light + dark | `s1-cold-load-*` |
+| 2 | Search sheet, query typed, results | yes, light + dark | `s2-search-*` |
+| 3 | Plan: destination set, ride rendered | yes, light + dark | `s3-plan-ride-*` |
+| 4 | Plan: transfer refusal | yes, light + dark | `s4-plan-transfer-*` |
+| 5 | Alerts / Ghost feed | yes, light + dark | `s5-alerts-ghosts-*` |
+| 6 | Forecast chips visible | **only via injection** | `s6-*` (0 chips on live data) + `s6b-*` |
+| 7 | Catch flow (leave-by) | **only via injection** | `s7-*` (unreachable) + `s7i-*` |
+| 8 | Theme light → dark → light | yes, from both starting themes | `s8-theme-toggle-*` |
+| 9 | Locale en → fr-CA → es → en | yes, single pass, all four tabs each | `s9-*` |
+| 10 | Out-of-coverage (Mississauga) | yes, fresh context | `s10-*` |
+| 11 | Server-down, before / during / after | yes | `s11a`–`s11d` |
+
+Leave-by chips were observed on the live board (`leaveByChips: 1` in `s6-forecast-chips-dark`
+and in the smoke check), and inside the injected catch flow.
+
+---
+
+## Artifacts
+
+Raw per-state JSON dumps — every console record with its source, its classification and the
+*reason* for that classification; every network failure; every probe; the state marks:
+
+```
+.data/r4-artifacts/r4_main_light.json          .data/r4-artifacts/r4_main_dark.json
+.data/r4-artifacts/r4_catch_light.json         .data/r4-artifacts/r4_catch_dark.json
+.data/r4-artifacts/r4_catchinject_light.json   .data/r4-artifacts/r4_catchinject_dark.json
+.data/r4-artifacts/r4_locale.json              .data/r4-artifacts/r4_forecast.json
+.data/r4-artifacts/r4_coverage.json            .data/r4-artifacts/r4_serverdown.json
+.data/r4-artifacts/r4_report.md                (aggregated table, generated by r4_report.py)
+.data/r4-artifacts/r4_isolation_survey.txt     (post-hoc PGlite mtime survey — see Isolation)
+```
+
+Screenshots per state: `.data/r4-artifacts/r4_s*.png`.
+Server logs: `r4_server_pinned.log` (carrying its graceful SIGINT shutdown) and
+`r4_server_pinned2.log` (the state-11 restart).
+Harness: `r4_sweep.cjs`, `run_server.mjs`, `r4_down_orchestrator.sh`, `r4_report.py`.
+`prepin/` holds two earlier passes taken before the build was pinned; they agree with the
+pinned results in every respect and are kept only so the timeline stays auditable.
+
+---
+
+## Repro
+
+```
+cd <repo>
+git archive HEAD | tar -x -C <scratch>/gb-head
+# junction <scratch>/gb-head/node_modules -> <repo>/node_modules
+cd <scratch>/gb-head && npx vite build
+
+DATABASE_URL= PGLITE_DIR=<repo>/.data/pglite-r4 \
+  PATTERN_CACHE_DIR=<scratch>/gb-head/r4-pattern-cache PORT=9501 \
+  node --import tsx <repo>/.data/r4-artifacts/run_server.mjs server/src/server.ts \
+       <repo>/.data/r4-artifacts/STOP_R4
+```
+
+Then, **one at a time** — never in parallel, they share one rate-limit bucket:
+
+```
+node .data/r4-artifacts/r4_sweep.cjs main light
+node .data/r4-artifacts/r4_sweep.cjs main dark
+node .data/r4-artifacts/r4_sweep.cjs catch light
+node .data/r4-artifacts/r4_sweep.cjs catch dark
+node .data/r4-artifacts/r4_sweep.cjs catchinject light
+node .data/r4-artifacts/r4_sweep.cjs catchinject dark
+node .data/r4-artifacts/r4_sweep.cjs locale
+node .data/r4-artifacts/r4_sweep.cjs forecast
+node .data/r4-artifacts/r4_sweep.cjs coverage
+bash .data/r4-artifacts/r4_down_orchestrator.sh &     # state 11 needs both halves
+node .data/r4-artifacts/r4_sweep.cjs serverdown
+python .data/r4-artifacts/r4_report.py > .data/r4-artifacts/r4_report.md
+```
+
+Shut the server down with `touch .data/r4-artifacts/STOP_R4` — **never `taskkill`**.
+
+RED-1 on its own:
+
+```
+node .data/r4-artifacts/r4_sweep.cjs main light
+python -c "import json;print(json.load(open('.data/r4-artifacts/r4_main_light.json'))['failedResponses'])"
+```
+
+---
+
+## Rerun trigger
+
+RED-1 has landed as a one-line change in `web/src/store.ts` (commit `fb58d08`), so this rerun
+is now due against the fixed mainline (`fb58d08` or any later commit).
+
+The honest breakdown of the 46 states, which is **not** "45 clean + 1 dirty":
+
+| | count |
+|---|---|
+| states recording **zero on every counter** | **33** |
+| states carrying the RED-1 404 | **11** — the cold-load state of each of the 10 runs, plus `s10-plan-from-out-of-coverage` |
+| states carrying only the deliberately provoked outage failures | **2** — `s11b`, `s11c2` |
+
+Three of the eleven 404-carrying states additionally carry the Playwright service-worker warn.
+
+**What actually needs re-running.** The 404 appears in *every run's cold-load state*, not in
+one isolated place, so "re-run states 1 and 10" understates it: the minimum honest check is a
+cold load (state 1) and the out-of-coverage mode (state 10, which is the only place the 404
+repeats after load). Those two confirm `appHttpFailures` drops from 11 to 0. The 33 all-zero
+states do not touch `selectedStopId` and are unaffected by the line — but since a full sweep
+is only about 25 minutes of wall clock and the build has moved several commits since
+`faecd24`, re-running the whole matrix is the defensible option rather than the minimum one.
+
+## For the orchestrator
+
+1. **RED-1 is already fixed on the mainline — but not yet re-verified.** It landed in
+   `fb58d08`, and every commit since ships `selectedStopId: ''`. The RED stands against the
+   tested commit `faecd24` and should not be closed on the strength of the diff alone: nobody
+   has run a sweep against the fixed build. See *Rerun trigger*. Worth keeping visible in the
+   meantime that this was never a console-hygiene nit — it drove the app into its own
+   `apiFailure` state on every cold start, and repeated out of coverage.
+2. **The catch flow was unreachable on live data** — 0 of 25 sampled route groups had a live
+   first departure. That is a T1/T2 functional question, not a console one, but no functional
+   tester should mark the catch flow green without checking whether they were able to open it
+   on live data or only in a fixture.
+3. **A builder rebuilding `dist/` in place invalidates any concurrently running tester.** It
+   happened twice during this sweep. The `git archive HEAD` + junction + build-in-scratch
+   recipe above costs about thirty seconds and makes every future harness immune.
+4. **One correction needs to propagate into the code, not just into this draft.** The comment
+   `fb58d08` added above the fixed line in `web/src/store.ts` cites this sweep as *"Confirmed
+   on 11 of 11 cold loads"* — my pre-correction wording. The correct figure is 10 of 10 cold
+   loads plus one out-of-coverage repeat. Please route that back to the builder; a source
+   comment that cites a tester should not outlive the tester's own correction.
+
+### Orchestrator adjudication (2026-07-26, on merge)
+
+Merged after citation review (verdict MERGE-WITH-CORRECTIONS: every artifact exists,
+the 46-row state table is byte-identical to the generated report, all code citations
+land on the claimed lines at the pinned sha) and after all five corrections + two
+minors were applied with every number re-derived from the JSON artifacts. The
+tester also generated the previously-missing isolation-survey artifact rather than
+merely rewording the claim.
+
+1. **The sweep's verdict stands: the JavaScript is clean** — zero app console
+   errors, warnings, uncaught exceptions, or unhandled rejections across 46 states,
+   including an 85-second live server outage the app narrated with silence and
+   honest UI, never naming the TTC.
+2. **RED-1 (cold-start fetch of mockup stop 4197) is FIXED at fb58d08** — one
+   executable line (selectedStopId '' ) inside a larger commit the sweep explicitly
+   declines to vouch for — with a falsy-asserting regression test (store.test.ts)
+   and the code comment's figure corrected at 1cb45df. Re-verification on a fresh
+   cold load belongs to the R5 tester wave, which must also answer the sweep's open
+   question: whether the Catch flow is reachable on live Sunday data at all
+   (0 of 20 sampled stops had a live first departure), and no tester may green
+   forecast chips or Catch without stating live-vs-injected basis.
+3. Process practice adopted from this sweep: testers pin builds via git archive
+   into scratch (builders rebuilding dist/ in place invalidated two mid-sweep runs).
