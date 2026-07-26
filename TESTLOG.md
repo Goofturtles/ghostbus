@@ -2494,3 +2494,521 @@ signal glyph at 13px in amber-on-amber is near-invisible in dark mode.
    unaccented French strings render. Re-shoot after RED-7 is fixed; that fix is what makes the
    card reachable.
 
+
+---
+
+# T2 (Adversarial) — RERUN of the features wave — DRAFT (not yet appended to TESTLOG.md)
+
+Build under test: HEAD `7b3373ecfa159ac4f71964ff71cc17bc976ccfac` ("§45 §7 gets its
+supersession marker, so §48 is reachable from where the claim lives"). `git log
+da046b9..HEAD` shows exactly two commits since the wave-1 draft's base, both
+`DECISIONS.md`-only (`ead4551`, `7b3373e` — the ledger catching up with the agency split
+and the limiter scope); zero source changes since the four fix commits this rerun is
+verifying: **5ba1bbf** (agency seam split + limiter re-scope), **d8ba413** (the
+`planUnresolved` inversion + the three review-found holes), **5ea35f3** (Design Critic,
+out of T2's scope), **bba517f** (the builder's own remediation evidence, read for context,
+not trusted as a substitute for independent verification). `npx vite build` run fresh
+against this exact HEAD (`.data/ft2r_build.log`, 3.35s, `dist/` timestamped after HEAD).
+
+**Overall verdict: 4 GREEN, 1 RED.** The fixed RED from wave 1 (stale walk-path geometry
+surviving a plan-fetch failure) is now genuinely fixed, and all three review-found variants
+around it hold under adversarial re-testing. The agency-seam split (demo mode search/plan)
+and the encoded-path rate-limiter bypass are both genuinely fixed. Observation isolation
+between live and demo holds cleanly at the database level. Kill-and-resume is GREEN. **NEW
+RED, not present in the wave-1 draft**: the limiter's own "unmatched routes are limited,
+not exempted" design claim — stated three times in this codebase (the commit message, the
+inline comment in `api.ts`, and `DECISIONS.md` §48) — does not hold. A confirmed,
+reproducible architectural gap in how `@fastify/rate-limit` attaches to Fastify's
+`setNotFoundHandler` means **no unmatched route of any kind is ever rate-limited**,
+regardless of budget state.
+
+Tester: T2 Adversarial rerun (independent of the builder; wrote no application code —
+only disposable harnesses under `.data/ft2r_*`, every one of which was put through an
+adversarial code-reviewer pass, including two full revision rounds, before being trusted;
+see inline citations below).
+
+## Setup
+
+Own throwaway PGlite dir, never shared with any other holder — confirmed absent before
+seeding:
+```
+DATABASE_URL="" PGLITE_DIR=<repo>/.data/pglite-ft2r GHOSTBUS_SEED_SKIP_DOWNLOAD=1 \
+  npx tsx server/src/seed_toronto.ts
+# -> .data/ft2r_seed.log (69.5s, 233 routes, 9,361 stops, 132,570 trips,
+#    4,175,275 stop_times, board 20260726..20260905)
+```
+Own port (8971 for live, 8972 for demo — neither ever used by any prior wave), production
+build, production entrypoint:
+```
+npx vite build                                                        # .data/ft2r_build.log
+DATABASE_URL="" PGLITE_DIR=<repo>/.data/pglite-ft2r PORT=8971 HOST=127.0.0.1 \
+  node --import tsx server/src/server.ts                              # .data/ft2r_server*.log
+```
+Confirmed `DATABASE_URL=""` wins over `.env`'s real Neon URL every single time (every
+server log line reads `driver=pglite`; `GET /api/health` returns `"dbDriver":"pglite"`
+throughout). Real browser: `channel:'chrome'` (the machine's actual installed Chrome, not
+a bundled Playwright browser build — the cached Playwright download was version-mismatched
+against the installed `chromium_headless_shell`, confirmed by a failed launch, so
+`channel:'chrome'` was used instead), headless, against `http://127.0.0.1:8971/` and
+`:8972/`. Port 8971/8972 confirmed free before use via `netstat`; the user's own `:8799`
+instance was never touched — confirmed via `netstat` before every bind and never named in
+any script, curl, or browser navigation this session. Server processes stopped by exact
+PID bound to the port (`netstat -ano` → `taskkill`); a genuine graceful `taskkill //PID`
+(no `/F`) was attempted first when ending live-mode testing and Windows itself refused it
+("This process can only be terminated forcefully") — a platform limitation of a
+backgrounded non-interactive console process, not something scriptable around, and
+consistent with every prior wave's own teardown method. `.data/pglite-ft2r` integrity was
+re-proven repeatedly: five separate hard-kill-then-restart cycles across this session, each
+one a clean warm-start restore (crosswalk/pattern-index counts print and grow sanely every
+time — see `.data/ft2r_server*.log`), and a final direct-SQL read (`.data/ft2r_isolation_check.mjs`)
+after every server was stopped confirms the data is exactly what the session's own actions
+should have produced, nothing more, nothing less.
+
+**Harness discipline.** Every throwaway script under `.data/ft2r_*` was sent through an
+independent code-reviewer pass before its output was trusted. Three needed real fixes
+before rerunning: `ft2r_kill.cjs`'s first draft tried to select a new destination by
+*typing* a fresh search query after the server was already dead — which cannot work
+(the query itself needs a live `/api/stops` round-trip to populate anything to select),
+and the dry-run's own output caught this (the "new" destination silently no-op'd, state
+unchanged) before it was ever reported as a finding; fixed to select from the RECENTS
+section instead (localStorage-backed, no network needed to populate). `ft2r_ratelimit_scope.mjs`'s
+first draft checked the "unmatched routes must be limited" claim by exhausting the WRONG
+budget (`/api/stops`'s 120/min per-route budget, which does not gate an unmatched path at
+all) — caught by an independent reviewer who read `@fastify/rate-limit`'s actual source and
+confirmed the per-route and global budgets are architecturally separate counters; the
+corrected test (`ft2r_ratelimit_global.mjs`) exhausts the real global 600/min ceiling.
+`ft2r_demo_ghost_seed.mjs` (the one script in this whole session that writes to the
+database directly) had a genuine safety bug in its first draft — `delete
+process.env.DATABASE_URL` does not reliably keep the real Neon production URL out, because
+`db.ts`'s `loadEnvFile('.env')` only skips keys already *present*, and `delete` makes the
+key absent again — caught before the script was ever run, fixed to require the caller to
+set `DATABASE_URL=""` (present, empty) in the shell, matching the pattern already proven
+safe by every other invocation this session.
+
+---
+
+## 1. The fixed RED — stale walk-path geometry survives a plan-fetch failure — GREEN
+
+### 1.1 Main repro (server death → new destination → assert zero geometry)
+
+Artifacts: `.data/ft2r-artifacts/kill_00_success_plan.png` (real successful plan, `504`→
+Dundas West, walker glyph visibly drawn), `kill_01_serverdown_plan_error.png`,
+`kill_02_serverdown_plan_error_confirm.png` (2s later, proving persistence not flicker),
+`ft2r_kill_result.json`, `.data/ft2r_server4.log` / `ft2r_server5.log` (killed/restarted
+instance pair).
+
+Repro, run against a genuinely dead server (hard `taskkill /F`, simulating a crash, per
+VERIFICATION.md's own kill-and-resume mandate):
+1. Selected Kennedy Station (real `outcome:"transfer"`, confirmed via direct `/api/plan`
+   query beforehand) to seed it as a RECENT, then Dundas West Station — a real successful
+   ride (`planLegs:3`, `walkNodes:1`, "About 41 min door to door").
+2. Opened the destination search sheet (still open when the server dies).
+3. Hard-killed the server (`taskkill /F`, PID bound to :8971 confirmed via `netstat`
+   immediately before), confirmed the port released.
+4. With the server dead, selected Kennedy Station again — this time from the RECENTS
+   section (no typing, no live network call needed to populate the option; only the
+   resulting `/api/plan` fetch touches the dead server) — a genuinely different
+   destination from the one currently showing.
+5. Measured immediately and 2 seconds later.
+
+**Result: `walkNodes: 0` both times, `stateTitle: "Can't reach the planner"`, `planLegs: 0`.**
+No stale geometry. Identical state at t and t+2s rules out a render-lag flicker as an
+alternative explanation. This is the exact scenario the wave-1 draft filed as RED
+(`.data/testlog-drafts/T2-features.md` §3) — **now fixed**, matching commit d8ba413's own
+verification claim.
+
+### 1.2 Review-found variant A — transfer → transfer consecutive (the dep `true→true` hole)
+
+Artifact: `.data/ft2r-artifacts/ft2r_transfer2.json`, `transfer1_kennedy.png`,
+`transfer2_finch.png`.
+
+Two consecutive destinations that BOTH resolve to `transfer` (Kennedy Station, then Finch
+Station — both independently confirmed via direct `/api/plan` query to return
+`outcome:"transfer"` from King & Spadina before ever touching the UI, so this is testing
+the real unresolved→unresolved case, not an assumption). `d8ba413`'s commit message
+describes the exact defect this fixes: without `target` in the sync effect's dependency
+array, changing destination while ALREADY unresolved leaves the dependency `true → true`,
+so the effect never re-fires while `setPlanTarget` had just written `false` to the store.
+
+**Result: `walkNodes: 0` after Kennedy, `walkNodes: 0` after Finch.** Both `stateTitle`
+values read exactly `"This trip needs a transfer"` — the literal `plan.transferTitle`
+string from `web/src/i18n/en.ts:436` — confirming both genuinely hit the `transfer`
+outcome (not a name-only inference from destination choice).
+
+### 1.3 Review-found variant B — selection must not bounce during `'loading'`
+
+Artifact: `.data/ft2r-artifacts/ft2r_loading.json`, `loading_midflight.png` (mid-flight,
+artificially delayed 2.4s via Playwright route interception on `/api/plan`),
+`loading_settled.png`.
+
+Established a real successful ride first (`walkNodes:1`, `planLegs:3` — the "before"
+baseline making the zero-during-loading assertion meaningful), then delayed the *next*
+`/api/plan` request and sampled state 6 times at 400ms intervals while it was deliberately
+held pending, tracking every `/api/stops/{id}/arrivals` request fired (the network
+signature of `openStop()` actually re-selecting a stop).
+
+**Result: `walkNodes: 0` on every one of the 6 samples taken during `loading`** (geometry
+disappears instantly, correctly), **zero** `/arrivals` requests fired during the loading
+window (`arrivalsDuringLoadingWindow: 0`) — no premature bounce to the nearest stop before
+the outcome settles — and exactly **one** `/arrivals` request fired after settlement
+(`arrivalsTotalAfterSettle: 1`) — the single correct reselection, not a flicker of two.
+This is precisely the "settled-only" fix commit d8ba413 describes ("doing it on `loading`
+bounced the selection to the nearest stop and back on every re-plan").
+
+### 1.4 Review-found variant C — cold start: `nearby` resolves after the target is already set
+
+Artifact: `.data/ft2r-artifacts/ft2r_coldstart.json`, `coldstart_after_nearby.png`.
+
+Pre-seeded a poisoned localStorage recent-trip entry (`{"stopId":"FAKE-OFFNETWORK","name":
+"Suspicious Lake Destination","lat":43.4,"lon":-79.3,...}` — same off-network technique the
+wave-1 draft used), delayed the `/api/stops/nearby` response by 4.5s via route
+interception, then selected the recent trip from a fresh cold load as fast as possible
+(within ~1.4s of navigation start — well before the deliberately-slow nearby list could
+arrive), so `setPlanTarget` fired while `nearby === []` and the fallback-selection effect's
+first run necessarily saw `nearest === null`.
+
+**Result:** immediately after setting the target, `walkNodes: 0` (trivially — `best` is
+null for an off-network destination). `ft2r_coldstart.json` records
+`arrivalsBeforeNearbyArrived: 1` at this point, not zero — but that one pre-existing
+request cannot be the fallback-selection effect firing early: `setPlanTargetAtMs: 1443`
+(1.443s after navigation start) is measured against a `/api/stops/nearby` response that was
+deliberately held back for the full `NEARBY_DELAY_MS = 4500`, so at the moment this count
+was taken `nearby` was still `[]` and `nearest` was still `null` — the fallback effect's own
+guard (`if (!unresolved || !settled || !nearest) return;`) makes it structurally impossible
+for that effect to have issued a request over 3 seconds before the data it depends on could
+possibly have arrived. The far more likely source, also directly observed earlier this
+session on the very first cold load of this build (before any Plan-tab interaction at
+all): the app opens on the Nearby tab by default and fetches arrivals for its own default
+current-stop board immediately on boot — an ordinary, ambient fetch with nothing to do with
+the Plan tab's fallback-selection logic. This reading is inferred from the code and from
+that earlier observation, not separately re-instrumented with a per-request stopId label in
+this specific run — a gap worth closing if this variant is rerun again, e.g. by asserting on
+`arrivalsReqs[0].stopId` matching the app's known default stop rather than by count alone.
+**4.5 seconds later, the instant the deliberately-delayed `nearby` response actually
+landed** (timestamped independently via the network response event), **exactly one NEW
+`/arrivals` request fired on top of that baseline**
+(`arrivalsFiredAfterNearbyArrived: 1`) — the fallback-selection
+effect re-ran and moved to the rider's real nearest stop, with **no further click, no tab
+switch, no reload**. This is the reactive-subscription fix (`nearby` is now a Zustand
+selector hook, not a `getState()` snapshot) working exactly as commit d8ba413 describes:
+before the fix, this could never re-fire, because nothing about `nearby`'s eventual arrival
+was a dependency of anything.
+
+---
+
+## 2. The limiter re-scope — GREEN (encoded bypass, shell) + **RED** (unmatched routes)
+
+### 2.1 The encoded-path bypass the builder's own review caught — GREEN
+
+Artifacts: `.data/ft2r-artifacts/ft2r_ratelimit_scope.log`,
+`ft2r_ratelimit_global.log`, `ft2r_ratelimit_headers_diagnostic.log`.
+
+With `/api/stops`'s own 120/min budget exhausted (121 sequential requests, first 429 at
+request #121 — bit for bit matches `SEARCH_MAX_PER_MIN=120`), three genuine
+percent-encoded variants that decode to the SAME registered route were tried:
+`GET /%61pi/stops` (`a`→`%61`), `GET /api/%73tops` (`s`→`%73`), `GET /%61pi/%73tops`
+(both). **All three returned 429**, reconfirmed a second time under a full GLOBAL budget
+exhaustion (650 concurrent requests to `/api/health`, 599 succeeded / 51 throttled,
+`x-ratelimit-remaining:0` confirmed) with `GET /%61pi/health` and `GET /api/%68ealth` —
+again both 429. The exact bypass the wave-1 draft's own retest checklist named
+(`GET /%61pi/stops` must be limited, not exempt) is genuinely closed: `req.routeOptions.url`
+(the matched, decoded route pattern) is what the `allowList` hook checks, not `req.url`
+(the raw, undecoded target) — confirmed by reading `server/src/api.ts:609-617` directly.
+
+### 2.2 The SPA shell always 200 during throttle — GREEN
+
+`GET /` returned 200 with real app HTML (confirmed by content, not status alone — parsed
+for `<!doctype html>` + `GhostBus`, per VERIFICATION.md's own "assert what actually
+rendered" instrument-trap rule) through every exhaustion state tried: the per-route
+`/api/stops` exhaustion, the full global 600/min exhaustion, and simultaneously with a
+hashed built asset (`GET /assets/index-07r9IsSc.js`) also staying 200. A rider who reloads
+mid-throttle still gets the app, which can still paint the honest "GhostBus is catching up"
+screen — exactly what commit 5ba1bbf's rationale describes.
+
+### 2.3 **RED — unmatched routes are NEVER rate-limited, contradicting the stated design**
+
+Artifacts: `.data/ft2r-artifacts/ft2r_ratelimit_scope.log`,
+`ft2r_ratelimit_global.log`, `ft2r_ratelimit_headers_diagnostic.log`.
+
+The fix's own stated design — in the commit message, in an inline comment at
+`server/src/api.ts:604-608`, and reiterated in `DECISIONS.md` §48 ("anything not positively
+identifiable as non-API is limited — including 404s, which is precisely what a scanner
+generates") — claims an unmatched `/api/`-prefixed path defaults to LIMITED, not exempt.
+
+**This does not hold, and it reproduced identically three separate times, including under
+a properly, freshly, confirmedly exhausted GLOBAL budget** (not just a per-route one — the
+first attempt at this check used the wrong budget and was corrected mid-session before
+being trusted, see the Setup section above):
+
+```
+GET /api/totallyBogusRoute12345   (scanner-style, unmatched, prefixed /api/)
+-> 404 {"error":"not found"}, ZERO x-ratelimit-* headers, at ANY budget state
+   (confirmed both while /api/stops's 120/min budget alone was exhausted, and while the
+   real global 600/min budget was exhausted — .data/ft2r_ratelimit_headers_diagnostic.log
+   shows this side-by-side against a matched route in the SAME exhausted window:
+   GET /api/health -> 429 WITH x-ratelimit-limit/remaining/reset headers,
+   GET /api/totallyBogusRoute12345 -> 404 with NO ratelimit headers whatsoever)
+```
+
+A completely unrelated bogus path (not even `/api`-prefixed) shows the same thing —
+`GET /whatever/nonsense/path` → 200 (the SPA shell), no ratelimit headers, **unconditionally**
+(true regardless of budget state, since it is never even counted).
+
+**Root cause, read directly from the installed dependency source, not inferred:**
+`@fastify/rate-limit` (`node_modules/@fastify/rate-limit/index.js:126-140`) attaches its
+ENTIRE rate-limit check via a single mechanism: `fastify.addHook('onRoute', (routeOptions)
+=> { ... addRouteRateHook(...) })` — it only ever wires a check onto routes that are
+registered through Fastify's normal routing table, one `onRoute` event per registered
+route, at server-startup time. There is no separate blanket `onRequest` hook applied to
+every incoming request regardless of match. Fastify's `setNotFoundHandler`
+(`node_modules/fastify/lib/fourOhFour.js:35,163-164`) is wired to a **completely
+separate, second internal `FindMyWay` router instance** (`const router = FindMyWay({...,
+defaultRoute: fourOhFourFallBack })` at line 35), registered via `router.all(...)` at lines
+163-164 on that private router — NOT via `fastify.route()` / `.get()` on the main app, so
+it **never fires the main
+app's `onRoute` event at all**. `addRouteRateHook` is therefore never called for anything
+that ends up in the not-found handler, meaning **nothing that 404s can structurally ever be
+rate-limited**, independent of and upstream from the `allowList` function's own logic —
+`allowList` is never even consulted for these requests (confirmed by the complete absence
+of `x-ratelimit-*` response headers, not merely their showing "allowed").
+
+The careful defensive fallback branch in `api.ts`'s `allowList` (the `decodeURIComponent` +
+"default to limited when we cannot positively identify the path as non-API" logic,
+`api.ts:613-616`) is consequently **dead code for the exact case it says it exists to
+handle**: it can only ever run for a request whose ROUTE hook fired (i.e. one that matched
+SOME registered route pattern) but whose `routeOptions.url` was somehow not a string — a
+case that, per the source read above, essentially never occurs in practice, since every
+registered route (including `@fastify/static`'s own wildcard registration for the SPA
+shell) has a defined `routeOptions.url` by the time its hook runs. A genuinely unmatched
+request never reaches any rate-limit hook in the first place.
+
+**Why this is a real finding and not a technicality**: `server/src/api.ts:1447`'s
+not-found handler does a **synchronous, uncached `readFileSync(join(webDist,
+'index.html'), 'utf8'))` on every qualifying request** (any path with no extension or
+requesting `text/html` that doesn't hit the explicit `/api/`, `/assets/`, or known-extension
+early-outs) — this now has **zero rate limiting of any kind**, at any volume, confirmed
+identically across three independent test runs. This is a real, unbounded
+resource-consumption surface (a blocking synchronous disk read on Node's single event-loop
+thread, per request, with no ceiling) sitting directly behind the exact hardening this
+commit's rationale describes protecting against — worse in one sense than the bug it fixed,
+since the original bug required routing INTO a real (budget-capped) handler; this one never
+touches any budget at all.
+
+**Repro (minimal):** exhaust either the per-route OR the global rate-limit budget by any
+means (this rerun used both), then `GET` any path with no registered route (with or
+without an `/api/` prefix) — it returns its normal 404/200 with zero `x-ratelimit-*`
+headers, never 429, at any exhaustion level. Fix suggestion (not applied — testers do not
+fix): either attach a genuine blanket `onRequest` hook (not relying on `onRoute`) that
+covers the not-found path too, or explicitly call the rate-limit check inside
+`setNotFoundHandler` itself before the `/api/` vs. SPA-shell branch runs.
+
+**Disposition (in flight, not ignored):** this RED stands as found, but the response to it
+is already decided and underway as a docs-only correction to `DECISIONS.md` — §48 gets a
+scoped PARTLY SUPERSEDED marker plus a new section recording the root cause above and why
+the code intentionally stays unchanged: rate-limiting the not-found handler would 429 the
+SPA shell during budget exhaustion, re-breaking the exact user-reported fix §2.2 of this
+rerun independently verified as GREEN (a rider reloading mid-throttle must still get the
+app shell, not a raw 429).
+
+---
+
+## 3. Demo-mode chaos — GREEN
+
+Artifacts: `.data/ft2r_demo_server.log`, `.data/ft2r_isolation_check.mjs` output (below),
+`.data/ft2r_demo_ghost_seed.mjs` output (below).
+
+`GHOSTBUS_DEMO=1` instance on the SAME seeded PGlite dir (`.data/pglite-ft2r` — static
+schedule shared under `'ttc'` by design, per `server/src/demo.ts`'s own honesty contract),
+port 8972, real bundled fixture (`fixtures/ttc-demo-20260726-1040.json.gz`, 8x replay,
+looping). Confirmed via `/api/health`: `"mode":"demo"`, real `recordedNotice`,
+`attribution`, capture window.
+
+### 3.1 Search/plan abuse suite — fully functional (the pre-fix regression: GREEN)
+
+The 5ba1bbf commit's own claim, re-verified independently rather than trusted:
+
+| Probe | Result |
+|---|---|
+| Search "dundas west" | `count: 7` — real hits (matches the commit's own claimed number exactly) |
+| Plan King&Spadina → Dundas West Station | `outcome:"ride", candidates: 27` (matches commit's claimed number exactly) |
+| Nearby at King & Spadina | 49 real stops returned |
+| Arrivals at a King&Spadina stop | 18 real departures (matches commit's claimed number), `evidence.bucket:"none"` on every one (schedule-only, correctly — see §3.3) |
+| Route 504 shape | Real geometry (100+ points) + full ordered stop list returned |
+| SQL-ish (`' OR 1=1 --`) | `{"stops":[],"count":0}` — parameterized, honest empty result, no crash |
+| Emoji + RTL (`🚌🚏😀 محطة اختبار عربي`) | `200`, `count:0`, no crash, no mis-encoding |
+| 5,000-char paste | `400` (server enforces `Q_MAX_LEN`, same as live mode) |
+| Zero-distance plan | `outcome:"ride"` — same honest self-hop behavior as live mode |
+| Off-network destination | `outcome:"noStopsNearDestination"` — honest, zero fabrication |
+
+Before the agency-split fix, EVERY one of these rows was silently empty/dead (the commit
+message's own words: "search, arrivals, the planner and route shapes were all silently
+dead"). All now genuinely functional, and honest under the same adversarial inputs live
+mode was tested with.
+
+### 3.2 Observation isolation — GREEN, confirmed at the database level
+
+Ran ONLY after every server holding `.data/pglite-ft2r` was stopped (PGlite is
+single-writer), via `ft2r_isolation_check.mjs` (a read-only script, itself put through a
+code-reviewer pass, verdict: "no issues found" — every query confirmed a pure `SELECT`,
+migration-running confirmed idempotent/additive-only):
+
+```
+trip_delay_obs:  ttc=3923  ttc-demo=9        (real rows from THIS session's own live + demo runs)
+ghosts:                    ttc-demo=1        (the one synthetic row seeded for §3.4 below — no
+                                               organic ghost occurred in either short session, which
+                                               is itself honest: this is a 42-day-schedule / ~10-minute
+                                               replay window, not enough time for a real one)
+service_alerts:  ttc=41    ttc-demo=33       (real alerts from each mode, cleanly separated)
+agg_delay:       ttc=2562  (ttc-demo: none)  (demo NEVER runs aggregation — confirmed by design in
+agg_delay_route: ttc=233   (ttc-demo: none)   server.ts: "a demo process must not run it")
+trips/stops/routes (static): ttc only, in all three tables — the one shared board, as designed
+```
+
+**Verdict: CLEAN.** No `ttc` row anywhere in a namespace it shouldn't be, no `ttc-demo` row
+anywhere in a namespace it shouldn't be. The `agg_delay`/`agg_delay_route` result is the
+sharpest confirmation: this exact database already held real live-computed grades
+(`agg_delay=2562` rows) BEFORE the demo server ever ran, and the demo-mode arrivals
+endpoint (§3.1 table) showed `bucket:"none"` on every departure — proving demo mode does
+not (and structurally cannot, since it never queries `agg_delay` under `'ttc'`) leak the
+live-computed grades sitting in the very same tables it shares a schedule with.
+
+### 3.3 Grade/evidence isolation, cross-checked against the live session's own real data
+
+Confirmed above: `bucket:"none"` for every demo departure, while the SAME database
+genuinely holds `agg_delay=2562` rows from live-mode polling earlier in this exact session.
+This is not "demo mode happens to show no grades because nothing has been computed yet" —
+it is "demo mode is structurally incapable of reading the live grades that already exist,
+because it queries under a different agency" — the isolation the fix's `modeAgency` split
+promises.
+
+### 3.4 Ghost-feed headsign fix — GREEN
+
+The wave-1 bug this fix addresses (`t.agency = g.agency` binding the static side to the
+observation namespace): no organic ghost occurred in the ~10-minute demo replay window used
+this session, so a synthetic verification row was seeded — disclosed here plainly, not
+presented as an organic pass. `.data/ft2r_demo_ghost_seed.mjs` (reviewed twice; the first
+draft had the `DATABASE_URL` safety bug described in Setup, fixed before ever running)
+inserted exactly one row into `ghosts` (`agency:'ttc-demo'`, `trip_id:'50747748'`), after
+first confirming that trip genuinely exists under the STATIC schedule (`agency:'ttc'`,
+`headsign:'West - 504B King towards Dufferin Gate'` — read live off this exact database via
+`GET /api/stops/15647/arrivals` earlier in the session, not invented). Run only while no
+server held the directory; the demo server was then started fresh.
+
+```
+GET /api/ghosts/feed?hours=48
+-> {"events":[{"tripId":"50747748", ..., "routeId":"504", "shortName":"504",
+    "longName":"King", "color":"ED1C24",
+    "headsign":"West - 504B King towards Dufferin Gate",   <-- RESOLVED, not a bare trip id
+    ...}], "count":1, ...}
+```
+
+The cross-seam JOIN (`ghosts g LEFT JOIN trips t ON t.agency = $2 AND t.trip_id =
+g.trip_id`, `modeAgency` and `staticAgency` as two separate bound parameters) correctly
+resolves the headsign from the static side while filtering the ghost itself by the
+observation side — exactly the fix commit 5ba1bbf describes, confirmed with a real row
+rather than only by reading the SQL.
+
+---
+
+## 4. Kill-and-resume — GREEN
+
+(Same kill/restart pair as §1.1; this section reports the kill-and-resume-specific
+assertions from `ft2r_kill_result.json`.)
+
+- **Self-heal, no reload**: after the server restarted, the running browser session (never
+  navigated/reloaded since before the kill) had `statusPill` genuinely read `"Live"` again
+  on its own next poll tick — not merely "some pill text exists" (an earlier draft of the
+  harness had that weaker, code-reviewer-flagged check; fixed to assert the actual text).
+  Artifact: `kill_03_after_restart_no_reload.png`.
+- **Fresh fetch resolves after tab-away-and-back**: switching to Nearby and back to Plan
+  triggered a genuinely fresh `/api/plan` request for the still-showing Kennedy Station
+  destination, which correctly resolved to `"This trip needs a transfer"` — the real,
+  correct outcome — with `walkNodes:0`, not a stuck loading state. Artifact:
+  `kill_04_after_tabback_fresh_fetch.png`.
+- **No hard-kill of anything not exclusively owned**: `.data/pglite-ft2r` was created this
+  session and held only by this session's own server processes throughout; every hard-kill
+  target PID was confirmed bound to `:8971`/`:8972` via `netstat` immediately beforehand.
+  `:8799` was never touched (confirmed: zero navigations, zero `PORT=8799` anywhere in any
+  script this session).
+
+---
+
+## 5. Rate-limit boundary — GREEN
+
+Artifacts: `.data/ft2r-artifacts/ft2r_ratelimit_boundary.log`,
+`.data/ft2r-artifacts/ft2r_ratelimit_global.log`.
+
+### 5.1 Exact per-route threshold (`/api/plan`, `PLAN_MAX_PER_MIN=60`)
+
+66 sequential (awaited one at a time, no pipelining) requests against a freshly-restarted
+server (clean budget window), via `.data/ft2r_ratelimit_boundary.mjs`. The stored artifact
+(`.data/ft2r-artifacts/ft2r_ratelimit_boundary.log`) captures one run: requests 1–60 return
+200 with `x-ratelimit-remaining` counting down to 0, request 61 is the first 429
+(`kind:"rateLimited"`, real `retryAfterSec`), 62–66 stay throttled — bit-for-bit matches
+`PLAN_MAX_PER_MIN=60`. The same script was also run once earlier in this session (right
+after a fresh server restart, before the final evidence-capture pass) with the identical
+60/61 boundary and identical `kind`/`retryAfterSec` values, but that earlier run's console
+output was not separately saved to its own log file — only the artifact above is the stored
+evidence for this claim; the earlier run is corroborating, not independently filed. An
+independent code-reviewer pass additionally confirmed, by reading the installed
+`@fastify/rate-limit` source directly, that `/api/plan`'s per-route budget is an
+architecturally separate counter from the global 600/min one (registered via a distinct
+child `LocalStore`), so this measurement cannot be confounded by anything else this session
+did against other endpoints.
+
+### 5.2 Global budget (`GLOBAL_MAX_PER_MIN=600`) exhausted
+
+650 requests to `/api/health`, sent in concurrent batches of 40 per
+`.data/ft2r_ratelimit_global.mjs`'s own `burst('/api/health', 650, 40)` call (the batch
+size is a property of the driver script, not something the log itself records — cited
+here from the script, not inferred from the log alone), chosen because `/api/health` has no
+per-route override (confirmed by reading its route registration) so it purely exercises the
+global ceiling. The stored artifact (`.data/ft2r-artifacts/ft2r_ratelimit_global.log`)
+captures one run: **599 succeeded, 51 throttled, 0 rejected**, `x-ratelimit-remaining:0`,
+and a plain follow-up `/api/health` returning 429 confirming genuine exhaustion. This
+script was also run twice more earlier in the session (once immediately after the
+methodology fix described in Setup, once as a reconfirmation) with the same 599/51/0 split
+and the same downstream findings each time, but — as with §5.1 — those earlier runs were
+not each saved to their own separate log file; only the final run is the stored artifact
+for this claim. The SPA shell and the two genuine encoded-bypass variants were confirmed
+correctly still working/blocked (respectively) even under this exhaustion (see §2.1–2.2) —
+the one thing that was NOT correctly gated under this same exhausted state was the
+unmatched-route case filed as RED in §2.3.
+
+---
+
+## Teardown
+
+Every server process this session was stopped by exact PID bound to its port, confirmed via
+`netstat` before the kill and confirmed released after. A genuine graceful shutdown
+(`taskkill` without `/F`) was attempted once at the live-to-demo transition and Windows
+refused it outright ("can only be terminated forcefully") — a documented platform
+limitation of backgrounded non-interactive console processes on Windows, not a workaround
+this tester chose to skip; every other stop in this session used `taskkill /F` against a
+freshly-`netstat`-confirmed PID, identical to the wave-1 draft's own method. Two headless
+Chrome helper processes left over from one Playwright script's process tree (parent `node`
+process had already exited normally after writing its result JSON, but its Chrome
+descendants outlived it) were found via `Get-CimInstance` command-line filtering and
+cleaned up explicitly. `.data/pglite-ft2r` is left on disk as evidence, integrity
+re-confirmed by the final direct-SQL isolation read after all servers stopped. No
+`:8799` instance was ever touched — confirmed zero references to that port anywhere in any
+script, curl invocation, or browser navigation this entire session.
+
+### Orchestrator adjudication (2026-07-26, on merge)
+
+Merged after two independent passes over the draft: an artifact fact-check (all 18
+cited artifacts exist; every §1/§2/§5 number matches its JSON/log source field-for-field)
+and a correction review (all five requested fixes verified byte-for-byte against the
+installed fastify source, the driver scripts, and the stored logs). Neither pass found a
+fabricated claim.
+
+1. **RED §2.3 disposition — closed by DECISIONS §49 (commit e1b9fd4).** The false §48
+   claim is withdrawn in the ledger with the root cause read out of node_modules; the
+   code intentionally stays unchanged (rate-limiting the not-found handler would 429 the
+   SPA shell during budget exhaustion, re-breaking the behavior §2.2 of this entry
+   verifies GREEN). Hardening options are tracked in SECURITY.md §8 item 5.
+2. **Do not implement §2.3's inline fix sketch as written.** The "call the rate-limit
+   check inside setNotFoundHandler" suggestion predates §49 and would re-break the
+   shell-stays-200 fix; §49's navigation-exempt design supersedes it.
+3. The draft's "decided and underway" phrasing for the disposition is now stale in the
+   good direction: §49 is fully landed, not in flight.
