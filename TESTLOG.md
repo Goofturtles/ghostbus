@@ -5581,3 +5581,23 @@ record are:
 11. The three line-level sha claims the deep pass could not check without a shell
     are now verified by the orchestrator directly: `'4197'` at faecd24:133 and
     926484b:133; `''` at fb58d08:170. The entry's sha table is correct.
+
+### Second erratum on the R4 entry (2026-07-26, from the tester's final verification pass)
+
+Two facts in the pre-pin artifacts became load-bearing once the first erratum made
+`prepin/` a cited source, and both must be on the record:
+
+1. **The "app warns: 0" verdict row is true of the pinned run only.** A pre-pin run
+   archives a fourth, app-emitted warning — `Image "veh-streetcar-ED1C24" could not
+   be loaded` from the MapCard bundle during a dark-theme toggle, unprovoked — most
+   plausibly the mid-rebuild bundle inconsistency that motivated pinning in the
+   first place, but app-emitted by the draft's own classification floor. It did not
+   recur on the pinned build. R5 testers should watch for sprite-image warnings
+   specifically, since voxel vehicles have since replaced the sprite path.
+2. **The Catch flow WAS reached on live data once, pre-pin** (catch sheet open,
+   one live card, a real verdict string). The open question passed to the R5 wave
+   is therefore "scarce on live Sunday data" (pinned sampling: 0 of 20 stops with a
+   live first departure), not "unreachable."
+
+The draft's "prepin agrees in every respect" sentence was false and is being
+retired; the pinned-run verdict, counts, and RED-1 are unaffected.
