@@ -159,7 +159,8 @@ export const useStore = create<State>((set, get) => ({
    * got a 404, and `useLive` classified that as `badRequest` and raised `apiFailure` —
    * so the very first thing a rider saw, on every single load, was the panel claiming
    * our server was in trouble. Out of coverage it fired twice and nothing ever
-   * displaced it. Confirmed on 11 of 11 cold loads by the R4 console sweep.
+   * displaced it. Measured by the R4 console sweep: the 404 fired on 10 of 10 cold
+   * loads, plus an 11th firing when entering Plan while out of coverage.
    *
    * The selection is made by `loadNearby`, which picks the nearest real stop the
    * agency actually returned. Until that resolves there is genuinely no stop, and the

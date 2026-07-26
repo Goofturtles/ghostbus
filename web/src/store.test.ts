@@ -6,7 +6,8 @@
 // server answered 404, `useLive` classified that as `badRequest`, and `apiFailure`
 // went up — so the first thing a rider saw, every time, was the panel saying our
 // server was in trouble. Out of coverage it fired twice and nothing displaced it.
-// Confirmed on 11 of 11 cold loads by the R4 console sweep.
+// Measured by the R4 console sweep: the 404 fired on 10 of 10 cold loads, plus an
+// 11th firing when entering Plan while out of coverage.
 //
 // This test pins the rule that prevents it coming back: AT COLD START NOTHING IS
 // SELECTED, so no request can be made for a stop nobody chose. The real selection is
