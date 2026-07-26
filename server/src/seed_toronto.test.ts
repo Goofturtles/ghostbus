@@ -107,3 +107,118 @@ test('boardDays names a date that is a number but not a day', () => {
   ];
   assert.throws(() => boardDays(cal, []), /not real dates/);
 });
+
+// ---------------------------------------------------------------------------------
+// CALENDAR_DATES-ONLY FEEDS — four of the nine GTA feeds, including MiWay
+// ---------------------------------------------------------------------------------
+//
+// GTFS permits a feed to omit calendar.txt entirely and express service through
+// calendar_dates.txt alone. Measured 2026-07-26: MiWay, GO Transit and Milton ship no
+// calendar.txt at all, and Brampton ships one with only a header row. The seeder used to
+// list calendar.txt as required and threw before reading a row, so MiWay — the agency a
+// rider actually stood in and asked for — could not be seeded at all.
+//
+// These are shaped on MiWay's real file: service ids like `26AU03-CPBlock-Weekday-11`,
+// exception_type 1 across a summer board (20260629..20260906).
+
+const MIWAY_STYLE_DATES: CalendarDateRow[] = [
+  { service_id: '26AU03-CPBlock-Weekday-11', date: 20260804, exception_type: 1 },
+  { service_id: '26AU03-CPBlock-Weekday-11', date: 20260805, exception_type: 1 },
+  { service_id: '26AU03-CPBlock-Saturday-12', date: 20260808, exception_type: 1 },
+  { service_id: '26AU03-CPBlock-Sunday-13', date: 20260809, exception_type: 1 },
+];
+
+test('a feed with NO calendar.txt still derives a real board span', () => {
+  // The empty array is what loadCalendar() returns when the file is absent.
+  const days = boardDays([], MIWAY_STYLE_DATES);
+  assert.equal(days[0].ymd, 20260804, 'span starts at the earliest exception date');
+  assert.equal(days[days.length - 1].ymd, 20260809, 'span ends at the latest exception date');
+  assert.equal(days.length, 6);
+});
+
+test('a calendar_dates-only feed still activates its services on the right days', () => {
+  const days = boardDays([], MIWAY_STYLE_DATES);
+  const active = activeServiceIds([], MIWAY_STYLE_DATES, days);
+  assert.equal(active.size, 3, 'three distinct services across the span');
+  assert.ok(active.has('26AU03-CPBlock-Weekday-11'));
+  assert.ok(active.has('26AU03-CPBlock-Saturday-12'));
+  assert.ok(active.has('26AU03-CPBlock-Sunday-13'));
+
+  // Per-day resolution is what the arrivals board depends on: the Saturday service must
+  // not leak onto the Wednesday.
+  const wed = activeServiceIds([], MIWAY_STYLE_DATES, [{ ymd: 20260805, dow: 2 }]);
+  assert.deepEqual([...wed], ['26AU03-CPBlock-Weekday-11']);
+  const sat = activeServiceIds([], MIWAY_STYLE_DATES, [{ ymd: 20260808, dow: 5 }]);
+  assert.deepEqual([...sat], ['26AU03-CPBlock-Saturday-12']);
+});
+
+test('a header-only calendar.txt behaves exactly like an absent one (Brampton)', () => {
+  // Brampton's calendar.txt parses to zero rows. That must reach the same code path as
+  // MiWay's missing file rather than a different, untested one.
+  assert.deepEqual(boardDays([], MIWAY_STYLE_DATES), boardDays([], MIWAY_STYLE_DATES));
+  const fromEmptyFile = activeServiceIds([], MIWAY_STYLE_DATES, boardDays([], MIWAY_STYLE_DATES));
+  assert.equal(fromEmptyFile.size, 3);
+});
+
+test('an exception that REMOVES service cannot invent a board out of nothing', () => {
+  // exception_type 2 on a feed with no calendar means no service was ever added. The span
+  // still exists (the date is real), but nothing is active on it — which must read as
+  // "we hold no schedule", not as a clean day. gates.ts `boardIntegrity` is the backstop.
+  const removals: CalendarDateRow[] = [{ service_id: 'X', date: 20260804, exception_type: 2 }];
+  const days = boardDays([], removals);
+  assert.equal(days.length, 1);
+  assert.equal(activeServiceIds([], removals, days).size, 0);
+});
+
+test('boardDays still refuses a feed with neither calendar nor calendar_dates', () => {
+  // The one case that is genuinely unloadable, and it must say so rather than seed an
+  // empty board that renders like a working one.
+  assert.throws(() => boardDays([], []), /carry no usable dates/);
+});
+
+// ---------------------------------------------------------------------------------
+// THE SEEDER MUST NEVER TRUNCATE A SHARED TABLE
+// ---------------------------------------------------------------------------------
+//
+// `chunkedLoad` used to begin with `TRUNCATE ${table}`, which is correct while exactly one
+// agency exists and catastrophic the moment there are two: seeding MiWay would empty
+// `stops`, `routes`, `trips` and `stop_times` of every TTC row, then report a cheerful row
+// count for the agency it had just loaded while the app went dark for the other one. There
+// are no foreign keys in the schema (DECISIONS §43), so nothing would object.
+//
+// This is a SOURCE-LEVEL guard, and it is worth being explicit about what that does and
+// does not prove. It cannot prove the DELETE is correctly scoped at runtime — that needs a
+// two-agency database, which belongs in the Phase 1 integration wave. What it does prove is
+// that the specific statement which would destroy another agency's board is not present,
+// which is the regression that would otherwise pass every test in this suite silently.
+
+test('GUARD: no TRUNCATE survives in the seeder, and the load is agency-scoped', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const src = await readFile(new URL('./seed_toronto.ts', import.meta.url), 'utf8');
+
+  // Strip comments so the prose above (and in the seeder) cannot satisfy or trip the check.
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+  assert.doesNotMatch(code, /\bTRUNCATE\b/i,
+    'TRUNCATE reintroduced — it would empty every OTHER agency\'s board too');
+  assert.match(code, /DELETE FROM \$\{table\} WHERE agency=\$1/,
+    'the per-agency delete is how a re-seed stays scoped to one agency');
+  // The bbox write must be an upsert: migration 002 seeds only the `ttc` row, so an UPDATE
+  // would match zero rows for any other agency and that city would silently never exist.
+  assert.match(code, /INSERT INTO cities[\s\S]{0,400}ON CONFLICT \(agency\) DO UPDATE/,
+    'cities must be upserted, not updated, or a new agency gets no city row');
+});
+
+test('GUARD: the SKIP_DOWNLOAD probe does not depend on an optional GTFS file', async () => {
+  // calendar.txt is optional in GTFS and four of the nine GTA feeds omit it. Probing for it
+  // told a MiWay operator "there is no extracted feed" straight after a successful seed,
+  // defeating the flag's purpose — proving a re-seed loads the SAME board.
+  const { readFile } = await import('node:fs/promises');
+  const src = await readFile(new URL('./seed_toronto.ts', import.meta.url), 'utf8');
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const probe = /GHOSTBUS_SEED_SKIP_DOWNLOAD=1 but there is no extracted feed/;
+  assert.match(code, probe, 'the skip-download guard should still exist');
+  const guardBlock = code.slice(Math.max(0, code.search(probe) - 300), code.search(probe));
+  assert.doesNotMatch(guardBlock, /calendar\.txt/,
+    'the skip-download probe must not test calendar.txt — it is optional in GTFS');
+});

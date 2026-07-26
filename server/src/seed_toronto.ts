@@ -1,5 +1,13 @@
-// seed:toronto — discover the TTC static GTFS feed at runtime via Toronto Open
-// Data (CKAN), download + extract it, and load it into the database.
+// seed — download one agency's static GTFS feed, extract it, and load it into the database.
+//
+// Which agency: `--agency=<id>` or GHOSTBUS_SEED_AGENCY, defaulting to 'ttc' so
+// `npm run seed:toronto` is unchanged. The agency's descriptor (server/src/agencies.ts)
+// supplies the download strategy — Toronto publishes through a CKAN portal whose resource
+// URL can move, everyone else publishes a stable direct link — plus the name and timezone
+// written to `cities`.
+//
+// EVERY WRITE IS SCOPED TO THAT ONE AGENCY. The load is a per-agency DELETE followed by
+// INSERTs, never a TRUNCATE, so seeding a second agency cannot empty the first one's board.
 //
 // GTFS times are stored as seconds-past-service-midnight INTEGERS so 25:30:00
 // stays valid.
@@ -30,9 +38,9 @@
 //                                 the calendar never activates (1,112 dead trips
 //                                 in this feed: 6702/6703/6704).
 //   GHOSTBUS_SEED_SKIP_DOWNLOAD=1 reuse the already-extracted feed in
-//                                 .data/gtfs/extracted instead of re-downloading,
-//                                 so a re-seed provably loads the same board a
-//                                 running server is already observing.
+//                                 .data/gtfs/<agency>/extracted instead of
+//                                 re-downloading, so a re-seed provably loads the
+//                                 same board a running server is already observing.
 
 import AdmZip from 'adm-zip';
 import { parse } from 'csv-parse';
@@ -45,21 +53,38 @@ import { getDb, type Db, type Queryable } from './db.ts';
 import {
   parseGtfsTime,
   activeServiceIds,
+  boardSpan,
   type CalendarRow,
   type CalendarDateRow,
   type WindowDay,
 } from './gtfs.ts';
 import { torontoMidnightEpoch, torontoDay } from './tz.ts';
+import { agency as agencyDescriptor, USER_AGENT } from './agencies.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..', '..');
-const DATA_DIR = join(ROOT, '.data', 'gtfs');
-const EXTRACT_DIR = join(DATA_DIR, 'extracted');
-const ZIP_PATH = join(DATA_DIR, 'opendata_ttc_schedules.zip');
 
-const AGENCY = 'ttc';
-const CKAN_URL =
-  'https://ckan0.cf.opendata.inter.prod-toronto.ca/api/3/action/package_show?id=ttc-routes-and-schedules';
+/**
+ * Which agency to seed. `--agency=miway`, or GHOSTBUS_SEED_AGENCY, defaulting to the TTC so
+ * `npm run seed:toronto` does exactly what it always did.
+ */
+function agencyArg(): string {
+  const flag = process.argv.find((a) => a.startsWith('--agency='));
+  if (flag) return flag.slice('--agency='.length).trim();
+  const env = process.env.GHOSTBUS_SEED_AGENCY?.trim();
+  return env && env !== '' ? env : 'ttc';
+}
+const DESCRIPTOR = agencyDescriptor(agencyArg());
+const AGENCY = DESCRIPTOR.id;
+
+// Per-agency directories. These used to be one shared slot (.data/gtfs/extracted +
+// opendata_ttc_schedules.zip); seeding a second agency into it would silently overwrite the
+// first agency's extract, and then GHOSTBUS_SEED_SKIP_DOWNLOAD=1 would re-seed the WRONG
+// board while reporting success.
+const DATA_DIR = join(ROOT, '.data', 'gtfs', AGENCY);
+const EXTRACT_DIR = join(DATA_DIR, 'extracted');
+const ZIP_PATH = join(DATA_DIR, 'feed.zip');
+
 const FULL = process.env.GHOSTBUS_SEED_FULL === '1';
 const SKIP_DOWNLOAD = process.env.GHOSTBUS_SEED_SKIP_DOWNLOAD === '1';
 const BATCH_SIZE = 1000; // rows per INSERT statement
@@ -96,7 +121,9 @@ async function fetchWithTimeout(url: string, ms: number): Promise<Response> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), ms);
   try {
-    return await fetch(url, { signal: ctrl.signal });
+    // Identified, for the same reason the poller identifies itself: some publishers (DRT,
+    // HSR) answer 403 to an unidentified client. See USER_AGENT in agencies.ts.
+    return await fetch(url, { signal: ctrl.signal, headers: { 'User-Agent': USER_AGENT } });
   } finally {
     clearTimeout(timer);
   }
@@ -141,7 +168,21 @@ async function chunkedLoad(
   source: AsyncIterable<unknown[]>,
   opts: { casts?: Record<number, string>; label: string },
 ): Promise<number> {
-  await db.query(`TRUNCATE ${table}`);
+  /**
+   * DELETE THIS AGENCY'S ROWS, NOT THE WHOLE TABLE.
+   *
+   * This was `TRUNCATE ${table}`, which is correct for exactly as long as there is only one
+   * agency and catastrophically wrong the moment there are two: seeding MiWay would empty
+   * `stops`, `routes`, `trips` and `stop_times` of every TTC row, and the seeder would then
+   * report a cheerful row count for the agency it had just loaded while the app went dark
+   * for the other one. There are no foreign keys in the schema, so nothing would complain.
+   *
+   * Every static table is keyed `(agency, …)` (migration 001), so the agency-scoped DELETE
+   * is exact. It is slower than TRUNCATE and that is a price worth paying — the re-seed is
+   * an operator action measured in minutes, and DECISIONS §43 verified the re-seed is
+   * idempotent precisely so it can be re-run.
+   */
+  await db.query(`DELETE FROM ${table} WHERE agency=$1`, [AGENCY]);
   const it = source[Symbol.asyncIterator]();
   const t0 = Date.now();
   let total = 0;
@@ -187,20 +228,13 @@ const MAX_BOARD_DAYS = 800;
  * that independence is the whole point, and `seed_toronto.test.ts` asserts it.
  */
 export function boardDays(calendar: CalendarRow[], calendarDates: CalendarDateRow[]): WindowDay[] {
-  let first = Infinity;
-  let last = -Infinity;
-  const see = (ymd: number): void => {
-    // A blank date column parses as 0, not NaN. Ignore anything outside a plausible
-    // GTFS date rather than letting one empty cell drag the span back to 1899.
-    if (!Number.isFinite(ymd) || ymd < 19700101 || ymd > 21001231) return;
-    if (ymd < first) first = ymd;
-    if (ymd > last) last = ymd;
-  };
-  for (const c of calendar) { see(c.start_date); see(c.end_date); }
-  for (const d of calendarDates) see(d.date);
-  if (first === Infinity) {
+  // Shared with the poller's board_tag derivation, so the board we load and the tag its
+  // crosswalk is filed under can never disagree. See `boardSpan` in gtfs.ts.
+  const span = boardSpan(calendar, calendarDates);
+  if (span === null) {
     throw new Error('GTFS calendar/calendar_dates carry no usable dates — cannot derive the board span.');
   }
+  const { first, last } = span;
 
   const midnight = torontoMidnightEpoch(Math.floor(first / 10000), Math.floor(first / 100) % 100, first % 100);
   const out: WindowDay[] = [];
@@ -222,8 +256,15 @@ export function boardDays(calendar: CalendarRow[], calendarDates: CalendarDateRo
 }
 
 // ---------- discovery + download ----------
+/**
+ * Where this agency's zip actually lives. Publishers do not agree on a shape: Toronto runs
+ * a CKAN portal whose resource URL can move, while MiWay, Brampton and the rest publish a
+ * stable direct link. Resolved from the descriptor rather than assumed.
+ */
 async function discoverZipUrl(): Promise<string> {
-  const res = await fetchWithTimeout(CKAN_URL, 30_000);
+  const src = DESCRIPTOR.staticSource;
+  if (src.kind === 'direct') return src.url;
+  const res = await fetchWithTimeout(src.packageUrl, 30_000);
   if (!res.ok) throw new Error(`CKAN package_show HTTP ${res.status}`);
   const data = (await res.json()) as { result?: { resources?: Array<{ format?: string; url?: string; name?: string }> } };
   const resources = data.result?.resources ?? [];
@@ -250,12 +291,36 @@ function entry(name: string): string {
   return join(EXTRACT_DIR, name);
 }
 
-// Fail loudly with a clean message if the feed is missing a file we must have.
+/**
+ * Fail loudly with a clean message if the feed is missing a file we must have.
+ *
+ * `calendar.txt` IS NOT ON THIS LIST, and that is the whole point of this comment.
+ *
+ * GTFS lets a feed express service entirely through `calendar_dates.txt` (exception_type 1)
+ * and omit `calendar.txt` altogether. That is not exotic: measured 2026-07-26, **MiWay, GO
+ * Transit and Milton ship no calendar.txt at all, and Brampton ships one containing only a
+ * header row** — four of the nine GTA feeds. Requiring the file threw
+ * `GTFS feed is missing required file(s): calendar.txt` before a single row was read, so
+ * MiWay — the agency a rider actually stood in and asked for — could not be seeded at all.
+ *
+ * Nothing downstream needed fixing to support this: `activeServiceIds` (gtfs.ts) already
+ * no-ops its `calendar` loop on an empty array and still honours `calendar_dates`
+ * additions, and `boardDays` already widens the span from `calendar_dates`. The one real
+ * consequence was the board tag, fixed in poller.ts's `loadStaticContext`.
+ *
+ * What IS still required is a calendar of SOME kind: a feed with neither file has no
+ * service at all, and `boardDays` throws its own clear error on that.
+ */
 function assertRequiredEntries(): void {
-  const required = ['calendar.txt', 'routes.txt', 'stops.txt', 'trips.txt', 'stop_times.txt'];
+  const required = ['routes.txt', 'stops.txt', 'trips.txt', 'stop_times.txt'];
   const missing = required.filter((f) => !existsSync(entry(f)));
   if (missing.length > 0) {
-    throw new Error(`GTFS feed is missing required file(s): ${missing.join(', ')} — the TTC zip layout may have changed.`);
+    throw new Error(`GTFS feed for '${AGENCY}' is missing required file(s): ${missing.join(', ')} — the zip layout may have changed.`);
+  }
+  if (!existsSync(entry('calendar.txt')) && !existsSync(entry('calendar_dates.txt'))) {
+    throw new Error(
+      `GTFS feed for '${AGENCY}' has neither calendar.txt nor calendar_dates.txt — it declares no service on any date, so there is no board to load.`,
+    );
   }
 }
 
@@ -345,24 +410,32 @@ async function collectShapes(activeShapes: Set<string>): Promise<Map<string, [nu
   return out;
 }
 
+// Agency-scoped: with more than one agency seeded, a bare COUNT(*) would report the whole
+// table and overstate what this run actually loaded.
 async function count(db: Db, table: string): Promise<number> {
-  const r = await db.query<{ n: string }>(`SELECT COUNT(*)::text AS n FROM ${table}`);
+  const r = await db.query<{ n: string }>(`SELECT COUNT(*)::text AS n FROM ${table} WHERE agency=$1`, [AGENCY]);
   return Number(r.rows[0].n);
 }
 
 async function main(): Promise<void> {
   const started = Date.now();
   const db = await getDb();
-  console.log(`GhostBus seed:toronto — driver=${db.driver}, filter=${FULL ? 'FULL feed' : 'board span'}`);
+  console.log(`GhostBus seed — agency=${AGENCY} (${DESCRIPTOR.name}), driver=${db.driver}, filter=${FULL ? 'FULL feed' : 'board span'}`);
 
   if (SKIP_DOWNLOAD) {
-    if (!existsSync(entry('calendar.txt'))) {
+    // Probe stops.txt, NOT calendar.txt: calendar.txt is optional in GTFS and four of the
+    // nine GTA feeds omit it (see assertRequiredEntries). Probing it here would tell a
+    // MiWay operator "there is no extracted feed" immediately after a successful seed,
+    // defeating the whole point of the flag — proving a re-seed loads the SAME board.
+    if (!existsSync(entry('stops.txt'))) {
       throw new Error(`GHOSTBUS_SEED_SKIP_DOWNLOAD=1 but there is no extracted feed at ${EXTRACT_DIR} — run the seed once without it first.`);
     }
     console.log('1/8 GHOSTBUS_SEED_SKIP_DOWNLOAD=1 — reusing the extracted feed already on disk…');
     console.log(`  source: ${EXTRACT_DIR}`);
   } else {
-    console.log('1/8 discovering GTFS feed via CKAN…');
+    console.log(DESCRIPTOR.staticSource.kind === 'ckan'
+      ? '1/8 discovering GTFS feed via CKAN…'
+      : '1/8 resolving GTFS feed URL…');
     const zipUrl = await discoverZipUrl();
     console.log(`  resource: ${zipUrl}`);
     await downloadAndExtract(zipUrl);
@@ -444,10 +517,18 @@ async function main(): Promise<void> {
   const nShapes = await chunkedLoad(db, 'shapes', ['agency', 'shape_id', 'points'], fromArray(shapeArrayRows), { casts: { 2: '::jsonb' }, label: 'shapes' });
 
   console.log('8/8 city bounding box…');
+  // UPSERT, not UPDATE. Migration 002 inserts the baseline `ttc` row, so an UPDATE was
+  // enough while the TTC was the only agency — for any other agency it would match zero
+  // rows and the city would silently never exist. Name and tz come from the descriptor so
+  // the row describes the agency rather than repeating a literal.
   if (Number.isFinite(bbox.minLat)) {
     await db.query(
-      `UPDATE cities SET min_lat=$1, min_lon=$2, max_lat=$3, max_lon=$4 WHERE agency=$5`,
-      [bbox.minLat, bbox.minLon, bbox.maxLat, bbox.maxLon, AGENCY],
+      `INSERT INTO cities (agency, name, tz, min_lat, min_lon, max_lat, max_lon)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       ON CONFLICT (agency) DO UPDATE SET
+         name=EXCLUDED.name, tz=EXCLUDED.tz, min_lat=EXCLUDED.min_lat,
+         min_lon=EXCLUDED.min_lon, max_lat=EXCLUDED.max_lat, max_lon=EXCLUDED.max_lon`,
+      [AGENCY, DESCRIPTOR.name, DESCRIPTOR.tz, bbox.minLat, bbox.minLon, bbox.maxLat, bbox.maxLon],
     );
   }
 
@@ -477,7 +558,7 @@ async function main(): Promise<void> {
 // drive-letter casing.
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
   main().catch((e) => {
-    console.error('seed:toronto FAILED:', e);
+    console.error(`seed FAILED (agency=${AGENCY}):`, e);
     process.exit(1);
   });
 }
