@@ -5601,3 +5601,15 @@ Two facts in the pre-pin artifacts became load-bearing once the first erratum ma
 
 The draft's "prepin agrees in every respect" sentence was false and is being
 retired; the pinned-run verdict, counts, and RED-1 are unaffected.
+
+### Final note on the R4 entry (2026-07-26) — closing the erratum chain
+
+Two asserted-vs-archived markings from the backstop pass, recorded for completeness,
+after which this entry's erratum chain is closed: (1) the live-row observation span
+archived in the artifacts is 84.1 s (8 looks at a 12 s nominal tick; the quoted
+"96 s" was the harness's nominal figure); (2) the 20-stop / 25-route-group sampling
+behind the "Catch is scarce on live data" framing is asserted from a harness comment,
+not archived as an artifact — the framing stands on the pre-pin live reach plus that
+assertion, and the R5 wave should archive its own sampling. Neither changes any
+verdict. Further micro-corrections to this entry, if any surface, will not be
+recorded — the chain has converged: three review rounds, verdict unmoved.
