@@ -1,0 +1,234 @@
+{
+  "desktop-dark-en": {
+    "booted": {
+      "bodyTextLen": 735,
+      "stopHeader": "King St West at Spadina Ave West Side"
+    },
+    "nearby": {
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    },
+    "searchRows": 13,
+    "search": {
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    }
+  },
+  "desktop-light-en": {
+    "booted": {
+      "bodyTextLen": 735,
+      "stopHeader": "King St West at Spadina Ave West Side"
+    },
+    "nearby": {
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    },
+    "searchRows": 13,
+    "search": {
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    }
+  },
+  "desktop-dark-frCA": {
+    "booted": {
+      "bodyTextLen": 842,
+      "stopHeader": "King St West at Spadina Ave West Side"
+    },
+    "nearby": {
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    },
+    "searchRows": 13,
+    "search": {
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    }
+  },
+  "desktop-light-es": {
+    "booted": {
+      "bodyTextLen": 801,
+      "stopHeader": "King St West at Spadina Ave West Side"
+    },
+    "nearby": {
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    },
+    "searchRows": 13,
+    "search": {
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    }
+  },
+  "mobile-dark-en": {
+    "booted": {
+      "bodyTextLen": 668,
+      "stopHeader": "King St West at Spadina Ave West Side"
+    },
+    "nearby": {
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    },
+    "searchRows": 13,
+    "search": {
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    }
+  },
+  "mobile-light-en": {
+    "booted": {
+      "bodyTextLen": 668,
+      "stopHeader": "King St West at Spadina Ave West Side"
+    },
+    "nearby": {
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    },
+    "searchRows": 13,
+    "search": {
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    }
+  },
+  "mobile-dark-frCA": {
+    "booted": {
+      "bodyTextLen": 770,
+      "stopHeader": "King St West at Spadina Ave West Side"
+    },
+    "nearby": {
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    },
+    "searchRows": 13,
+    "search": {
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    }
+  },
+  "mobile-light-es": {
+    "booted": {
+      "bodyTextLen": 731,
+      "stopHeader": "King St West at Spadina Ave West Side"
+    },
+    "nearby": {
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    },
+    "searchRows": 13,
+    "search": {
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    }
+  }
+}

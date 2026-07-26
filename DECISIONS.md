@@ -3486,3 +3486,480 @@ predictions, engine bindings — that a mid-flight switch would leave as a blend
 recorded, under one badge, in one session. Serving `?demo=1` from a single process means
 two poller instances and a per-request selection in `api.ts`; that is a real design, it is
 not this one, and pretending otherwise in a footnote would be worse than saying so here.
+
+---
+
+## §46 — The blocked 43% was reachable, but not by the road that was proposed
+
+Written 2026-07-26, on the live Sunday board. §35 measured that the two-independent-patterns
+promotion rule alone blocks 43.2% of realtime stop occurrences, refused to relax it on a
+held-out experiment that could not tell "propagation is wrong" from "geometry picked the
+other side of the street", and filed the experiment so the next attempt would start from it.
+This is that attempt. It starts from the evidence, and the first thing it did was destroy its
+own premise.
+
+### The premise: an active binding is an independent witness. It is not.
+
+The proposal was that a live binding corroborates a stop identity — a vehicle locked onto a
+specific static trip, its realtime stop sequence resolved through the crosswalk, surviving the
+monotonicity audit and the board-agreement gates, is service reality confirming the mapping.
+
+That is checkable, so it was checked before it was built. For every active binding, for every
+tracked realtime stop at sequence *n*, the bound trip's static pattern names a stop at *n*;
+compare it to what the crosswalk says. Over 23 live cycles:
+
+| | |
+|---|---:|
+| realtime stops touched by at least one active binding | 4,228 |
+| binding "confirmations" pooled | 81,729 |
+| of those, from a pattern the stop did not ALREADY have in its agreeing set | **55 (0.07%)** |
+| confirmations of mappings blocked by the promotion rule | 37,319 |
+| **disagreements among those** | **0** |
+
+Zero disagreements out of 37,319, and 0.07% novelty, because the comparison is circular by
+construction. A binding's static pattern *is* the pattern that resolved the realtime pattern,
+and `staticStops[seq - 1]` is the very entry that implied the mapping. Asking the binding
+whether it agrees asks one inference twice. It cannot answer no.
+
+This project has shipped a test that could not fail twice before — the monotonicity audit
+comparing a sorted list against itself (§33), and the cross-route audit computed over four
+stops (BLOCKERS 17). **A promotion rule built on this premise would have been the third, and
+the first one to reach published delay numbers.**
+
+### What survived the premise
+
+A surviving binding does establish something, and it is independent — just not about stop
+identity. The pattern was matched to a scheduled slot at its origin, beat its runner-up by
+120 s, and kept agreeing with the schedule for cycles afterwards. That is evidence in the
+**time domain about the pattern assignment** — the single failure that makes every identity a
+pattern implies wrong together, which is the failure the two-pattern rule exists to catch.
+Different road, same destination.
+
+So the question became measurable: does time-domain validation of the implying pattern predict
+that its one-pattern identities are right?
+
+### The experiment, with the flaw §35 was refused over removed
+
+Same design: withhold a fifth of the geometric anchors, remove those stops from the propagation
+seed as well, let propagation predict them from what remains, score against the measurement
+withheld. One change: **the withheld truth is restricted to unambiguous nearest-stop matches**
+(runner-up at least 60 m further), which is exactly the population where "geometry picked the
+other side of the street" cannot happen.
+
+| held-out prediction group (truth gap >= 60 m) | n | agree |
+|---|---:|---:|
+| 2+ patterns — the current rule | 249 | **100.00%** |
+| 1 pattern — currently blocked | 242 | **100.00%** |
+
+Zero errors in either arm. **A test that cannot fail proves nothing**, so the same harness was
+run with the ambiguous truths put back in — and it fails, exactly where §35 said it would:
+
+| held-out prediction group (truth gap >= 0 m, the control) | n | agree |
+|---|---:|---:|
+| 2+ patterns — the current rule | 501 | 88.42% |
+| 2+ patterns, no binding validation | 132 | 71.21% |
+| 1 pattern — currently blocked | 687 | 94.03% |
+| 1 pattern, no binding validation | 363 | 89.81% |
+| **1 pattern + binding-validated (>= 2 cycles)** | **301** | **98.67%** |
+| 1 pattern + binding-validated + structurally safe | 250 | 98.40% |
+
+Three things follow, and the harness has now demonstrated it can report all of them.
+
+1. §35's finding **reproduces** at six times the sample: one-pattern identities score *higher*
+   than two-or-more (94.03% against 88.42%; §35 had 88.57% against 80.70%). The two-pattern
+   rule buys no accuracy.
+2. §35's *hypothesis about why* is **confirmed**. Restricting the truth to unambiguous geometry
+   removes **100%** of the disagreements in **both** arms. The disagreements were the
+   experiment's own truth being wrong, not propagation.
+3. Binding validation is a strong predictor where errors exist: one-pattern accuracy goes from
+   89.81% unvalidated to 98.67% validated, which also clears the current promoted set's 88.42%.
+
+### The safety condition, and the claim that did not survive contact with the board
+
+The obvious guard against the adjacent-platform failure is to require direction consistency,
+since `direction_id` names the two sides of a street. That claim was checked against the board
+before anything was built on it:
+
+| same-route stop pairs within 80 m | 4,262 |
+|---|---:|
+| no direction in common — separable | 3,375 (**79.19%**) |
+| **share a direction — `direction_id` cannot separate them** | **887 (20.81%)** |
+
+**A direction check would have read as a safeguard while passing one adjacent pair in five.**
+What it was trying to approximate is taken directly instead: `structurallyAmbiguousStops` asks
+whether another stop on this route sits within 80 m *and is served in the same direction*. If
+one does, nothing available to this engine can tell the two apart and the new path refuses.
+1,484 of 9,361 stops (15.85%) are ruled out this way. It does real work in the control arm:
+one-pattern accuracy is 95.78% on structurally safe stops against 85.59% on ambiguous ones.
+
+### What shipped
+
+`MIN_XWALK_OCCURRENCE_COVERAGE` is **unchanged at 0.50**, and no gate was touched. A third
+promotion path was added beside the two that existed:
+
+> one pattern implies the mapping, **and** that pattern has been validated by at least 2
+> distinct origin-locked bindings across at least 2 distinct cycles, **and** the stop it names
+> is not structurally ambiguous.
+
+The thresholds are read off the measurement rather than chosen: validating bindings N=0 gives
+89.81% (n=363), N=1 gives 100.00% (n=25), N=2-3 gives 97.48% (n=159), N=4-7 gives 100.00%
+(n=140); validating cycles M=0 gives 89.81%, M=1 and M=2 both give 100.00% (n=23 each). One of
+each measured at 100% too, but on 23-25 samples, and one long-dwelling vehicle can produce one
+binding in one cycle — two of each cannot come from one trip. Both floors are set at 2.
+
+**"Survived" is load-bearing.** A binding is credited only after it has cleared the per-trip
+consistency gate and the per-pattern drift breaker in a cycle, and the credit is taken back
+when either later voids it — the whole pattern's credit when the consistency gate fires, since
+that gate firing means the pattern assignment itself is in doubt. Crediting at lock time would
+have counted the bindings the audits went on to reject.
+
+**A restored row may not outlive its evidence.** `distinct_patterns` and `geo_resid_m` are
+persisted, so the first two paths can be re-checked at warm start. Binding validation cannot —
+bindings belong to a service day, not to a board — so a row confirmed that way comes back as a
+`candidate` and re-earns confirmation within a couple of cycles. Without this, a restart would
+republish a promotion whose evidence no longer existed anywhere in the process. It is a no-op
+for every row written before this section, because nothing else could have confirmed them.
+
+### The instrument, kept
+
+§35 could not be repeated because it was run from a throwaway script against state that no
+longer existed. `GHOSTBUS_XWALK_PROBE_DIR` now makes the engine dump its crosswalk, patterns,
+anchors and bindings once per cycle — off unless set, never set in production. The analyser
+that produced every table above reads those dumps. The next person to re-examine this rule
+starts from the evidence rather than from rebuilding the instrument.
+
+### The result: two runs, same board, same feed, one line of code apart
+
+Both runs start from a byte-identical copy of the same PGlite board with a **cold** crosswalk,
+poll the live TTC feeds at the production 45 s cadence, and differ only in whether the third
+promotion path exists. Neither touches the running :8799 server.
+
+| cycles after the crosswalk clears its confidence floor | control | with the third path |
+|---|---:|---:|
+| +1 | 39.93% | 42.23% |
+| +3 | 41.17% | 56.49% |
+| +6 | 43.52% | 62.07% |
+| +9 | 44.35% | 63.87% |
+| +12 | **45.26%** | **65.69%** |
+| +16 | — | **66.75%** |
+
+The control never reaches the gate: 23 cycles, peak 45.26%, `SUPPRESSED
+(xwalkOccurrenceCoverage)` on every one of them — the plateau this section set out to explain.
+The run with the third path crosses 0.50 on its third productive cycle and holds above it for
+16 consecutive cycles, ending at 66.75%.
+
+**The gate cleared, and the engine published.** 1,663 `trip_delay_obs` rows over 240 distinct
+static trips, 132 routes and 1,433 stops:
+
+| | |
+|---|---:|
+| delay p10 / p25 / p50 / p75 / p90 | −161 s / −81 s / **−3 s** / +76 s / +164 s |
+| min / max | −700 s / +492 s |
+| exactly zero | 18 rows (1.1%) |
+| late (> 60 s) / on time / early (< −60 s) | 491 / 669 / 503 |
+| ground-truth rows (`source='observed'`, a VehiclePosition reporting STOPPED_AT) | 64 |
+
+That is a plausible Sunday distribution and, more usefully, it is **not** either of the two
+shapes that would mean the engine is lying. It is not the all-zero census of §29 (18 of 1,663
+rows are exactly zero), and it is not absurd (worst late 492 s on route 59, 435 s on 504).
+The bias check §29 built the `observed` column for now has an answer: ground-truth rows read
+p10 −161 s / p50 −7 s / p90 +180 s against predicted rows at −161 / −3 / +164. **The predicted
+rows are not measurably biased against the ones we watched happen.**
+
+**Ghosts: a genuine 0, with a reason.** 646 due trips in the final cycle and zero ghosts,
+because the poller's `GLOBAL MASS-GHOST BREAKER` fired: 470 of 646 due static trips had no
+binding, far past its 30% ceiling, so it suppressed all of them as "feed outage or our bug, not
+reality". That is the breaker working. The join rate is 36.6% and rising, and ghost detection
+stays honestly silent until far more of the board is bound. **This change moved the delay
+engine past its gate; it did not move ghost detection past its own, and nothing here pretends
+otherwise.**
+
+**What the safety condition costs, stated rather than buried.** At the final cycle, 2.60% of
+occurrences sit in `candidate, one pattern, binding-validated, structurally AMBIGUOUS` — stops
+the third path could have taken and refused. That is coverage deliberately left on the table,
+and it is the right trade: those are precisely the platforms nothing here can tell apart.
+
+### What this measurement does not cover
+
+- **The holdout population is stops geometry can see clearly.** A propagated-only stop has no
+  geometric anchor by definition, so it can never be scored this way. Generalising from one to
+  the other is an assumption, and it is the same assumption §35 made.
+- **One board, one Sunday, 23 cycles, a cold-start crosswalk.** Not a soak, and not a weekday.
+- **Zero errors in the strict arm bounds the error rate, it does not measure it.** 242 of 242
+  puts the 95% upper bound near 1.5%, not at 0.
+
+## §45 — The rider was told the TTC was down. It was us. Attribution is now a typed contract
+
+A rider reported, verbatim:
+
+> "when I allow it to use my location yesterday it kept saying cant reach the live ttc feed
+> right now"
+
+Two defects hide in that sentence, and only one of them is the throttling.
+
+**The first is that we ran out of our own rate-limit budget.** **The second, and the worse
+one, is that when we did, the app blamed the Toronto Transit Commission for it.** For a
+project whose entire argument is that it does not tell riders things that are not true, an
+outage notice naming the wrong party is a first-class defect — a false statement about a
+third party, printed in our own UI, at the exact moment the rider is deciding whether to
+trust us. This section is both fixes, and the contract that stops the second one recurring.
+
+### 1. The throttling: 120 req/min was never measured against anything
+
+`api.ts` registered `rateLimit({ max: 120, timeWindow: '1 minute' })`. That number came from
+spec-era caution. Nobody had ever compared it to what this app's own client costs.
+
+Measured, on the shipped client, per open tab:
+
+| source | endpoint | req/min |
+|---|---|---|
+| MapCard vehicle poll (5 s) | `/api/vehicles` | 12 |
+| health (20 s) | `/api/health` | 3 |
+| arrivals (30 s) | `/api/stops/:id/arrivals` | 2 |
+| alerts (60 s) | `/api/alerts` | 1 |
+| ghosts (60 s) | `/api/ghosts/feed` | 1 |
+| **steady state, one visible tab** | | **~19** |
+
+A cold load adds another 10–15 one-shot requests: nearby, the route shape, stats, the
+next-service probe walk, a search burst. So **120/min is about six tabs of idle polling**,
+and far fewer in practice — every reload, every granted location fix (which refetches
+nearby + arrivals + shape at the new coordinates), every ⌘K peek spends from the same
+bucket. Everything on one machine shares one `127.0.0.1` bucket, so the rider's own tabs,
+a second window they forgot about, and — on the day of the report — automated verification
+suites hammering the same port all drew from one budget of 120. The rider's requests got
+the 429s.
+
+**The ceiling is now 600/min**, chosen from the table above: ~31 tabs of steady-state
+polling, or a handful of tabs with real headroom for reloads, location grants, search
+bursts and an agent sharing the machine. It is still a genuine ceiling — this is a
+read-only JSON API over a local Postgres — and the two endpoints that are *not* cheap keep
+their own tighter budgets, so raising the global ceiling cannot be turned into a way to
+make the database work hard:
+
+* `/api/plan` — **60/min**. It runs the windowed board self-join, the heaviest query here.
+* `/api/stops` — **120/min**. A leading-wildcard `ILIKE` over the whole stops table, and
+  the search sheet is the one place a human generates requests as fast as they type.
+
+Both are far above what the client can generate: the search sheet debounces to ~1 request
+per typing burst, the planner issues at most two per destination. A rider cannot reach
+them; a script pointed at them will.
+
+**Measured after the change**: the §F probe now runs eight full browser contexts
+back-to-back with no rate-limit drain between them. The previous harness needed a
+68-second sleep between every context to survive, and that sleep is gone.
+
+### 2. The lie: a boolean cannot name a culprit
+
+The client had exactly one failure channel:
+
+```ts
+if (!res.ok) throw new Error(msg);          // web/src/lib/api.ts
+...
+.catch(() => set({ healthError: true }))    // web/src/hooks/useLive.ts
+```
+
+`healthError` was true whenever the health *fetch* failed — our 429, our 5xx, our restart,
+a dead socket, all of it. And the copy chosen for that boolean was:
+
+```
+empty.apiDownTitle:     "Can't reach the live feed"
+empty.apiDownBody:      "GhostBus can't reach the TTC data right now. Check your
+                         connection and try again."
+status.feedDownGeneric: "TTC feed unreachable — showing scheduled times."
+```
+
+So our own rate limiter printed an accusation against the transit agency, and told the
+rider to check a connection that was fine. **A boolean has no room to say whose fault it
+was, so the copy guessed — and it guessed in the most damaging possible direction.**
+
+**The fix is that attribution is now typed end to end, on the wire and in the client.**
+Every error body from `api.ts` carries a `kind` (`shared/types.ts::ApiErrorKind`):
+
+| kind | meaning | may it mention the TTC? |
+|---|---|---|
+| `rateLimited` | our limiter refused us (429), with `retryAfterSec` | **no** |
+| `badRequest` | we asked for something invalid (4xx) | **no** |
+| `serverError` | our server failed (5xx) | **no** |
+
+and the client turns every outcome into an `ApiFailure` with one of five kinds —
+`throttled`, `serverDown`, `unreachable`, `badRequest`, `aborted`. **No member of either
+union means "the TTC feed is down."** That claim has exactly one honest source in the whole
+system, `HealthResponse.feeds`, and it is a different field with a different meaning.
+
+### 3. The three states, and the copy each one is allowed to use
+
+Derived in one place (`attributionOf`, `hooks/useLive.ts`) so no component can invent a
+fourth. Order matters: demo first, then ours, and only then theirs.
+
+**(a) OURS — throttled, restarting, or unreachable.** Blue, not red: the app is already
+recovering and the colour should not overstate it.
+
+> **GhostBus is catching up**
+> Our own server is busy or restarting, so there is nothing fresh to show yet. GhostBus is
+> retrying on its own — this is us, not the TTC.
+
+and, specifically when we throttled ourselves:
+
+> GhostBus asked its own server for too much at once and is waiting its turn. It will
+> resume by itself in a moment — the TTC feed is fine.
+
+Pill: **Catching up** · *GhostBus is catching up — retrying automatically*.
+
+**(b) THEIRS — our server answered, and its own `health.feeds` reports the outage.** This
+is the only state in the app permitted to name the agency, and it is driven by health data
+rather than by a fetch outcome: `TTC feed unreachable — showing scheduled times.`
+
+**(c) A RECORDING — `health.mode === 'demo'`.** Amber DEMO badge plus provenance:
+`Replaying a recorded slice of real TTC data. Nothing here is live.` Stated first, because
+a recording's feeds are honestly `ok` and the badge is the only thing that stops that from
+reading as live.
+
+All three exist in en / fr-CA / es, and the `Dict` type makes `tsc` prove it.
+
+### 4. Dedupe and backoff, because the throttling was partly self-inflicted
+
+The network log showed health, alerts and ghosts each fetched twice within milliseconds —
+different components asking independently — and **nothing backed off at all**, so a
+throttled or restarting server was hammered at exactly the same rate as a healthy one.
+
+* **Identical in-flight GETs now share one request.** Only requests with *no* `AbortSignal`:
+  a caller that passed one wants individual cancellation (the search sheet aborts
+  superseded queries precisely so they stop costing budget), and handing it a promise
+  somebody else can cancel would break that.
+* **Four `setInterval`s became one heartbeat** with four due-times, which is what makes a
+  *shared* backoff possible. Backing off per-task would leave three tasks hammering a
+  server that just said stop.
+* **Exponential backoff with jitter**: 2 s doubling to 60 s, jittered into [0.5, 1.0) so
+  several tabs that failed together do not retry in lockstep. A 429's own `retryAfterSec`
+  overrides the curve — the server knows when its window reopens. One success clears
+  everything; regaining focus or network clears it immediately.
+* An `aborted` request never counts as a failure, or the search sheet's own cancellations
+  would throttle the whole app.
+
+### 5. Proven as a rider, not as a probe
+
+Real Chrome, real production build, real server (PGlite + real seeded TTC GTFS), real
+geolocation. `screenshots/working/`:
+
+| shot | what it proves |
+|---|---|
+| `01-load-located` | cold load at a granted fix, board + walk path |
+| `02-search-open` | ⌘K opens the real sheet, real `/api/stops` results |
+| `03-stop-selected` | choosing a stop across town navigates — **and draws no walk line** |
+| `04-plan-ride` | a real single-ride plan, first leg drawn |
+| `05-plan-transfer` | honest transfer message, **`walkNodes = 0`** |
+| `06-before-storm` | pill: Live |
+| `07-throttled-honest` | **throttled after 567 requests**; screen says *"GhostBus is catching up — retrying automatically"*, never the TTC |
+| `08-recovered-by-itself` | no reload, no interaction — backoff expired, pill back to Live |
+| `09a-before-server-stops` | healthy, immediately before a clean SIGTERM |
+| `09-server-down` | server genuinely gone; same honest copy; agency never blamed |
+| `10-recovered-after-restart` | **same page, never reloaded** — it found the server again |
+| `11-out-of-coverage` | Mississauga: *"No TTC stops within 800 m of you"* + the nearest at 6.8 km |
+| `12-default-after-fallback` | explicit fallback, correctly relabelled *"Using a default location"* |
+
+The 429 body observed on the wire:
+
+```json
+{"statusCode":429,"kind":"rateLimited",
+ "error":"Too many requests to the GhostBus API from this address.",
+ "retryAfterSec":47,"limit":600}
+```
+
+### 6. A location outside coverage is no longer swallowed
+
+Separately reported and fixed here: spoofed to Mississauga (MiWay territory), a rider who
+granted location saw the "using a default location" banner *disappear* — so they believed
+their position had taken effect — while the app quietly kept showing King St W at Spadina
+as though it were their stop. `/api/stops/nearby` returned an empty list and the client
+dropped it on the floor.
+
+**Silently substituting a location the rider did not choose is the same dishonesty class as
+blaming the agency for our own throttling: the UI asserting something that is not true.**
+
+`/api/stops/nearby` now answers an empty radius with `nearest` — the closest stop at *any*
+distance, with `distanceM` measured by the same haversine as every other distance in the
+response — and `searchedRadiusM`. The extra query runs **only** on the empty path, the case
+where we did no work anyway, and is ordered by squared planar degrees (cosine-corrected so
+the sort is isotropic) then re-measured properly, so the number printed is never the
+approximation sorted by. The client states the fact, names the nearest stop, and offers one
+explicit button back to downtown — which relabels the view as a default location, because
+that is what it is. Nothing moves the rider's location without them pressing something.
+
+### 7. The queued Demo-API items, landed in the same pass
+
+* **`AGENCY` now comes from `poller.getMode().agency`, not the literal `'ttc'`.** Verified
+  bug: a demo instance sharing a database with live TTC rows would have read the *live*
+  rows and served them under the amber DEMO badge — the badge attached to data it does not
+  describe, which is the same lie as a recording labelled live. One read at boot is correct
+  for the process's whole life, because `mode` is immutable after boot (§44).
+* **`serverNowMs` and the board/plan/alerts "now" use `poller.now()`** — the DATA clock, so
+  a replayed board is judged against the moment its bytes were captured. The `Date.now()`
+  calls that filter `trip_delay_obs.ts` and `ghosts.detected_at` are **deliberately
+  untouched and now say so at each site**: those columns are stamped by the database's own
+  `DEFAULT now()`, so mixing clocks there would compare a wall-clock column against a
+  capture-window instant and silently return nothing.
+* **`HealthResponse` gained `mode` and `demo`** (`DemoProvenance`, restated in `shared/`
+  because the wire contract must not import from `server/`). Without them a recording and a
+  live feed are indistinguishable on the wire and the DEMO badge has nothing to key off.
+* **`api.test.ts`'s `fakePoller` lost its `as unknown as PollerHandle` cast.** That cast
+  asserted nothing, and it is precisely how `now()` and `getMode()` came to be missing from
+  the double while `api.ts` was being changed to depend on them. It is a plain
+  `PollerHandle` annotation now, so the compiler proves the double is complete — and it
+  earned its keep immediately by failing the build on a `getJoinStats` shape mismatch. The
+  one remaining cast is scoped to that single return value (a ~20-field diagnostic blob of
+  which api.ts reads one field) rather than to the whole object.
+
+### 8. A failed plan draws no route-like geometry
+
+Gate question from the orchestrator, and the answer needed two rules rather than one.
+
+The map's beaded walk path is a **claim**: "you can walk this". It was drawn
+unconditionally as a straight line from the rider to whatever stop was selected. Searching
+a stop across town therefore left a dotted line running clear across the city, and that
+reads as a suggested walking route.
+
+**Rule one — a walk we would refuse to plan is not drawn.** `PLAN_MAX_RADIUS_M` (1500 m
+ceiling, `server/src/api.ts`) is the longest walk our own planner will put in a plan at
+all. Drawing one past that is self-contradictory, so the geometry stops there: no line, no
+walker node, no walk time, and the camera falls back to the standard city framing instead
+of dissolving the diorama trying to fit a line that is not there. **The threshold is the
+app's own existing contract, not a new opinion.**
+
+**Rule two — a failed plan takes the geometry with it, whatever the distance says.** Rule
+one alone was not enough, and the harness is what caught it: on the transfer screen
+`walkNodes` was still `1`, because the leg being drawn was the *previous, successful*
+plan's first leg — geometry belonging to a different journey, still on screen under this
+one's failure message. `store.planUnresolved` is set by `PlanView` for every non-`ride`
+outcome *and* for a `ride` whose candidates are all uncatchable, and `MapCard` treats it
+exactly like "not walkable".
+
+Both states now say something true, and both are asserted by render, not by eye:
+`04-plan-ride` → `walkNodes = 1` with three legs; `05-plan-transfer` → `walkNodes = 0`.
+
+The red route line stays in both. It is the agency's own published shape for the focus
+route, drawn whether or not a plan exists, and it is unmistakably a transit route rather
+than a walking one — it is not a claim about the plan.
+
+### 9. What the road-tone / density work in the tree was, and why it shipped
+
+The working tree also held uncommitted edits to `map/mapStyle.ts`, `map/voxelCity.ts` and
+`map/voxelMesh.ts` whose provenance was unknown. **Assessed and kept**, because they are
+the finished piece of work §42 explicitly asked for rather than a partial one.
+
+§42 measured that our road surface sits at luminance 39.8 against our own ground at 20.4,
+where the reference's streets are its *darkest* surface at ~20 — and that the consequence
+was structural, not tonal: the road network is a connected graph, so painting it above the
+building/ground boundary welded every block to every other. §42 then declined to fix it
+alone, on the record, because "roads and density have to move together, with their own
+before/after" — pass 1 had already proved that darkening roads on a too-sparse city makes
+the grid vanish.
+
+These edits move both together: the two signed-hash bugs are fixed (`h % n` →
+`(h >>> 0) % n`), the `MIN_FOOTPRINT_PX2` generalisation floor is gone (both raising built
+coverage), and the road ladder comes down to casing 17.5 / minor 20.6 / secondary 22.7 /
+major 26.7 against a 20.4 ground — with the casing now a step *darker* than its fill, so
+each street reads as a shallow channel rather than the brightest element in the frame.
+That is §42's own prescription, executed. It typechecks, the 304-test suite is green, and
+the eight-combination probe is clean on it. Kept, with the stale "§43 ships it"
+cross-references in those files left pointing at the section that actually holds the
+measurements, §42.

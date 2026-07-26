@@ -1,0 +1,101 @@
+{
+  "01-load-located": {
+    "note": "cold load with a granted geolocation fix at King & Spadina",
+    "state": {
+      "bodyTextLen": 628,
+      "stopHeader": "King St West at Spadina Ave West Side",
+      "searchOpen": false,
+      "searchRows": 0,
+      "planLegs": 0,
+      "planTotal": null,
+      "stateTitle": null,
+      "stateBody": null,
+      "statusPill": "Live",
+      "feedBanners": [],
+      "locNote": null,
+      "walkNodes": 1,
+      "demoBadge": null
+    }
+  },
+  "02-search-open": {
+    "note": "the real search sheet, real results from /api/stops",
+    "state": {
+      "bodyTextLen": 1157,
+      "stopHeader": "King St West at Spadina Ave West Side",
+      "searchOpen": true,
+      "searchRows": 8,
+      "planLegs": 0,
+      "planTotal": null,
+      "stateTitle": null,
+      "stateBody": null,
+      "statusPill": "Live",
+      "feedBanners": [],
+      "locNote": null,
+      "walkNodes": 1,
+      "demoBadge": null
+    }
+  },
+  "chosen": "Dundas West Station - Westbound Platform",
+  "03-stop-selected": {
+    "note": "chose \"Dundas West Station - Westbound Platform\" and the board followed",
+    "state": {
+      "bodyTextLen": 580,
+      "stopHeader": "Dundas West Station - Westbound Platform",
+      "searchOpen": false,
+      "searchRows": 0,
+      "planLegs": 0,
+      "planTotal": null,
+      "stateTitle": null,
+      "stateBody": null,
+      "statusPill": "Live",
+      "feedBanners": [],
+      "locNote": null,
+      "walkNodes": 0,
+      "demoBadge": null
+    }
+  },
+  "04-plan-ride": {
+    "note": "a real single-ride plan off the agency schedule",
+    "state": {
+      "bodyTextLen": 1007,
+      "stopHeader": null,
+      "searchOpen": false,
+      "searchRows": 0,
+      "planLegs": 3,
+      "planTotal": "About 36 min door to door",
+      "stateTitle": null,
+      "stateBody": null,
+      "statusPill": "Live",
+      "feedBanners": [],
+      "locNote": null,
+      "walkNodes": 1,
+      "demoBadge": null
+    }
+  },
+  "05-plan-transfer": {
+    "note": "transfer needed — stated, not faked",
+    "state": {
+      "bodyTextLen": 757,
+      "stopHeader": null,
+      "searchOpen": false,
+      "searchRows": 0,
+      "planLegs": 0,
+      "planTotal": null,
+      "stateTitle": "This trip needs a transfer",
+      "stateBody": "No single TTC vehicle runs from a stop near you to a stop near your destination. Full trip planning is coming — GhostBus will not invent a connection it cannot see.",
+      "statusPill": "Live",
+      "feedBanners": [],
+      "locNote": null,
+      "walkNodes": 0,
+      "demoBadge": null
+    }
+  },
+  "transferAssert": {
+    "walkNodes": 0,
+    "pass": true,
+    "note": "a failed plan must draw no walker node and no beaded path"
+  },
+  "errors": [
+    "console: Failed to load resource: the server responded with a status of 404 (Not Found)"
+  ]
+}

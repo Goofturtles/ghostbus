@@ -1,0 +1,234 @@
+{
+  "desktop-dark-en": {
+    "cov": {
+      "title": "No TTC stops within 800 m of you",
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    },
+    "up": {
+      "pill": "Catching up GhostBus is catching up — retrying automatically",
+      "banners": [
+        "GhostBus is catching up — retrying automatically"
+      ],
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    }
+  },
+  "desktop-light-en": {
+    "cov": {
+      "title": "No TTC stops within 800 m of you",
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    },
+    "up": {
+      "pill": "Catching up GhostBus is catching up — retrying automatically",
+      "banners": [
+        "GhostBus is catching up — retrying automatically"
+      ],
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    }
+  },
+  "desktop-dark-frCA": {
+    "cov": {
+      "title": "Aucun arrêt de la TTC à moins de 800 m de vous",
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    },
+    "up": {
+      "pill": "Rattrapage en cours GhostBus rattrape son retard — nouvelle tentative automatique",
+      "banners": [
+        "GhostBus rattrape son retard — nouvelle tentative automatique"
+      ],
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    }
+  },
+  "desktop-light-es": {
+    "cov": {
+      "title": "No hay paradas de la TTC a menos de 800 m de ti",
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    },
+    "up": {
+      "pill": "Poniéndose al día GhostBus se está poniendo al día — reintentando automáticamente",
+      "banners": [
+        "GhostBus se está poniendo al día — reintentando automáticamente"
+      ],
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    }
+  },
+  "mobile-dark-en": {
+    "cov": {
+      "title": "No TTC stops within 800 m of you",
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    },
+    "up": {
+      "pill": "Catching upGhostBus is catching up — retrying automatically",
+      "banners": [
+        "GhostBus is catching up — retrying automatically"
+      ],
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    }
+  },
+  "mobile-light-en": {
+    "cov": {
+      "title": "No TTC stops within 800 m of you",
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    },
+    "up": {
+      "pill": "Catching upGhostBus is catching up — retrying automatically",
+      "banners": [
+        "GhostBus is catching up — retrying automatically"
+      ],
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    }
+  },
+  "mobile-dark-frCA": {
+    "cov": {
+      "title": "Aucun arrêt de la TTC à moins de 800 m de vous",
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    },
+    "up": {
+      "pill": "Rattrapage en coursGhostBus rattrape son retard — nouvelle tentative automatique",
+      "banners": [
+        "GhostBus rattrape son retard — nouvelle tentative automatique"
+      ],
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    }
+  },
+  "mobile-light-es": {
+    "cov": {
+      "title": "No hay paradas de la TTC a menos de 800 m de ti",
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    },
+    "up": {
+      "pill": "Poniéndose al díaGhostBus se está poniendo al día — reintentando automáticamente",
+      "banners": [
+        "GhostBus se está poniendo al día — reintentando automáticamente"
+      ],
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    }
+  }
+}

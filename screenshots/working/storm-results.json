@@ -1,0 +1,72 @@
+{
+  "06-before-storm": {
+    "note": "healthy: the pill is Live",
+    "state": {
+      "bodyTextLen": 624,
+      "stopHeader": "King St West at Spadina Ave West Side",
+      "searchOpen": false,
+      "searchRows": 0,
+      "planLegs": 0,
+      "planTotal": null,
+      "stateTitle": null,
+      "stateBody": null,
+      "statusPill": "Live",
+      "feedBanners": [],
+      "locNote": null,
+      "walkNodes": 1,
+      "demoBadge": null
+    }
+  },
+  "burst": {
+    "sent": 568,
+    "first429": 567,
+    "body": {
+      "statusCode": 429,
+      "kind": "rateLimited",
+      "error": "Too many requests to the GhostBus API from this address.",
+      "retryAfterSec": 47,
+      "limit": 600
+    }
+  },
+  "07-throttled-honest": {
+    "note": "OUR throttling, named as ours",
+    "state": {
+      "bodyTextLen": 729,
+      "stopHeader": "King St West at Spadina Ave West Side",
+      "searchOpen": false,
+      "searchRows": 0,
+      "planLegs": 0,
+      "planTotal": null,
+      "stateTitle": null,
+      "stateBody": null,
+      "statusPill": "Catching up GhostBus is catching up — retrying automatically",
+      "feedBanners": [
+        "GhostBus is catching up — retrying automatically"
+      ],
+      "locNote": null,
+      "walkNodes": 1,
+      "demoBadge": null
+    }
+  },
+  "throttledCopy": "Catching up GhostBus is catching up — retrying automatically | GhostBus is catching up — retrying automatically",
+  "blamesAgency": false,
+  "08-recovered-by-itself": {
+    "note": "no reload, no interaction — the backoff expired and it resumed",
+    "state": {
+      "bodyTextLen": 627,
+      "stopHeader": "King St West at Spadina Ave West Side",
+      "searchOpen": false,
+      "searchRows": 0,
+      "planLegs": 0,
+      "planTotal": null,
+      "stateTitle": null,
+      "stateBody": null,
+      "statusPill": "Live",
+      "feedBanners": [],
+      "locNote": null,
+      "walkNodes": 1,
+      "demoBadge": null
+    }
+  },
+  "recovered": true
+}

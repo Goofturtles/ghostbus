@@ -1,0 +1,41 @@
+{
+  "11-out-of-coverage": {
+    "note": "Mississauga: no TTC stop in range, and it says so with a number",
+    "state": {
+      "bodyTextLen": 487,
+      "stopHeader": null,
+      "searchOpen": false,
+      "searchRows": 0,
+      "planLegs": 0,
+      "planTotal": null,
+      "stateTitle": "No TTC stops within 800 m of you",
+      "stateBody": "The nearest stop GhostBus covers is Markland Dr (West) at Bloor St West North Side, about 6.8 km away.",
+      "statusPill": "Live",
+      "feedBanners": [],
+      "locNote": null,
+      "walkNodes": 0,
+      "demoBadge": null
+    }
+  },
+  "saysOutOfCoverage": true,
+  "namesNearest": true,
+  "12-default-after-fallback": {
+    "note": "downtown board, correctly labelled a default location",
+    "state": {
+      "bodyTextLen": 668,
+      "stopHeader": "King St West at Spadina Ave West Side",
+      "searchOpen": false,
+      "searchRows": 0,
+      "planLegs": 0,
+      "planTotal": null,
+      "stateTitle": null,
+      "stateBody": null,
+      "statusPill": "Live",
+      "feedBanners": [],
+      "locNote": "Using a default location — tap to use yours",
+      "walkNodes": 1,
+      "demoBadge": null
+    }
+  },
+  "relabelled": true
+}

@@ -1,0 +1,61 @@
+{
+  "09a-before-server-stops": {
+    "note": "healthy, immediately before the server is stopped",
+    "state": {
+      "bodyTextLen": 721,
+      "stopHeader": "King St West at Spadina Ave West Side",
+      "searchOpen": false,
+      "searchRows": 0,
+      "planLegs": 0,
+      "planTotal": null,
+      "stateTitle": null,
+      "stateBody": null,
+      "statusPill": "Live",
+      "feedBanners": [],
+      "locNote": null,
+      "walkNodes": 1,
+      "demoBadge": null
+    }
+  },
+  "09-server-down": {
+    "note": "the server went away under a running app",
+    "state": {
+      "bodyTextLen": 824,
+      "stopHeader": "King St West at Spadina Ave West Side",
+      "searchOpen": false,
+      "searchRows": 0,
+      "planLegs": 0,
+      "planTotal": null,
+      "stateTitle": null,
+      "stateBody": null,
+      "statusPill": "Catching up GhostBus is catching up — retrying automatically",
+      "feedBanners": [
+        "GhostBus is catching up — retrying automatically"
+      ],
+      "locNote": null,
+      "walkNodes": 1,
+      "demoBadge": null
+    }
+  },
+  "downCopy": "Catching up GhostBus is catching up — retrying automatically | GhostBus is catching up — retrying automatically",
+  "blamesAgency": false,
+  "10-recovered-after-restart": {
+    "note": "same page, never reloaded — it found the server again",
+    "state": {
+      "bodyTextLen": 735,
+      "stopHeader": "King St West at Spadina Ave West Side",
+      "searchOpen": false,
+      "searchRows": 0,
+      "planLegs": 0,
+      "planTotal": null,
+      "stateTitle": null,
+      "stateBody": null,
+      "statusPill": "Live",
+      "feedBanners": [],
+      "locNote": null,
+      "walkNodes": 1,
+      "demoBadge": null
+    }
+  },
+  "recovered": true
+}
