@@ -2,7 +2,8 @@
 // standalone collector so the API can run it in-process (one deployable service).
 //
 // What it does every POLL_MS:
-//   - fetches the three TTC feeds (conditional requests, timeout, backoff),
+//   - fetches the realtime feeds ITS OWN AGENCY publishes (conditional requests, timeout,
+//     backoff) — which may be three, fewer, or none: see `feedIdsFor` in agencies.ts,
 //   - keeps current vehicle positions in an in-memory map (never persisted),
 //   - hands the decoded feeds to the delay engine (server/src/engine.ts), which learns
 //     the RT->static stop crosswalk, binds realtime trips to static trips, and writes
@@ -45,39 +46,34 @@
 // declares every bus in Toronto a ghost.
 //
 // The source also carries the AGENCY NAMESPACE every row this poller writes is tagged
-// with ('ttc' live, 'ttc-demo' on a recording). Static schedule tables are always read
-// under 'ttc' — a schedule is not an observation, and both modes are describing the same
-// published board. See DECISIONS.md §44.
+// with ('ttc' live, 'ttc-demo' on a recording). Static schedule tables are read under the
+// poller's OWN agency ('ttc', 'miway', …) in both modes — a schedule is not an observation,
+// and a recording is a recording OF the same published board. See DECISIONS.md §44 / §48,
+// and `getMode().staticAgency`, which is how a caller asks rather than assuming.
 
 import GtfsRealtimeBindings from 'gtfs-realtime-bindings';
 import type { Db } from './db.ts';
 import { isDbClosed } from './db.ts';
-import { activeServiceIds, type CalendarRow, type CalendarDateRow } from './gtfs.ts';
+import { activeServiceIds, boardSpan, type CalendarRow, type CalendarDateRow } from './gtfs.ts';
 import { torontoDay, torontoMidnightEpoch, torontoYmd, serviceYmd } from './tz.ts';
 import { presentInt, presentStr, presentFloat } from './pb.ts';
 import { createDelayEngine, type DelayEngineStats, type EngineVehicle, type EngineTripUpdate, type EngineStopUpdate } from './engine.ts';
+import { agency as agencyDescriptor, feedIdsFor, USER_AGENT, type AgencyDescriptor } from './agencies.ts';
 import type { FeedId, FeedStatusKind } from '../../shared/types.ts';
 
 const { transit_realtime } = GtfsRealtimeBindings;
 
 /**
- * The agency whose STATIC schedule we read. Never varies: the seeded GTFS board is the
- * same published schedule in both modes, and reading it is not an observation.
- */
-/**
- * The published schedule's namespace. ALWAYS 'ttc', in both live and demo mode: there is one
- * published board, `seed_toronto.ts` only ever writes it under this name, and a recording is
- * a recording OF that board rather than a different one. Exported because `api.ts` has to
- * make exactly the same distinction for its own queries (DECISIONS §44, §46).
+ * The published schedule's namespace for a DEFAULT poller. Still 'ttc' because that is the
+ * agency a poller observes when nobody says otherwise, but it is no longer THE answer for
+ * the process: a poller now carries its own descriptor, and `getMode().staticAgency` is
+ * what any caller should read (DECISIONS §44, §48).
+ *
+ * A schedule is not an observation. Whatever a poller WRITES under (`ttc`, `ttc-demo`,
+ * `miway`), it READS the published board under the agency's own id, because there is one
+ * published board and a recording is a recording OF it.
  */
 export const STATIC_AGENCY = 'ttc';
-/** Default namespace for rows this poller WRITES. A recorded source overrides it. */
-const AGENCY = STATIC_AGENCY;
-const FEEDS: Record<FeedId, string> = {
-  vehicles: 'https://bustime.ttc.ca/gtfsrt/vehicles',
-  trips: 'https://bustime.ttc.ca/gtfsrt/trips',
-  alerts: 'https://bustime.ttc.ca/gtfsrt/alerts',
-};
 
 const POLL_MS = 45_000;
 const REQUEST_TIMEOUT_MS = 10_000;
@@ -184,6 +180,20 @@ export interface ModeInfo {
   mode: PollerMode;
   /** the namespace every row this poller writes is tagged with. */
   agency: string;
+  /**
+   * The namespace this poller READS the published schedule under — stops, routes, trips,
+   * stop_times, shapes, calendar, calendar_dates.
+   *
+   * REQUIRED, and deliberately a separate field from `agency` rather than something a
+   * caller can derive. DECISIONS §48 records both directions of getting this wrong shipping
+   * in one file: hardcoding the static agency served live rows under the DEMO badge, and
+   * then using the write agency everywhere made a demo instance read a namespace nothing is
+   * written to and report "No TTC stops within 800 m" while standing at King & Spadina.
+   * Two names, so neither can be typed where the other belongs.
+   *
+   * Equal to `agency` for a live poller; the underlying agency for a demo replay.
+   */
+  staticAgency: string;
   /** the DATA clock — what "now" means to this process. Live: the wall clock. */
   dataNowMs: number;
   /** the wall clock, always. Equal to dataNowMs when live. */
@@ -217,7 +227,7 @@ export interface PollerHandle {
   stop(): Promise<void>;
   runOnce(cycle: number): Promise<void>;
   getVehicleStates(): VehicleState[];
-  getFeedHealth(): { feeds: Record<FeedId, FeedRuntime>; lastPollAtMs: number | null; mode: PollerMode };
+  getFeedHealth(): { feeds: Partial<Record<FeedId, FeedRuntime>>; lastPollAtMs: number | null; mode: PollerMode };
   getLivePredictionMs(staticTripId: string, stopId: string): number | null;
   getJoinStats(): JoinStats;
   isIndexReady(): boolean;
@@ -234,15 +244,33 @@ export interface PollerOptions {
   onExit?: () => void;    // called when maxCycles reached (standalone wrapper uses this)
   /** Recorded replay source. Absent = live network + wall clock. */
   source?: PollerSource;
+  /**
+   * Which agency this poller observes. Defaults to the TTC, so an existing caller that
+   * passes nothing behaves exactly as before. The descriptor supplies the feed URLs, the
+   * static namespace and — importantly — WHICH feeds exist at all.
+   */
+  agency?: AgencyDescriptor;
 }
 
 export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle {
   const source = options.source ?? null;
   const mode: PollerMode = source ? source.mode : 'live';
+  const descriptor = options.agency ?? agencyDescriptor(STATIC_AGENCY);
+  /** The published board this poller reads. Never varies with mode. */
+  const staticAgency = descriptor.id;
   // Every row this poller writes carries this. Static schedule reads always use
-  // STATIC_AGENCY, so a recording shares the board it is a recording OF and shares
+  // `staticAgency`, so a recording shares the board it is a recording OF and shares
   // nothing else.
-  const agency = source ? source.agency : AGENCY;
+  const agency = source ? source.agency : staticAgency;
+  /**
+   * ONLY the feeds this agency actually publishes. Iterating the three-member FeedId union
+   * instead would invent feeds for an agency that has none: YRT publishes no alerts feed
+   * (404) and Oakville publishes no realtime at all, and reporting those as `down` would
+   * say "this feed is broken" when the truth is "this feed does not exist". Those are
+   * opposite statements and gates.ts makes the same distinction for boardIntegrity.
+   */
+  const feeds: Partial<Record<FeedId, string>> = descriptor.rt;
+  const feedIds: FeedId[] = feedIdsFor(descriptor);
   const pollMs = options.pollMs ?? source?.pollMs ?? POLL_MS;
   const maxCycles = options.maxCycles ?? 0;
   /** The DATA clock. See the two-clocks note at the top of this file. */
@@ -270,18 +298,19 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
   // The delay engine owns the static pattern index, the learned stop crosswalk, trip
   // binding, and every delay row written. The poller feeds it decoded feeds and asks it
   // which static trips are present.
-  // Static reads under STATIC_AGENCY, every learned/observed row under `agency`.
-  const engine = createDelayEngine(db, STATIC_AGENCY, agency);
+  // Static reads under this agency's own board, every learned/observed row under `agency`.
+  const engine = createDelayEngine(db, staticAgency, agency);
 
   // Ghost confirmation/retraction state (keyed `${tripId}|${startEpoch}`):
   const ghostMissStreak = new Map<string, number>();   // consecutive cycles a due trip has been absent
   const ghostInserted = new Map<string, { tripId: string; startEpoch: number }>(); // ghost rows we wrote this run
 
-  const feedState: Record<FeedId, FetchState> = {
-    vehicles: { fails: 0, nextAttemptAt: 0, status: 'down', lastOkMs: null, sinceMs: null },
-    trips: { fails: 0, nextAttemptAt: 0, status: 'down', lastOkMs: null, sinceMs: null },
-    alerts: { fails: 0, nextAttemptAt: 0, status: 'down', lastOkMs: null, sinceMs: null },
-  };
+  // Built from the agency's own feed list, so a feed this agency does not publish has no
+  // entry at all — not an entry that reads `down` forever.
+  const feedState: Partial<Record<FeedId, FetchState>> = {};
+  for (const id of feedIds) {
+    feedState[id] = { fails: 0, nextAttemptAt: 0, status: 'down', lastOkMs: null, sinceMs: null };
+  }
   let lastPollAtMs: number | null = null;
 
   const totals = { obs: 0, ghosts: 0, cancelled: 0, alerts: 0 };
@@ -311,6 +340,10 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
    */
   async function fetchFeed(key: FeedId): Promise<{ status: 'ok'; msg: FeedMessage } | { status: 'notmodified' | 'skip' | 'error'; reason?: string }> {
     const st = feedState[key];
+    const url = feeds[key];
+    // This agency does not publish this feed. Not an error, not a backoff, not a `down`
+    // status — there is simply nothing to ask for.
+    if (!st || !url) return { status: 'skip', reason: `${descriptor.id} publishes no ${key} feed` };
     const now = Date.now();   // WALL clock: backoff and freshness are about our own loop
     if (now < st.nextAttemptAt) return { status: 'skip', reason: `backoff ${(st.nextAttemptAt - now) / 1000 | 0}s` };
     if (source) {
@@ -326,10 +359,10 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
     try {
-      const headers: Record<string, string> = {};
+      const headers: Record<string, string> = { 'User-Agent': USER_AGENT };
       if (st.etag) headers['If-None-Match'] = st.etag;
       if (st.lastModified) headers['If-Modified-Since'] = st.lastModified;
-      const res = await fetch(FEEDS[key], { signal: ctrl.signal, headers });
+      const res = await fetch(url, { signal: ctrl.signal, headers });
       if (res.status === 304) { markOk(st, now); return { status: 'notmodified' }; }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const buf = Buffer.from(await res.arrayBuffer());
@@ -353,8 +386,9 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
     lastPollAtMs = lastPollAtMs == null ? now : Math.max(lastPollAtMs, now);
   }
   function refreshStaleness(now: number): void {
-    for (const key of Object.keys(feedState) as FeedId[]) {
+    for (const key of feedIds) {
       const st = feedState[key];
+      if (!st) continue;
       const wanted: FeedStatusKind = st.lastOkMs == null ? 'down' : (now - st.lastOkMs > STALE_AFTER_MS ? 'stale' : 'ok');
       if (wanted !== st.status) { st.status = wanted; st.sinceMs = now; }
     }
@@ -365,28 +399,49 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
   // never sees a half-cleared calendar/trip map during a reload.
   async function loadStaticContext(): Promise<void> {
     const cal = await db.query<{ service_id: string; mon: boolean; tue: boolean; wed: boolean; thu: boolean; fri: boolean; sat: boolean; sun: boolean; start_date: number; end_date: number }>(
-      'SELECT service_id, mon, tue, wed, thu, fri, sat, sun, start_date, end_date FROM calendar WHERE agency=$1', [STATIC_AGENCY]);
+      'SELECT service_id, mon, tue, wed, thu, fri, sat, sun, start_date, end_date FROM calendar WHERE agency=$1', [staticAgency]);
     const newCalendar: CalendarRow[] = cal.rows.map((r) => ({
       service_id: r.service_id, days: [r.mon, r.tue, r.wed, r.thu, r.fri, r.sat, r.sun],
       start_date: Number(r.start_date), end_date: Number(r.end_date),
     }));
     const cd = await db.query<{ service_id: string; date: number; exception_type: number }>(
-      'SELECT service_id, date, exception_type FROM calendar_dates WHERE agency=$1', [STATIC_AGENCY]);
+      'SELECT service_id, date, exception_type FROM calendar_dates WHERE agency=$1', [staticAgency]);
     const newCalendarDates: CalendarDateRow[] = cd.rows.map((r) => ({ service_id: r.service_id, date: Number(r.date), exception_type: Number(r.exception_type) }));
 
     const starts = await db.query<{ trip_id: string; route_id: string | null; service_id: string | null; start_s: number | null }>(
       `SELECT DISTINCT ON (t.trip_id) t.trip_id, t.route_id, t.service_id, COALESCE(st.departure_s, st.arrival_s) AS start_s
        FROM trips t JOIN stop_times st ON st.agency = t.agency AND st.trip_id = t.trip_id
-       WHERE t.agency = $1 ORDER BY t.trip_id, st.stop_sequence`, [STATIC_AGENCY]);
+       WHERE t.agency = $1 ORDER BY t.trip_id, st.stop_sequence`, [staticAgency]);
     const newStarts = new Map<string, TripStart>();
     const newStaticIds = new Set<string>();
     for (const r of starts.rows) {
       newStarts.set(r.trip_id, { routeId: r.route_id, serviceId: r.service_id, startS: r.start_s == null ? null : Number(r.start_s) });
       newStaticIds.add(r.trip_id);
     }
-    let minStart = Infinity, maxEnd = 0;
-    for (const c of newCalendar) { if (c.start_date < minStart) minStart = c.start_date; if (c.end_date > maxEnd) maxEnd = c.end_date; }
-    boardCoverage = Number.isFinite(minStart) ? `${minStart}..${maxEnd}` : '?..?';
+    /**
+     * THE BOARD TAG MUST CHANGE WHEN THE BOARD CHANGES, OR THE CROSSWALK GOES STALE SILENTLY.
+     *
+     * This used to read `calendar` alone. That is fine for a feed with a populated
+     * calendar.txt and quietly broken for one without: MiWay and GO ship NO calendar.txt at
+     * all and Brampton ships a header-only one, expressing service entirely through
+     * calendar_dates.txt (valid GTFS — `activeServiceIds` already handles it). For those
+     * agencies `minStart` stayed Infinity and the tag became the literal `'?..?'`.
+     *
+     * `boardCoverage` is not just a display string: it IS the `board_tag` scoping
+     * `rt_stop_xwalk`, `rt_stop_xwalk_votes` and `rt_pattern` (migration 004), and
+     * ARCHITECTURE.md §6 depends on it changing — "A board change wipes the crosswalk and
+     * every binding… carrying the old crosswalk across would silently map realtime stops
+     * onto a schedule they were never learned from." A constant `'?..?'` means a new board
+     * reuses the previous board's learned stop identities. The `agency` column still keeps
+     * agencies apart, so this was never a blending bug between agencies — it was a
+     * stale-within-one-agency bug, which is exactly what §6 exists to prevent.
+     *
+     * So the span is taken over calendar ∪ calendar_dates — the same union `boardDays` in
+     * the seeder already computes to decide which trips to load. A feed with neither is the
+     * only remaining `'?..?'`, and that feed has no schedule at all.
+     */
+    const span = boardSpan(newCalendar, newCalendarDates);
+    boardCoverage = span ? `${span.first}..${span.last}` : '?..?';
 
     // atomic swap
     calendar = newCalendar;
@@ -698,6 +753,13 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
     maybeReloadStatic(now);
 
     const [vr, tr, ar] = await Promise.all([fetchFeed('vehicles'), fetchFeed('trips'), fetchFeed('alerts')]);
+    /**
+     * A feed this agency does not publish is not news. `fetchFeed` already returns `skip`
+     * for it, but logging that every 45 s would fill a schedule-only agency's log with
+     * three lines a cycle about feeds that do not exist. Absence is reported once, by
+     * `/api/health` omitting the key — not repeatedly, as if something were wrong.
+     */
+    const publishes = (id: FeedId): boolean => feeds[id] != null;
     // WALL clock: staleness asks whether OUR poll loop is still getting snapshots, and
     // `markOk`/`getFeedHealth` both stamp it from Date.now(). Feeding it the data clock
     // would leave `sinceMs` carrying a capture-window instant or a wall-clock one
@@ -707,13 +769,13 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
     const vehicleTripIds = new Set<string>();
     let vehicles = 0;
     if (vr.status === 'ok') vehicles = processVehicles(vr.msg, vehicleTripIds, cycle);
-    else console.log(`[poller][cycle ${cycle}] vehicles ${vr.status}${'reason' in vr && vr.reason ? `: ${vr.reason}` : ''}`);
+    else if (publishes('vehicles')) console.log(`[poller][cycle ${cycle}] vehicles ${vr.status}${'reason' in vr && vr.reason ? `: ${vr.reason}` : ''}`);
     evictStaleVehicles(cycle);
 
     let tripUpdates = 0;
     let parsed: TripUpdateParsed[] = [];
     if (tr.status === 'ok') { const r = processTripUpdates(tr.msg); tripUpdates = r.count; parsed = r.parsed; }
-    else console.log(`[poller][cycle ${cycle}] trips ${tr.status}${'reason' in tr && tr.reason ? `: ${tr.reason}` : ''}`);
+    else if (publishes('trips')) console.log(`[poller][cycle ${cycle}] trips ${tr.status}${'reason' in tr && tr.reason ? `: ${tr.reason}` : ''}`);
 
     // ----- the delay engine -----
     // NOTE: TTC sends no ETag/Last-Modified and never returns 304 (measured — see
@@ -890,7 +952,7 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
 
     let alerts = 0;
     if (ar.status === 'ok') { alerts = await processAlerts(ar.msg); totals.alerts = alerts; }
-    else if (ar.status !== 'notmodified') console.log(`[poller][cycle ${cycle}] alerts ${ar.status}${'reason' in ar && ar.reason ? `: ${ar.reason}` : ''}`);
+    else if (ar.status !== 'notmodified' && publishes('alerts')) console.log(`[poller][cycle ${cycle}] alerts ${ar.status}${'reason' in ar && ar.reason ? `: ${ar.reason}` : ''}`);
 
     const jr = joinRate == null ? 'n/a(index warming)' : `${(joinRate * 100).toFixed(1)}%`;
     const cancTag = canceledSeen > 0 ? ` canceled(seen=${canceledSeen} id=${canceledIdentified} anon=${canceledUnidentified})` : '';
@@ -974,12 +1036,15 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
       // them is what stops that from reading as "live".
       const now = Date.now();
       refreshStaleness(now);
-      const feeds = {} as Record<FeedId, FeedRuntime>;
-      for (const key of Object.keys(feedState) as FeedId[]) {
+      // Named `out` rather than `feeds` so it cannot be confused with this poller's feed
+      // URL map of the same name in the enclosing scope.
+      const out: Partial<Record<FeedId, FeedRuntime>> = {};
+      for (const key of feedIds) {
         const st = feedState[key];
-        feeds[key] = { status: st.status, lastOkMs: st.lastOkMs, sinceMs: st.sinceMs };
+        if (!st) continue;
+        out[key] = { status: st.status, lastOkMs: st.lastOkMs, sinceMs: st.sinceMs };
       }
-      return { feeds, lastPollAtMs, mode };
+      return { feeds: out, lastPollAtMs, mode };
     },
     getLivePredictionMs(staticTripId, stopId) { return livePredictions.get(staticTripId)?.get(stopId) ?? null; },
     getJoinStats() { return { ...joinStats }; },
@@ -989,6 +1054,7 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
       return {
         mode,
         agency,
+        staticAgency,
         dataNowMs: dataNow(),
         wallNowMs: Date.now(),
         demo: source ? source.describe() : null,

@@ -78,7 +78,13 @@ export interface HealthResponse {
   /** epoch ms of the most recent successful upstream poll of any feed. */
   lastPollAtMs: number | null;
   collectorMode: 'in-process' | 'external';
-  feeds: Record<FeedId, FeedStatus>;
+  /**
+   * Only the feeds this deployment's agency actually publishes. A MISSING KEY MEANS THE
+   * AGENCY PUBLISHES NO SUCH FEED — YRT has no alerts feed, Oakville has no realtime at
+   * all — which is a different statement from `status: 'down'`, and the two must not
+   * render alike. For the TTC all three are present, as before.
+   */
+  feeds: Partial<Record<FeedId, FeedStatus>>;
   /** the loaded static GTFS board's calendar coverage, "YYYYMMDD..YYYYMMDD". */
   boardCoverage: string;
   /**

@@ -176,9 +176,11 @@ test('a demo poller reports mode:demo and does NOT report its feeds down', async
     // THE REGRESSION. Recorded frames arrive through the same door the live ones do, so
     // the health bookkeeping runs and the app does not declare itself dead.
     assert.equal(health.mode, 'demo');
-    assert.equal(health.feeds.vehicles.status, 'ok', 'vehicles feed reported not-ok while replaying a good frame');
-    assert.equal(health.feeds.trips.status, 'ok');
-    assert.equal(health.feeds.alerts.status, 'ok');
+    // The TTC publishes all three, so all three must be PRESENT as well as 'ok' — an
+    // absent key would silently pass an `?.status === 'ok'` check that never ran.
+    assert.equal(health.feeds.vehicles?.status, 'ok', 'vehicles feed reported not-ok while replaying a good frame');
+    assert.equal(health.feeds.trips?.status, 'ok');
+    assert.equal(health.feeds.alerts?.status, 'ok');
     assert.ok(health.lastPollAtMs != null, 'lastPollAtMs never set — /api/health would answer ok:false');
     // `ok` in /api/health is `some feed is ok`. Prove that expression is true here.
     assert.equal(Object.values(health.feeds).some((f) => f.status === 'ok'), true);
