@@ -408,23 +408,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
   const modeAgency = poller.getMode().agency;
 
   /**
-   * THE READ PATH IS STILL SINGLE-AGENCY, AND IT SAYS SO OUT LOUD RATHER THAN UNDER-SERVING.
-   *
-   * Phase 0 made the WRITE side multi-agency: `server.ts` runs one poller per enabled
-   * agency, the seeder loads per-agency boards, and aggregation loops every agency. The
-   * READ side has not caught up — every query in this file binds one `staticAgency` and one
-   * `modeAgency`, so with two agencies enabled the API would poll, seed and aggregate both
-   * while serving only the first. A rider in Mississauga would get the TTC's honest
-   * "no stops within 800 m" card while MiWay data sat in the database, unqueried.
-   *
-   * That is a quiet zero — coverage silently halved — and it is precisely what this project
-   * refuses to ship. So multi-agency reads are not "coming soon" behind a half-working
-   * screen: booting in that state is a hard failure with an actionable message, until
-   * Phase 1 lands the union queries (`/api/stops`, `/nearby`, the nearest-stop fallback,
-   * arrivals, shape, plan, alerts, the ghosts-feed join and `/api/stats`) and removes this.
-   */
-  /**
-   * THE AGENCY NAME THAT GOES ON THE WIRE.
+   * THE AGENCY NAME THAT GOES ON THE WIRE for rows this poller itself produced.
    *
    * Always the STATIC agency, never `modeAgency`. In Demo Mode observations are stored
    * under 'ttc-demo', but that suffix is a storage namespace, not a transit system — a
@@ -432,17 +416,51 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
    * would leak our bookkeeping into the UI and, worse, would not match the `agency` on the
    * stops and routes beside it, so the client could not join them. DECISIONS §44: a
    * recording is a recording OF the published board.
+   *
+   * Rows read from the STATIC tables carry their own `agency` column instead — see
+   * `seeded` below — because those come from every agency, not just this poller's.
    */
   const wireAgency = staticAgency;
 
-  const enabled = enabledAgencies();
-  if (enabled.length > 1 && poller.getMode().mode === 'live') {
-    throw new Error(
-      `GHOSTBUS_AGENCIES lists ${enabled.length} agencies (${enabled.map((a) => a.id).join(', ')}), ` +
-      `but the API read path still serves exactly one ('${staticAgency}'). Booting would poll and ` +
-      `store every agency while showing riders only the first — coverage silently halved. ` +
-      `Run with a single agency until the Phase 1 union queries land.`,
-    );
+  /**
+   * EVERY AGENCY THIS DEPLOYMENT SERVES, in configured order.
+   *
+   * The static read queries bind this whole list (`agency = ANY($1)`), not one name. The
+   * poller still supplies `staticAgency` for the things genuinely about THIS poller — live
+   * vehicle positions, the mode badge — but the published board a rider searches is the
+   * union of everything seeded. Serving less than that union while polling all of it is the
+   * silent half-coverage the Phase 0 boot refusal stood in for; this list is what replaced
+   * that refusal.
+   */
+  const seeded: string[] = enabledAgencies().map((a) => a.id);
+
+  /**
+   * WHICH AGENCY AN ID-BEARING REQUEST IS ABOUT.
+   *
+   * `/api/stops/:id/arrivals` and `/api/routes/:id/shape` name an id that is unique only
+   * within an agency, so once more than one is seeded the request is ambiguous without
+   * `?agency=`. Rather than guess — the guess would silently serve a different city's stop
+   * under the rider's stop id — the rules are:
+   *
+   *   - `?agency=` given: it must be a seeded agency, or 400. Never a silent fallback.
+   *   - omitted, one agency seeded: that agency. The single-agency URL keeps working
+   *     unchanged, which is what keeps every existing client and test honest.
+   *   - omitted, several seeded: 400 naming the agencies, because there is no right answer
+   *     and picking one would be a confident lie.
+   */
+  function resolveAgency(raw: string | undefined): { ok: true; agency: string } | { ok: false; error: string } {
+    const a = raw?.trim();
+    if (a != null && a !== '') {
+      if (!seeded.includes(a)) {
+        return { ok: false, error: `unknown agency '${a}' — this deployment serves: ${seeded.join(', ')}` };
+      }
+      return { ok: true, agency: a };
+    }
+    if (seeded.length === 1) return { ok: true, agency: seeded[0] };
+    return {
+      ok: false,
+      error: `agency is required when more than one is served (${seeded.join(', ')}) — a stop id alone is ambiguous`,
+    };
   }
 
   /**
@@ -473,9 +491,9 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
    * aggregate.ts.
    */
   const routeMeta = new Map<string, RouteMeta>();
-  for (const r of (await db.query<{ route_id: string; short_name: string | null; long_name: string | null; route_type: number | null; color: string | null }>(
-    'SELECT route_id, short_name, long_name, route_type, color FROM routes WHERE agency=$1', [staticAgency])).rows) {
-    routeMeta.set(metaKey(staticAgency, r.route_id), { shortName: r.short_name, longName: r.long_name, routeType: r.route_type == null ? null : Number(r.route_type), color: r.color });
+  for (const r of (await db.query<{ agency: string; route_id: string; short_name: string | null; long_name: string | null; route_type: number | null; color: string | null }>(
+    'SELECT agency, route_id, short_name, long_name, route_type, color FROM routes WHERE agency = ANY($1::text[])', [seeded])).rows) {
+    routeMeta.set(metaKey(r.agency, r.route_id), { shortName: r.short_name, longName: r.long_name, routeType: r.route_type == null ? null : Number(r.route_type), color: r.color });
   }
   /** Route metadata for an id belonging to a named agency. */
   const routeMetaFor = (agencyId: string, routeId: string | null | undefined): RouteMeta | undefined =>
@@ -487,7 +505,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
    */
   interface AgencyCalendar { calendar: CalendarRow[]; calendarDates: CalendarDateRow[] }
   const calendars = new Map<string, AgencyCalendar>();
-  for (const agencyId of [staticAgency]) {
+  for (const agencyId of seeded) {
     const calendar: CalendarRow[] = (await db.query<{ service_id: string; mon: boolean; tue: boolean; wed: boolean; thu: boolean; fri: boolean; sat: boolean; sun: boolean; start_date: number; end_date: number }>(
       'SELECT service_id, mon, tue, wed, thu, fri, sat, sun, start_date, end_date FROM calendar WHERE agency=$1', [agencyId])).rows
       .map((r) => ({ service_id: r.service_id, days: [r.mon, r.tue, r.wed, r.thu, r.fri, r.sat, r.sun] as CalendarRow['days'], start_date: Number(r.start_date), end_date: Number(r.end_date) }));
@@ -838,11 +856,11 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     const q = (req.query as Record<string, string | undefined>).q?.trim() ?? '';
     if (q.length === 0) return bad(reply, 'q is required');
     if (q.length > Q_MAX_LEN) return bad(reply, `q too long (max ${Q_MAX_LEN})`);
-    const rows = (await db.query<{ stop_id: string; name: string | null; lat: number | null; lon: number | null; wheelchair_boarding: number | null }>(
-      `SELECT stop_id, name, lat, lon, wheelchair_boarding FROM stops
-       WHERE agency=$1 AND (stop_id = $2 OR name ILIKE $3) ORDER BY (stop_id = $2) DESC, name LIMIT $4`,
-      [staticAgency, q, `%${q}%`, SEARCH_MAX_RESULTS])).rows;
-    const stops: StopDto[] = rows.map((r) => ({ agency: wireAgency, stopId: r.stop_id, name: r.name, lat: r.lat == null ? null : Number(r.lat), lon: r.lon == null ? null : Number(r.lon), wheelchairBoarding: r.wheelchair_boarding == null ? null : Number(r.wheelchair_boarding) }));
+    const rows = (await db.query<{ agency: string; stop_id: string; name: string | null; lat: number | null; lon: number | null; wheelchair_boarding: number | null }>(
+      `SELECT agency, stop_id, name, lat, lon, wheelchair_boarding FROM stops
+       WHERE agency = ANY($1::text[]) AND (stop_id = $2 OR name ILIKE $3) ORDER BY (stop_id = $2) DESC, name LIMIT $4`,
+      [seeded, q, `%${q}%`, SEARCH_MAX_RESULTS])).rows;
+    const stops: StopDto[] = rows.map((r) => ({ agency: r.agency, stopId: r.stop_id, name: r.name, lat: r.lat == null ? null : Number(r.lat), lon: r.lon == null ? null : Number(r.lon), wheelchairBoarding: r.wheelchair_boarding == null ? null : Number(r.wheelchair_boarding) }));
     const body: StopsResponse = { stops, count: stops.length };
     return reply.send(body);
   });
@@ -859,16 +877,16 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
 
     const dLat = radius / 111_320;
     const dLon = radius / (111_320 * Math.max(0.01, Math.cos(lat * Math.PI / 180)));
-    const rows = (await db.query<{ stop_id: string; name: string | null; lat: number | null; lon: number | null; wheelchair_boarding: number | null }>(
-      `SELECT stop_id, name, lat, lon, wheelchair_boarding FROM stops
-       WHERE agency=$1 AND lat BETWEEN $2 AND $3 AND lon BETWEEN $4 AND $5`,
-      [staticAgency, lat - dLat, lat + dLat, lon - dLon, lon + dLon])).rows;
+    const rows = (await db.query<{ agency: string; stop_id: string; name: string | null; lat: number | null; lon: number | null; wheelchair_boarding: number | null }>(
+      `SELECT agency, stop_id, name, lat, lon, wheelchair_boarding FROM stops
+       WHERE agency = ANY($1::text[]) AND lat BETWEEN $2 AND $3 AND lon BETWEEN $4 AND $5`,
+      [seeded, lat - dLat, lat + dLat, lon - dLon, lon + dLon])).rows;
     const stops: StopDto[] = [];
     for (const r of rows) {
       if (r.lat == null || r.lon == null) continue;
       const distanceM = haversineM(lat, lon, Number(r.lat), Number(r.lon));
       if (distanceM > radius) continue;
-      stops.push({ agency: wireAgency, stopId: r.stop_id, name: r.name, lat: Number(r.lat), lon: Number(r.lon), wheelchairBoarding: r.wheelchair_boarding == null ? null : Number(r.wheelchair_boarding), distanceM: Math.round(distanceM) });
+      stops.push({ agency: r.agency, stopId: r.stop_id, name: r.name, lat: Number(r.lat), lon: Number(r.lon), wheelchairBoarding: r.wheelchair_boarding == null ? null : Number(r.wheelchair_boarding), distanceM: Math.round(distanceM) });
     }
     stops.sort((a, b2) => (a.distanceM ?? 0) - (b2.distanceM ?? 0));
 
@@ -897,17 +915,17 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
      */
     let nearest: StopDto | null = null;
     if (stops.length === 0) {
-      const nr = (await db.query<{ stop_id: string; name: string | null; lat: number | null; lon: number | null; wheelchair_boarding: number | null }>(
-        `SELECT stop_id, name, lat, lon, wheelchair_boarding FROM stops
-         WHERE agency=$1 AND lat IS NOT NULL AND lon IS NOT NULL
+      const nr = (await db.query<{ agency: string; stop_id: string; name: string | null; lat: number | null; lon: number | null; wheelchair_boarding: number | null }>(
+        `SELECT agency, stop_id, name, lat, lon, wheelchair_boarding FROM stops
+         WHERE agency = ANY($1::text[]) AND lat IS NOT NULL AND lon IS NOT NULL
          ORDER BY ((lat - $2) * (lat - $2) + (lon - $3) * (lon - $3) * $4) ASC
          LIMIT 1`,
         // Longitude degrees are shorter than latitude degrees by cos(lat); squaring that
         // ratio makes the planar sort isotropic instead of biased east-west.
-        [staticAgency, lat, lon, Math.cos(lat * Math.PI / 180) ** 2])).rows[0];
+        [seeded, lat, lon, Math.cos(lat * Math.PI / 180) ** 2])).rows[0];
       if (nr?.lat != null && nr.lon != null) {
         nearest = {
-          agency: wireAgency,
+          agency: nr.agency,
           stopId: nr.stop_id, name: nr.name, lat: Number(nr.lat), lon: Number(nr.lon),
           wheelchairBoarding: nr.wheelchair_boarding == null ? null : Number(nr.wheelchair_boarding),
           distanceM: Math.round(haversineM(lat, lon, Number(nr.lat), Number(nr.lon))),
@@ -949,8 +967,11 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     windowMin = Math.min(windowMin, ARRIVALS_MAX_WINDOW_MIN);
     const windowMs = windowMin * 60_000;
 
+    const resolved = resolveAgency((req.query as Record<string, string | undefined>).agency);
+    if (!resolved.ok) return bad(reply, resolved.error);
+    const stopAgency = resolved.agency;
     const stopRow = (await db.query<{ stop_id: string; name: string | null; lat: number | null; lon: number | null; wheelchair_boarding: number | null }>(
-      'SELECT stop_id, name, lat, lon, wheelchair_boarding FROM stops WHERE agency=$1 AND stop_id=$2', [staticAgency, stopId])).rows[0];
+      'SELECT stop_id, name, lat, lon, wheelchair_boarding FROM stops WHERE agency=$1 AND stop_id=$2', [stopAgency, stopId])).rows[0];
     if (!stopRow) return reply.code(404).send({ error: 'stop not found' });
 
     // Scan every service date whose window can overlap [at, at+window]. Sized to the
@@ -965,7 +986,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     interface Raw { tripId: string; stopSequence: number; dep: number; routeId: string | null; headsign: string | null; directionId: number | null; scheduledMs: number }
     const raws: Raw[] = [];
     for (const day of dayList) {
-      const svc = activeServicesFor(staticAgency, day.ymd, day.dow);
+      const svc = activeServicesFor(stopAgency, day.ymd, day.dow);
       if (svc.length === 0) continue;
       const midnight = midnightFor(day.ymd);
       const loSec = Math.floor((atMs - midnight) / 1000);
@@ -977,7 +998,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
          FROM stop_times st JOIN trips t ON t.agency=st.agency AND t.trip_id=st.trip_id
          WHERE st.agency=$1 AND st.stop_id=$2 AND t.service_id = ANY($3::text[])
            AND COALESCE(st.departure_s, st.arrival_s) BETWEEN $4 AND $5`,
-        [staticAgency, stopId, svc, Math.max(0, loSec), hiSec])).rows;
+        [stopAgency, stopId, svc, Math.max(0, loSec), hiSec])).rows;
       for (const r of rows) {
         if (r.dep == null) continue;
         const scheduledMs = midnight + Number(r.dep) * 1000;
@@ -1006,7 +1027,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
 
     const attachLive = Math.abs(atMs - now) < LIVE_ETA_MAX_SKEW_MS;
     const departures: DepartureDto[] = trimmed.map((r) => {
-      const meta = routeMetaFor(staticAgency, r.routeId);
+      const meta = routeMetaFor(stopAgency, r.routeId);
       const how = hourOfWeek(r.scheduledMs);
       const sAgg = r.routeId ? stopAgg.get(`${r.routeId}|${how}`) ?? null : null;
       const rAgg = r.routeId ? routeAgg.get(`${r.routeId}|${how}`) ?? null : null;
@@ -1023,7 +1044,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       const ghostRisk = cell ? ghostRiskFor(cell.ghosts, cell.scheduled, WINDOW_DAYS) : null;
 
       const dep: DepartureDto = {
-        agency: wireAgency,
+        agency: stopAgency,
         routeId: r.routeId, shortName: meta?.shortName ?? null, longName: meta?.longName ?? null,
         routeType: meta?.routeType ?? null, color: colorFor(meta),
         headsign: r.headsign, directionId: r.directionId,
@@ -1043,7 +1064,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     });
 
     const body: ArrivalsResponse = {
-      agency: wireAgency,
+      agency: stopAgency,
       stopId: stopRow.stop_id, stopName: stopRow.name,
       lat: stopRow.lat == null ? null : Number(stopRow.lat), lon: stopRow.lon == null ? null : Number(stopRow.lon),
       wheelchairBoarding: stopRow.wheelchair_boarding == null ? null : Number(stopRow.wheelchair_boarding),
@@ -1105,17 +1126,17 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     async function endpointStops(lat: number, lon: number): Promise<PlanStopDto[]> {
       const dLat = radius / 111_320;
       const dLon = radius / (111_320 * Math.max(0.01, Math.cos(lat * Math.PI / 180)));
-      const rows = (await db.query<{ stop_id: string; name: string | null; lat: number | null; lon: number | null; wheelchair_boarding: number | null }>(
-        `SELECT stop_id, name, lat, lon, wheelchair_boarding FROM stops
-         WHERE agency=$1 AND lat BETWEEN $2 AND $3 AND lon BETWEEN $4 AND $5`,
-        [staticAgency, lat - dLat, lat + dLat, lon - dLon, lon + dLon])).rows;
+      const rows = (await db.query<{ agency: string; stop_id: string; name: string | null; lat: number | null; lon: number | null; wheelchair_boarding: number | null }>(
+        `SELECT agency, stop_id, name, lat, lon, wheelchair_boarding FROM stops
+         WHERE agency = ANY($1::text[]) AND lat BETWEEN $2 AND $3 AND lon BETWEEN $4 AND $5`,
+        [seeded, lat - dLat, lat + dLat, lon - dLon, lon + dLon])).rows;
       const out: PlanStopDto[] = [];
       for (const r of rows) {
         if (r.lat == null || r.lon == null) continue;
         const distanceM = haversineM(lat, lon, Number(r.lat), Number(r.lon));
         if (distanceM > radius) continue;
         out.push({
-          agency: wireAgency,
+          agency: r.agency,
           stopId: r.stop_id, name: r.name, lat: Number(r.lat), lon: Number(r.lon),
           wheelchairBoarding: r.wheelchair_boarding == null ? null : Number(r.wheelchair_boarding),
           distanceM: Math.round(distanceM),
@@ -1134,10 +1155,19 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     if (boardStops.length === 0) return answer('noStopsNearYou');
     if (alightStops.length === 0) return answer('noStopsNearDestination');
 
-    const boardById = new Map(boardStops.map((s) => [s.stopId, s]));
-    const alightById = new Map(alightStops.map((s) => [s.stopId, s]));
-    const boardIds = boardStops.map((s) => s.stopId);
-    const alightIds = alightStops.map((s) => s.stopId);
+    // Keyed by (agency, stopId): the two ends can hold identically-numbered stops from
+    // different agencies, and a bare-id map would silently pair a MiWay board with a TTC
+    // alight and call it one ride.
+    const boardById = new Map(boardStops.map((s) => [metaKey(s.agency, s.stopId), s]));
+    const alightById = new Map(alightStops.map((s) => [metaKey(s.agency, s.stopId), s]));
+    /**
+     * A SINGLE-VEHICLE RIDE CANNOT CROSS AGENCIES, so the join runs once per agency that
+     * has candidate stops at BOTH ends — never once across a blended id list. Blending
+     * them would let `b.stop_id = ANY(...)` match a MiWay stop id against a TTC trip that
+     * happens to serve the same number, inventing a ride nobody can take.
+     */
+    const idsFor = (stops: PlanStopDto[], a: string) => stops.filter((s) => s.agency === a).map((s) => s.stopId);
+    const planAgencies = seeded.filter((a) => idsFor(boardStops, a).length > 0 && idsFor(alightStops, a).length > 0);
 
     // Every service date whose window can overlap [at, at+window] — sized to the window,
     // exactly as arrivals does, so a GTFS time past 24:00:00 lands on the day it runs
@@ -1150,6 +1180,8 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     }
 
     interface RawRide {
+      /** Which agency's board this ride came off — the two ends are always the same one. */
+      agency: string;
       tripId: string; routeId: string | null; headsign: string | null; directionId: number | null;
       boardStopId: string; boardStopSequence: number; departureMs: number;
       alightStopId: string; alightStopSequence: number; arrivalMs: number;
@@ -1159,8 +1191,11 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     }
     const raw: RawRide[] = [];
 
+    for (const planAgency of planAgencies) {
+    const boardIds = idsFor(boardStops, planAgency);
+    const alightIds = idsFor(alightStops, planAgency);
     for (const day of dayList) {
-      const svc = activeServicesFor(staticAgency, day.ymd, day.dow);
+      const svc = activeServicesFor(planAgency, day.ymd, day.dow);
       if (svc.length === 0) continue;
       const midnight = midnightFor(day.ymd);
       const loSec = Math.floor((atMs - midnight) / 1000);
@@ -1191,7 +1226,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
            AND COALESCE(b.departure_s, b.arrival_s) BETWEEN $5 AND $6
          ORDER BY COALESCE(b.departure_s, b.arrival_s), b.trip_id, a.stop_sequence
          LIMIT $7`,
-        [staticAgency, boardIds, alightIds, svc, Math.max(0, loSec), hiSec, PLAN_SQL_ROW_LIMIT])).rows;
+        [planAgency, boardIds, alightIds, svc, Math.max(0, loSec), hiSec, PLAN_SQL_ROW_LIMIT])).rows;
 
       for (const r of rows) {
         if (r.board_s == null || r.alight_s == null) continue;
@@ -1202,10 +1237,11 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
         if (departureMs < atMs || departureMs > atMs + windowMs) continue;
         // A ride that arrives before it departs is a broken feed row, not a journey.
         if (arrivalMs <= departureMs) continue;
-        const board = boardById.get(r.board_stop);
-        const alight = alightById.get(r.alight_stop);
+        const board = boardById.get(metaKey(planAgency, r.board_stop));
+        const alight = alightById.get(metaKey(planAgency, r.alight_stop));
         if (!board || !alight) continue;
         raw.push({
+          agency: planAgency,
           tripId: r.trip_id, routeId: r.route_id, headsign: r.headsign,
           directionId: r.direction_id == null ? null : Number(r.direction_id),
           boardStopId: r.board_stop, boardStopSequence: Number(r.board_seq), departureMs,
@@ -1215,6 +1251,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
         });
       }
     }
+    }
 
     if (raw.length === 0) {
       // Nothing departs in the window. Two very different facts hide behind that, and
@@ -1223,12 +1260,18 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       // so the journey genuinely needs a transfer. A row coming back proves only that
       // some trip does it on some service day — never that one is running tonight —
       // which is exactly what 'noService' claims and no more.
-      const anyDirect = (await db.query<{ ok: number }>(
-        `SELECT 1 AS ok FROM stop_times b
-         JOIN stop_times a ON a.agency = b.agency AND a.trip_id = b.trip_id
-                          AND a.stop_sequence > b.stop_sequence
-         WHERE b.agency = $1 AND b.stop_id = ANY($2::text[]) AND a.stop_id = ANY($3::text[])
-         LIMIT 1`, [staticAgency, boardIds, alightIds])).rows.length > 0;
+      // Asked per agency, for the same reason the main join is: one agency's board must
+      // never be searched with another agency's stop ids.
+      let anyDirect = false;
+      for (const planAgency of planAgencies) {
+        const hit = (await db.query<{ ok: number }>(
+          `SELECT 1 AS ok FROM stop_times b
+           JOIN stop_times a ON a.agency = b.agency AND a.trip_id = b.trip_id
+                            AND a.stop_sequence > b.stop_sequence
+           WHERE b.agency = $1 AND b.stop_id = ANY($2::text[]) AND a.stop_id = ANY($3::text[])
+           LIMIT 1`, [planAgency, idsFor(boardStops, planAgency), idsFor(alightStops, planAgency)])).rows.length > 0;
+        if (hit) { anyDirect = true; break; }
+      }
       return answer(anyDirect ? 'noService' : 'transfer');
     }
 
@@ -1279,8 +1322,8 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
         routeType: meta?.routeType ?? null, color: colorFor(meta),
         headsign: r.headsign, directionId: r.directionId,
         directionLabel: r.headsign ?? (r.directionId == null ? 'Unknown' : `Direction ${r.directionId}`),
-        board: boardById.get(r.boardStopId) as PlanStopDto,
-        alight: alightById.get(r.alightStopId) as PlanStopDto,
+        board: boardById.get(metaKey(r.agency, r.boardStopId)) as PlanStopDto,
+        alight: alightById.get(metaKey(r.agency, r.alightStopId)) as PlanStopDto,
         boardStopSequence: r.boardStopSequence, alightStopSequence: r.alightStopSequence,
         stopsRidden: r.alightStopSequence - r.boardStopSequence,
         departureMs: r.departureMs, arrivalMs: r.arrivalMs, liveEtaMs,
@@ -1315,7 +1358,10 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     }
 
     // Most representative (shape_id, direction) for this route: parameterized, dir optional.
-    const repParams: unknown[] = [staticAgency, routeId];
+    const resolvedShape = resolveAgency((req.query as Record<string, string | undefined>).agency);
+    if (!resolvedShape.ok) return bad(reply, resolvedShape.error);
+    const routeAgency = resolvedShape.agency;
+    const repParams: unknown[] = [routeAgency, routeId];
     let dirClause = '';
     if (dir != null) { dirClause = ' AND direction_id = $3'; repParams.push(dir); }
     const rep = (await db.query<{ shape_id: string; direction_id: number | null; n: number }>(
@@ -1325,7 +1371,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     if (!rep) return reply.code(404).send({ error: 'no shape for route' });
 
     const shapeRow = (await db.query<{ points: unknown }>(
-      'SELECT points FROM shapes WHERE agency=$1 AND shape_id=$2', [staticAgency, rep.shape_id])).rows[0];
+      'SELECT points FROM shapes WHERE agency=$1 AND shape_id=$2', [routeAgency, rep.shape_id])).rows[0];
     if (!shapeRow) return reply.code(404).send({ error: 'shape not found' });
     // points stored as [lat, lon][] (JSONB); pg returns it parsed, PGlite may return text.
     const raw = (typeof shapeRow.points === 'string' ? JSON.parse(shapeRow.points) : shapeRow.points) as [number, number][];
@@ -1337,13 +1383,13 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     const tripRow = (await db.query<{ trip_id: string }>(
       `SELECT trip_id FROM trips WHERE agency=$1 AND route_id=$2 AND shape_id=$3
        ${repDir == null ? 'AND direction_id IS NULL' : 'AND direction_id=$4'} LIMIT 1`,
-      repDir == null ? [staticAgency, routeId, rep.shape_id] : [staticAgency, routeId, rep.shape_id, repDir])).rows[0];
+      repDir == null ? [routeAgency, routeId, rep.shape_id] : [routeAgency, routeId, rep.shape_id, repDir])).rows[0];
     const stops: RouteStopDto[] = [];
     if (tripRow) {
       for (const s of (await db.query<{ stop_id: string; name: string | null; lat: number | null; lon: number | null }>(
         `SELECT s.stop_id, s.name, s.lat, s.lon FROM stop_times st
          JOIN stops s ON s.agency=st.agency AND s.stop_id=st.stop_id
-         WHERE st.agency=$1 AND st.trip_id=$2 ORDER BY st.stop_sequence`, [staticAgency, tripRow.trip_id])).rows) {
+         WHERE st.agency=$1 AND st.trip_id=$2 ORDER BY st.stop_sequence`, [routeAgency, tripRow.trip_id])).rows) {
         if (s.lat == null || s.lon == null) continue;
         stops.push({ stopId: s.stop_id, name: s.name, lat: Number(s.lat), lon: Number(s.lon) });
       }
@@ -1351,7 +1397,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
 
     const body: RouteShapeResponse = {
       routeId, directionId: rep.direction_id == null ? null : Number(rep.direction_id),
-      shapeId: rep.shape_id, color: colorFor(routeMetaFor(staticAgency, routeId)), coordinates, stops,
+      shapeId: rep.shape_id, color: colorFor(routeMetaFor(routeAgency, routeId)), coordinates, stops,
     };
     return reply.send(body);
   });

@@ -267,6 +267,25 @@ interface Recorded { sql: string; params: unknown[] }
  * and a namespace bug is invisible to the suite — which is exactly how the demo-mode static
  * table bug reached a tester.
  */
+/**
+ * Does a bound parameter name this agency?
+ *
+ * There are now TWO legitimate shapes and the difference is meaningful, so the helper
+ * accepts both rather than papering over them:
+ *
+ *   scalar  `agency = $1`            — one agency: an OBSERVATION query (trip_delay_obs,
+ *                                      ghosts, agg_delay, service_alerts), or a static
+ *                                      query about one resolved stop/route.
+ *   array   `agency = ANY($1::text[])` — the seeded UNION: the published board a rider
+ *                                      searches spans every agency this deployment serves.
+ *
+ * What it deliberately does NOT do is match a query that failed to bind an agency at all.
+ */
+function bindsAgency(param: unknown, agency: string): boolean {
+  if (Array.isArray(param)) return param.includes(agency);
+  return param === agency;
+}
+
 function fakeDb(
   fixtures: ReadonlyArray<{ when: string; rows: unknown[]; whenParams?: (params: unknown[]) => boolean }>,
 ): Db & { calls: Recorded[] } {
@@ -335,9 +354,11 @@ const fakePoller: PollerHandle = {
   }),
 };
 
+// The routes query selects `agency` now, because routeMeta is keyed (agency, route_id) —
+// a bare route_id key would render a Brampton bus with a TTC route's name and colour.
 const ROUTE_ROWS = [
-  { route_id: '501', short_name: '501', long_name: 'Queen', route_type: 0, color: 'DA291C' },
-  { route_id: '39', short_name: '39', long_name: 'Finch East', route_type: 3, color: null },
+  { agency: 'ttc', route_id: '501', short_name: '501', long_name: 'Queen', route_type: 0, color: 'DA291C' },
+  { agency: 'ttc', route_id: '39', short_name: '39', long_name: 'Finch East', route_type: 3, color: null },
 ];
 
 test('/api/alerts shapes real rows, resolves route names, and normalises blank ids', async () => {
@@ -632,7 +653,7 @@ const demoPoller: PollerHandle = {
 test('DEMO MODE reads the static schedule under "ttc" and observations under "ttc-demo"', async () => {
   const db = fakeDb([
     { when: 'FROM routes', rows: ROUTE_ROWS },
-    { when: 'lat BETWEEN', rows: [{ stop_id: '15647', name: 'King St West at Spadina Ave', lat: 43.6453, lon: -79.3956, wheelchair_boarding: 1 }] },
+    { when: 'lat BETWEEN', rows: [{ agency: 'ttc', stop_id: '15647', name: 'King St West at Spadina Ave', lat: 43.6453, lon: -79.3956, wheelchair_boarding: 1 }] },
     { when: 'FROM stops WHERE agency=$1 AND stop_id=$2', rows: [{ stop_id: '15647', name: 'King St West at Spadina Ave', lat: 43.6453, lon: -79.3956, wheelchair_boarding: 1 }] },
   ]);
   const app = await buildApi({ db, poller: demoPoller });
@@ -661,8 +682,22 @@ test('DEMO MODE reads the static schedule under "ttc" and observations under "tt
       const oneLine = call.sql.replace(/\s+/g, ' ').slice(0, 64);
       if (side === 'static') {
         statics++;
-        assert.equal(call.params[0], 'ttc',
-          `STATIC query bound '${call.params[0]}' — nothing is ever seeded there: "${oneLine}…"`);
+        /**
+         * A static query binds the PUBLISHED BOARD. Two shapes are legitimate now — the
+         * seeded union (`agency = ANY($1)`, how a rider searches every agency at once) and
+         * a scalar (`agency = $1`, once a request has resolved to one stop or route) — so
+         * the assertion is "names 'ttc'", not "equals 'ttc'".
+         *
+         * The negative below is the half that actually defends §48. Widening the positive
+         * to accept an array would, on its own, also start accepting a query that bound
+         * 'ttc-demo' inside an array — which is precisely the bug this test exists to
+         * catch: a demo instance reading the static tables under a namespace nothing is
+         * ever seeded to, and telling a rider at King & Spadina there are no stops nearby.
+         */
+        assert.ok(bindsAgency(call.params[0], 'ttc'),
+          `STATIC query bound '${JSON.stringify(call.params[0])}' — the published board is 'ttc': "${oneLine}…"`);
+        assert.ok(!bindsAgency(call.params[0], 'ttc-demo'),
+          `STATIC query bound the DEMO namespace, where nothing is ever seeded: "${oneLine}…"`);
       } else {
         observations++;
         assert.equal(call.params[0], 'ttc-demo',
@@ -670,7 +705,7 @@ test('DEMO MODE reads the static schedule under "ttc" and observations under "tt
       }
     }
     // Both sides must actually have been exercised, or the assertions above proved nothing.
-    assert.ok(statics >= 6, `expected the static side to be exercised, saw ${statics}`);
+    assert.ok(statics >= 5, `expected the static side to be exercised, saw ${statics}`);
     assert.ok(observations >= 3, `expected the observation side to be exercised, saw ${observations}`);
   } finally {
     await app.close();
@@ -681,11 +716,11 @@ test('a DEMO instance still finds the stops around a rider — the bug that made
   // The regression in the form a rider met it: /api/stops/nearby at King & Spadina returned
   // zero rows in demo mode, so the app said "No TTC stops within 800 m of you" in the middle
   // of downtown Toronto. The fixture is seeded under 'ttc' only, exactly like the real DB.
-  const SEEDED = [{ stop_id: '15647', name: 'King St West at Spadina Ave', lat: 43.64537, lon: -79.395811, wheelchair_boarding: 1 }];
+  const SEEDED = [{ agency: 'ttc', stop_id: '15647', name: 'King St West at Spadina Ave', lat: 43.64537, lon: -79.395811, wheelchair_boarding: 1 }];
   const db = fakeDb([
     { when: 'FROM routes', rows: ROUTE_ROWS },
     // Answers ONLY when the query is scoped to 'ttc' — mirroring a real seeded database.
-    { when: 'lat BETWEEN', rows: SEEDED, whenParams: (p) => p[0] === 'ttc' },
+    { when: 'lat BETWEEN', rows: SEEDED, whenParams: (p) => bindsAgency(p[0], 'ttc') },
   ]);
   const app = await buildApi({ db, poller: demoPoller });
   try {
@@ -964,9 +999,9 @@ const CALENDAR_ROWS = [{
  *  alight query see the same list — and the endpoint's own haversine filter is what
  *  splits them, which is exactly the code under test. */
 const PLAN_STOP_ROWS = [
-  { stop_id: 'B1', name: 'King St West at Spadina Ave', lat: 43.64537, lon: -79.395811, wheelchair_boarding: 1 },
-  { stop_id: 'B2', name: 'King St West at Portland St', lat: 43.644458, lon: -79.399504, wheelchair_boarding: 1 },
-  { stop_id: 'A1', name: 'Dundas West Station', lat: 43.656862, lon: -79.453415, wheelchair_boarding: 1 },
+  { agency: 'ttc', stop_id: 'B1', name: 'King St West at Spadina Ave', lat: 43.64537, lon: -79.395811, wheelchair_boarding: 1 },
+  { agency: 'ttc', stop_id: 'B2', name: 'King St West at Portland St', lat: 43.644458, lon: -79.399504, wheelchair_boarding: 1 },
+  { agency: 'ttc', stop_id: 'A1', name: 'Dundas West Station', lat: 43.656862, lon: -79.453415, wheelchair_boarding: 1 },
 ];
 
 const planUrl = (o: Record<string, string | number> = {}) => {
@@ -1183,41 +1218,57 @@ function withAgencies(value: string | undefined, fn: () => Promise<void>): Promi
   });
 }
 
-test('buildApi REFUSES to boot live with more agencies than it can serve', async () => {
+test('the static read path searches the UNION of seeded agencies, not just the first', async () => {
+  // Phase 0 refused to boot with two agencies because the read path served one. That
+  // refusal is gone BECAUSE this is now true — the union is what replaced it, and if this
+  // regresses the app silently halves its coverage instead of failing loudly.
   await withAgencies('ttc,miway', async () => {
-    const db = fakeDb([{ when: 'FROM routes', rows: ROUTE_ROWS }]);
-    await assert.rejects(
-      () => buildApi({ db, poller: fakePoller }),
-      // The message must name the agencies AND the remedy — an operator reading only this
-      // line has to know what to do.
-      (e: Error) => /GHOSTBUS_AGENCIES lists 2 agencies \(ttc, miway\)/.test(e.message)
-        && /coverage silently halved/.test(e.message)
-        && /single agency/.test(e.message),
-      'a two-agency live boot must fail loudly, not serve half the coverage',
-    );
-  });
-});
-
-test('one agency boots normally — the refusal is not a blanket block', async () => {
-  await withAgencies('ttc', async () => {
     const db = fakeDb([{ when: 'FROM routes', rows: ROUTE_ROWS }]);
     const app = await buildApi({ db, poller: fakePoller });
     try {
-      const res = await app.inject({ method: 'GET', url: '/api/health' });
-      assert.equal(res.statusCode, 200);
+      await app.inject({ method: 'GET', url: '/api/stops/nearby?lat=43.589&lon=-79.644&radius=800' });
+      const nearby = db.calls.filter((c) => c.sql.includes('lat BETWEEN'));
+      assert.ok(nearby.length > 0, 'the nearby query never ran');
+      for (const c of nearby) {
+        assert.ok(Array.isArray(c.params[0]), 'nearby must bind the seeded union, not one agency');
+        assert.deepEqual(c.params[0], ['ttc', 'miway'],
+          'every seeded agency must be searched — serving a subset is the silent half-coverage');
+      }
     } finally { await app.close(); }
   });
 });
 
-test('a DEMO instance is exempt: a fixture replays one agency by construction', async () => {
-  // The demo poller is pinned to the fixture's own agency in server.ts, so the multi-agency
-  // ambiguity cannot arise and refusing would only break Demo Mode.
+test('an id-bearing request is REFUSED, not guessed, when several agencies are served', async () => {
+  // stop_id 2334 is a real stop on both the TTC and YRT, ten kilometres apart. Picking one
+  // would serve a different city's board under the rider's stop id.
   await withAgencies('ttc,miway', async () => {
     const db = fakeDb([{ when: 'FROM routes', rows: ROUTE_ROWS }]);
-    const app = await buildApi({ db, poller: demoPoller });
+    const app = await buildApi({ db, poller: fakePoller });
     try {
-      const res = await app.inject({ method: 'GET', url: '/api/health' });
+      const res = await app.inject({ method: 'GET', url: '/api/stops/2334/arrivals' });
+      assert.equal(res.statusCode, 400);
+      assert.match(res.json().error, /agency is required when more than one is served \(ttc, miway\)/);
+
+      const bad = await app.inject({ method: 'GET', url: '/api/stops/2334/arrivals?agency=gotransit' });
+      assert.equal(bad.statusCode, 400, 'an agency this deployment does not serve is refused');
+      assert.match(bad.json().error, /unknown agency 'gotransit'/);
+    } finally { await app.close(); }
+  });
+});
+
+test('with ONE agency served, an id-bearing request needs no agency param', async () => {
+  // The single-agency URL keeps working exactly as before — that is what makes every
+  // existing client and test still honest.
+  await withAgencies('ttc', async () => {
+    const db = fakeDb([
+      { when: 'FROM routes', rows: ROUTE_ROWS },
+      { when: 'FROM stops WHERE agency=$1 AND stop_id=$2', rows: [{ stop_id: '15647', name: 'King St West at Spadina Ave', lat: 43.6453, lon: -79.3956, wheelchair_boarding: 1 }] },
+    ]);
+    const app = await buildApi({ db, poller: fakePoller });
+    try {
+      const res = await app.inject({ method: 'GET', url: '/api/stops/15647/arrivals' });
       assert.equal(res.statusCode, 200);
+      assert.equal(res.json().agency, 'ttc', 'the board names the agency it belongs to');
     } finally { await app.close(); }
   });
 });
