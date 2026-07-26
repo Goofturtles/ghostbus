@@ -10,12 +10,14 @@ import assert from 'node:assert/strict';
 import {
   gradeFor, spreadMinutes, GRADE_TIERS,
   ghostRiskFor, GHOST_RISK_MIN_N, GHOST_RISK_ELEVATED_RATE, GHOST_RISK_HIGH_RATE,
-  buildForecast, agencyLocalStamp, buildApi,
-  type TripStartBucket, type ForecastDay,
+  buildForecast, agencyLocalStamp, buildApi, rankRideCandidates,
+  type TripStartBucket, type ForecastDay, type RankableRide,
 } from './api.ts';
 import type { Db, Params, Result } from './db.ts';
 import type { PollerHandle } from './poller.ts';
-import type { AlertsResponse, GhostFeedResponse } from '../../shared/types.ts';
+import type {
+  AlertsResponse, GhostFeedResponse, PlanResponse, HealthResponse, StopsResponse,
+} from '../../shared/types.ts';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -274,7 +276,17 @@ function fakeDb(fixtures: ReadonlyArray<{ when: string; rows: unknown[] }>): Db 
   } as Db & { calls: Recorded[] };
 }
 
-const fakePoller = {
+/**
+ * A poller test double that satisfies `PollerHandle` STRUCTURALLY.
+ *
+ * It used to end in `as unknown as PollerHandle`, which is a cast that asserts nothing:
+ * it let the double drift from the interface silently, and it is how `now()` and
+ * `getMode()` came to be missing here while api.ts was being changed to depend on them.
+ * The annotation is a plain `satisfies`-style type now, so the compiler is the thing that
+ * proves the double is complete — add a method to `PollerHandle` and this file fails to
+ * typecheck until the double grows it too.
+ */
+const fakePoller: PollerHandle = {
   start() { /* not started in tests */ },
   async stop() { /* nothing running */ },
   async runOnce() { /* nothing running */ },
@@ -286,11 +298,29 @@ const fakePoller = {
       alerts: { status: 'ok', lastOkMs: 1_700_000_000_000, sinceMs: null },
     },
     lastPollAtMs: 1_700_000_000_000,
+    mode: 'live',
   }),
   getLivePredictionMs: () => null,
-  getJoinStats: () => ({ boardCoverage: '20260726..20260905' }),
+  /**
+   * `JoinStats` is a ~20-field diagnostic blob with a nested `DelayEngineStats` inside it,
+   * and api.ts reads exactly one field off it: `boardCoverage`. The cast is scoped to this
+   * one return value rather than to the whole double on purpose — the double itself stays
+   * strictly typed, so the compiler still proves every METHOD of `PollerHandle` exists
+   * here, which is the property that was missing when `now()`/`getMode()` went absent.
+   */
+  getJoinStats: () => ({ boardCoverage: '20260726..20260905' } as ReturnType<PollerHandle['getJoinStats']>),
   isIndexReady: () => true,
-} as unknown as PollerHandle;
+  /** The DATA clock. Live it is the wall clock, and these tests are a live instance. */
+  now: () => Date.now(),
+  /** A LIVE instance under the default agency — the mode every test below assumes. */
+  getMode: () => ({
+    mode: 'live',
+    agency: 'ttc',
+    dataNowMs: Date.now(),
+    wallNowMs: Date.now(),
+    demo: null,
+  }),
+};
 
 const ROUTE_ROWS = [
   { route_id: '501', short_name: '501', long_name: 'Queen', route_type: 0, color: 'DA291C' },
@@ -491,6 +521,152 @@ test('unknown /api/ routes still answer JSON, not the SPA shell', async () => {
 });
 
 // =====================================================================================
+// honest attribution + the agency seam (DECISIONS §45)
+// =====================================================================================
+//
+// These four tests exist because of one rider's bug report — "when I allow it to use my
+// location it kept saying can't reach the live TTC feed right now" — and the reading of
+// api.ts that followed it. Each asserts a fact the client's error copy depends on.
+
+test('/api/health states its MODE and carries demo provenance only when demo', async () => {
+  const db = fakeDb([{ when: 'FROM routes', rows: ROUTE_ROWS }]);
+  const app = await buildApi({ db, poller: fakePoller });
+  try {
+    const body = (await app.inject({ method: 'GET', url: '/api/health' })).json<HealthResponse>();
+    // Without `mode` on the wire a recording and a live feed are indistinguishable, and
+    // the DEMO badge has nothing honest to key off.
+    assert.equal(body.mode, 'live');
+    assert.equal(body.demo, null, 'a live instance must never carry demo provenance');
+  } finally {
+    await app.close();
+  }
+});
+
+test('/api/health on a DEMO poller reports demo, and its provenance survives the wire', async () => {
+  const provenance = {
+    fixturePath: 'fixtures/ttc-demo-20260726-1040.json.gz',
+    recordedNotice: 'RECORDING of live TTC data captured 2026-07-26 10:40 through 2026-07-26 10:50.',
+    attribution: 'Real-time data from the Toronto Transit Commission.',
+    captureStartMs: 1_785_000_000_000, captureEndMs: 1_785_000_585_000,
+    captureStartToronto: '2026-07-26 10:40:43 America/Toronto',
+    captureEndToronto: '2026-07-26 10:50:28 America/Toronto',
+    cadenceMs: 45_000, speed: 1, loop: true, positionMs: 120_000, loops: 0,
+  };
+  // A demo poller writes under its OWN namespace and reads a DATA clock in the past.
+  const demoPoller: PollerHandle = {
+    ...fakePoller,
+    now: () => provenance.captureStartMs,
+    getMode: () => ({
+      mode: 'demo', agency: 'ttc-demo',
+      dataNowMs: provenance.captureStartMs, wallNowMs: Date.now(), demo: provenance,
+    }),
+  };
+  const db = fakeDb([{ when: 'FROM routes', rows: ROUTE_ROWS }]);
+  const app = await buildApi({ db, poller: demoPoller });
+  try {
+    const body = (await app.inject({ method: 'GET', url: '/api/health' })).json<HealthResponse>();
+    assert.equal(body.mode, 'demo');
+    assert.equal(body.demo?.recordedNotice, provenance.recordedNotice);
+    // The DATA clock, not the wall clock: replayed departures have to be counted down
+    // against the moment their bytes were captured.
+    assert.equal(body.serverNowMs, provenance.captureStartMs);
+  } finally {
+    await app.close();
+  }
+});
+
+test('every query is scoped to the POLLER\'s agency, not the literal "ttc"', async () => {
+  // The verified bug this closes: a demo instance sharing a database with live TTC rows
+  // would have read the LIVE rows and served them under the amber DEMO badge.
+  const demoPoller: PollerHandle = {
+    ...fakePoller,
+    getMode: () => ({ mode: 'demo', agency: 'ttc-demo', dataNowMs: Date.now(), wallNowMs: Date.now(), demo: null }),
+  };
+  const db = fakeDb([{ when: 'FROM routes', rows: ROUTE_ROWS }]);
+  const app = await buildApi({ db, poller: demoPoller });
+  try {
+    await app.inject({ method: 'GET', url: '/api/alerts' });
+    const scoped = db.calls.filter((c) => c.sql.includes('agency=$1'));
+    assert.ok(scoped.length > 0, 'expected agency-scoped queries');
+    for (const call of scoped) {
+      assert.equal(call.params[0], 'ttc-demo', `"${call.sql.slice(0, 48)}…" bound the wrong agency`);
+    }
+  } finally {
+    await app.close();
+  }
+});
+
+test('a 429 body names ITSELF as the culprit, never the agency feed', async () => {
+  // The client keys its error copy off `kind`. If a 429 arrived as bare prose the UI had
+  // to guess, and it guessed "can't reach the live TTC feed" — blaming the TTC for our own
+  // rate limiter. `kind: 'rateLimited'` is what makes the honest copy possible.
+  const db = fakeDb([{ when: 'FROM routes', rows: ROUTE_ROWS }]);
+  const app = await buildApi({ db, poller: fakePoller });
+  try {
+    // The limiter's own responder is exercised by overrunning the tightest budget: /api/plan.
+    let throttled: { kind?: string; error?: string; retryAfterSec?: number } | null = null;
+    for (let i = 0; i < 200; i++) {
+      const res = await app.inject({ method: 'GET', url: '/api/plan?fromLat=43.64&fromLon=-79.39&toLat=43.65&toLon=-79.40' });
+      if (res.statusCode === 429) { throttled = res.json(); break; }
+    }
+    assert.ok(throttled, 'expected the per-route budget to refuse eventually');
+    assert.equal(throttled.kind, 'rateLimited');
+    assert.ok(typeof throttled.retryAfterSec === 'number' && throttled.retryAfterSec >= 1);
+    // The exact regression: our own throttling must not mention the agency or its feed.
+    assert.doesNotMatch(String(throttled.error), /ttc|feed/i);
+  } finally {
+    await app.close();
+  }
+});
+
+test('/api/stops/nearby answers an out-of-coverage fix with the nearest stop AND its distance', async () => {
+  // The reported bug: a rider in Mississauga (MiWay territory) granted location, /nearby
+  // came back empty, and the client silently kept showing a downtown Toronto stop as if it
+  // were theirs. An empty list now carries the measurement that makes an honest message
+  // possible — and the client is what decides whether 25 km is worth offering.
+  const UNION = { stop_id: '14000', name: 'Union Station', lat: 43.6453, lon: -79.3806, wheelchair_boarding: 1 };
+  const db = fakeDb([
+    { when: 'FROM routes', rows: ROUTE_ROWS },
+    // The radius query returns nothing; the unbounded nearest-one query returns Union.
+    { when: 'ORDER BY ((lat - $2)', rows: [UNION] },
+  ]);
+  const app = await buildApi({ db, poller: fakePoller });
+  try {
+    const body = (await app.inject({
+      method: 'GET', url: '/api/stops/nearby?lat=43.5890&lon=-79.6441&radius=800',
+    })).json<StopsResponse>();
+    assert.equal(body.count, 0, 'nothing is in range, and that is the honest answer');
+    assert.equal(body.searchedRadiusM, 800, 'the radius actually applied is stated');
+    assert.equal(body.nearest?.stopId, '14000');
+    // A real measurement, not a placeholder: Mississauga to Union is ~21-23 km.
+    assert.ok(body.nearest!.distanceM! > 20_000 && body.nearest!.distanceM! < 25_000,
+      `expected ~22 km, got ${body.nearest!.distanceM}`);
+  } finally {
+    await app.close();
+  }
+});
+
+test('/api/stops/nearby does NOT pay for the nearest-stop query when something is in range', async () => {
+  // The extra query is on the empty path only — the case where we did no work anyway.
+  const INRANGE = { stop_id: '15647', name: 'King St West at Spadina Ave', lat: 43.6453, lon: -79.3956, wheelchair_boarding: 1 };
+  const db = fakeDb([
+    { when: 'FROM routes', rows: ROUTE_ROWS },
+    { when: 'lat BETWEEN', rows: [INRANGE] },
+  ]);
+  const app = await buildApi({ db, poller: fakePoller });
+  try {
+    const body = (await app.inject({
+      method: 'GET', url: '/api/stops/nearby?lat=43.64354&lon=-79.39699&radius=800',
+    })).json<StopsResponse>();
+    assert.equal(body.count, 1);
+    assert.equal(body.nearest, undefined, 'no nearest field when the radius found stops');
+    assert.equal(db.calls.filter((c) => c.sql.includes('ORDER BY ((lat - $2)')).length, 0);
+  } finally {
+    await app.close();
+  }
+});
+
+// =====================================================================================
 // static / SPA fallback (DECISIONS §28)
 // =====================================================================================
 //
@@ -561,6 +737,274 @@ test('a client-side route is still served the SPA shell', async () => {
       // No bundle on disk: there is no shell to serve, and inventing one would be a lie.
       assert.equal(res.statusCode, 404);
     }
+  } finally {
+    await app.close();
+  }
+});
+
+// =====================================================================================
+// single-ride plan — ranking (pure) and /api/plan shaping
+// =====================================================================================
+
+const ride = (o: Partial<RankableRide> & { tripId: string; departureS: number }): RankableRide => ({
+  boardDistanceM: 100, alightDistanceM: 100, alightStopSequence: 10, ...o,
+});
+
+test('rankRideCandidates puts the soonest departure first', () => {
+  const out = rankRideCandidates([
+    ride({ tripId: 'late', departureS: 900 }),
+    ride({ tripId: 'soon', departureS: 100 }),
+    ride({ tripId: 'mid', departureS: 500 }),
+  ]);
+  assert.deepEqual(out.map((r) => r.tripId), ['soon', 'mid', 'late']);
+});
+
+test('rankRideCandidates breaks a departure tie on total walking distance', () => {
+  const out = rankRideCandidates([
+    ride({ tripId: 'far', departureS: 100, boardDistanceM: 400, alightDistanceM: 400 }),
+    ride({ tripId: 'near', departureS: 100, boardDistanceM: 50, alightDistanceM: 60 }),
+  ]);
+  assert.deepEqual(out.map((r) => r.tripId), ['near', 'far']);
+});
+
+test('rankRideCandidates prefers the short way round a loop, not the long one', () => {
+  // A loop route calls at the same stop twice on ONE trip, so both rows agree on the
+  // departure AND on both distances. Without the sequence tie-break the planner could
+  // hand a rider the ride that goes all the way around.
+  const short = ride({ tripId: 'loop', departureS: 100, alightStopSequence: 8 });
+  const long = ride({ tripId: 'loop', departureS: 100, alightStopSequence: 44 });
+  assert.deepEqual(rankRideCandidates([long, short]).map((r) => r.alightStopSequence), [8, 44]);
+});
+
+test('rankRideCandidates caps the pairs kept per trip', () => {
+  const rows = [0, 1, 2, 3, 4, 5].map((i) => ride({ tripId: 'T', departureS: 100 + i, alightStopSequence: i }));
+  assert.equal(rankRideCandidates(rows, 2, 10).length, 2);
+});
+
+test('rankRideCandidates caps how many distinct trips get in, keeping the soonest', () => {
+  const rows = [5, 1, 3, 9, 7].map((s) => ride({ tripId: `T${s}`, departureS: s }));
+  const out = rankRideCandidates(rows, 3, 2);
+  assert.deepEqual(out.map((r) => r.tripId), ['T1', 'T3']);
+});
+
+test('rankRideCandidates is a pure filter — it never invents or mutates a row', () => {
+  const rows = [ride({ tripId: 'a', departureS: 2 }), ride({ tripId: 'b', departureS: 1 })];
+  const snapshot = JSON.parse(JSON.stringify(rows));
+  const out = rankRideCandidates(rows);
+  assert.deepEqual(rows, snapshot);                 // input untouched
+  assert.equal(out.length, 2);
+  for (const r of out) assert.ok(rows.includes(r)); // every output row is an input row
+});
+
+// ---- /api/plan ----------------------------------------------------------------------
+
+// 2026-07-27 09:00 America/Toronto (EDT, UTC-4) — a Monday, so `mon` decides service.
+const PLAN_AT_MS = Date.parse('2026-07-27T13:00:00Z');
+const KING_SPADINA = { lat: 43.64354, lon: -79.39699 };
+const DUNDAS_WEST = { lat: 43.656862, lon: -79.453415 };
+
+const CALENDAR_ROWS = [{
+  service_id: 'S1', mon: true, tue: true, wed: true, thu: true, fri: true, sat: true, sun: true,
+  start_date: 20260101, end_date: 20261231,
+}];
+
+/** Stops for BOTH endpoints. The fake Db answers by SQL substring, so the board and the
+ *  alight query see the same list — and the endpoint's own haversine filter is what
+ *  splits them, which is exactly the code under test. */
+const PLAN_STOP_ROWS = [
+  { stop_id: 'B1', name: 'King St West at Spadina Ave', lat: 43.64537, lon: -79.395811, wheelchair_boarding: 1 },
+  { stop_id: 'B2', name: 'King St West at Portland St', lat: 43.644458, lon: -79.399504, wheelchair_boarding: 1 },
+  { stop_id: 'A1', name: 'Dundas West Station', lat: 43.656862, lon: -79.453415, wheelchair_boarding: 1 },
+];
+
+const planUrl = (o: Record<string, string | number> = {}) => {
+  const p = new URLSearchParams({
+    fromLat: String(KING_SPADINA.lat), fromLon: String(KING_SPADINA.lon),
+    toLat: String(DUNDAS_WEST.lat), toLon: String(DUNDAS_WEST.lon),
+    at: String(PLAN_AT_MS),
+    ...Object.fromEntries(Object.entries(o).map(([k, v]) => [k, String(v)])),
+  });
+  return `/api/plan?${p}`;
+};
+
+function planDb(extra: ReadonlyArray<{ when: string; rows: unknown[] }> = []) {
+  return fakeDb([
+    ...extra,
+    { when: 'FROM routes', rows: ROUTE_ROWS },
+    { when: 'FROM calendar WHERE', rows: CALENDAR_ROWS },
+    { when: 'FROM stops', rows: PLAN_STOP_ROWS },
+  ]);
+}
+
+/** The windowed plan join — the only statement carrying a bound service-id array. */
+const PLAN_JOIN = 't.service_id = ANY($4';
+
+test('/api/plan returns a real single-ride plan built from one trip', async () => {
+  const db = planDb([{
+    when: PLAN_JOIN,
+    rows: [{
+      trip_id: 'TRIP-1', route_id: '501', headsign: 'West - 501 Queen towards Long Branch', direction_id: 1,
+      board_stop: 'B1', board_seq: 14, board_s: 33_000,    // 09:10 local
+      alight_stop: 'A1', alight_seq: 38, alight_s: 34_500, // 09:35 local
+    }],
+  }]);
+  const app = await buildApi({ db, poller: fakePoller });
+  try {
+    const res = await app.inject({ method: 'GET', url: planUrl() });
+    assert.equal(res.statusCode, 200);
+    const body = res.json() as PlanResponse;
+    assert.equal(body.outcome, 'ride');
+    assert.equal(body.candidates.length, 1);
+    const c = body.candidates[0];
+    assert.equal(c.tripId, 'TRIP-1');
+    assert.equal(c.routeId, '501');
+    assert.equal(c.shortName, '501');
+    assert.equal(c.board.stopId, 'B1');
+    assert.equal(c.alight.stopId, 'A1');
+    assert.equal(c.stopsRidden, 24);
+    // 25 minutes of real schedule, and it arrives after it departs.
+    assert.equal(c.arrivalMs - c.departureMs, 1500 * 1000);
+    // The boarding stop's distance is measured from the RIDER, the alighting stop's
+    // from the DESTINATION — never the other way round.
+    assert.ok(c.board.distanceM < 400, `board ${c.board.distanceM} m from the rider`);
+    assert.ok(c.alight.distanceM < 50, `alight ${c.alight.distanceM} m from the destination`);
+    // No aggregate rows exist, so there is no evidence and therefore no grade — ever.
+    assert.equal(c.evidence.bucket, 'none');
+    assert.equal(c.grade, undefined);
+    assert.equal(c.honest.estimateMs, null);
+  } finally {
+    await app.close();
+  }
+});
+
+test('/api/plan says a journey needs a transfer when NO trip links the two stop sets', async () => {
+  // Nothing from the windowed join and nothing from the exists-ever probe: no trip in
+  // the published schedule rides from one end to the other. That is a transfer, not a gap.
+  const app = await buildApi({ db: planDb(), poller: fakePoller });
+  try {
+    const body = (await app.inject({ method: 'GET', url: planUrl() })).json() as PlanResponse;
+    assert.equal(body.outcome, 'transfer');
+    assert.deepEqual(body.candidates, []);
+  } finally {
+    await app.close();
+  }
+});
+
+test('/api/plan distinguishes "nothing running now" from "needs a transfer"', async () => {
+  // The windowed join is empty but a direct connection DOES exist somewhere in the
+  // schedule. That is a timing fact, and it must not be reported as a transfer.
+  const db = planDb([{ when: 'SELECT 1 AS ok', rows: [{ ok: 1 }] }]);
+  const app = await buildApi({ db, poller: fakePoller });
+  try {
+    const body = (await app.inject({ method: 'GET', url: planUrl() })).json() as PlanResponse;
+    assert.equal(body.outcome, 'noService');
+    assert.deepEqual(body.candidates, []);
+  } finally {
+    await app.close();
+  }
+});
+
+test('/api/plan reports which END has no stops, and asks the database nothing further', async () => {
+  const db = planDb();
+  const app = await buildApi({ db, poller: fakePoller });
+  try {
+    // Ottawa: real coordinates, no TTC stop within any allowed radius.
+    const body = (await app.inject({
+      method: 'GET', url: planUrl({ toLat: 45.4215, toLon: -75.6972 }),
+    })).json() as PlanResponse;
+    assert.equal(body.outcome, 'noStopsNearDestination');
+    // An empty id array can only ever return nothing, so the join is never issued.
+    assert.equal(db.calls.some((c) => c.sql.includes('a.stop_sequence > b.stop_sequence')), false);
+  } finally {
+    await app.close();
+  }
+});
+
+test('/api/plan validates every coordinate and clamps radius + window', async () => {
+  const app = await buildApi({ db: planDb(), poller: fakePoller });
+  try {
+    const brokenCases: Array<Record<string, string | number>> = [
+      { fromLat: 'nope' }, { fromLat: 91 }, { fromLon: 181 },
+      { toLat: -91 }, { toLon: -181 }, { radius: 0 }, { radius: -5 },
+      { windowMin: 0 }, { at: 'not-a-time' },
+    ];
+    for (const broken of brokenCases) {
+      const res = await app.inject({ method: 'GET', url: planUrl(broken) });
+      assert.equal(res.statusCode, 400, `expected 400 for ${JSON.stringify(broken)}`);
+      assert.ok((res.json() as { error: string }).error);
+    }
+    const body = (await app.inject({
+      method: 'GET', url: planUrl({ radius: 99_999, windowMin: 99_999 }),
+    })).json() as PlanResponse;
+    assert.equal(body.radiusM, 1500);
+    assert.equal(body.windowMinutes, 4320);
+  } finally {
+    await app.close();
+  }
+});
+
+test('/api/plan issues only parameterised SQL — no rider coordinate is ever interpolated', async () => {
+  const db = planDb([{
+    when: PLAN_JOIN,
+    rows: [{
+      trip_id: 'TRIP-1', route_id: '501', headsign: 'West', direction_id: 1,
+      board_stop: 'B1', board_seq: 1, board_s: 33_000,
+      alight_stop: 'A1', alight_seq: 9, alight_s: 34_500,
+    }],
+  }]);
+  const app = await buildApi({ db, poller: fakePoller });
+  try {
+    await app.inject({ method: 'GET', url: planUrl() });
+    const joins = db.calls.filter((c) => c.sql.includes('a.stop_sequence > b.stop_sequence'));
+    assert.ok(joins.length > 0, 'the plan join ran');
+    for (const call of db.calls) {
+      assert.ok(!call.sql.includes('43.6'), 'a rider coordinate reached the SQL text');
+      assert.ok(!call.sql.includes('-79.'), 'a rider coordinate reached the SQL text');
+    }
+    // Stop-id arrays and service ids all travel as bound parameters.
+    for (const call of joins) {
+      assert.ok(Array.isArray(call.params[1]) && Array.isArray(call.params[2]));
+      assert.ok(Array.isArray(call.params[3]));
+    }
+  } finally {
+    await app.close();
+  }
+});
+
+test('/api/plan drops a feed row whose arrival is not after its departure', async () => {
+  const db = planDb([
+    {
+      when: PLAN_JOIN,
+      rows: [{
+        trip_id: 'BROKEN', route_id: '501', headsign: 'West', direction_id: 1,
+        board_stop: 'B1', board_seq: 14, board_s: 34_500,
+        alight_stop: 'A1', alight_seq: 38, alight_s: 33_000, // arrives BEFORE it departs
+      }],
+    },
+    { when: 'SELECT 1 AS ok', rows: [{ ok: 1 }] },
+  ]);
+  const app = await buildApi({ db, poller: fakePoller });
+  try {
+    const body = (await app.inject({ method: 'GET', url: planUrl() })).json() as PlanResponse;
+    assert.equal(body.outcome, 'noService');
+    assert.deepEqual(body.candidates, []);
+  } finally {
+    await app.close();
+  }
+});
+
+test('/api/plan keeps a departure inside the window and drops one outside it', async () => {
+  // The per-day second range is a superset at the edges, so the endpoint re-filters
+  // against the real [at, at+window]. 09:10 is in; 23:10 the same evening is not.
+  const rows = [
+    { trip_id: 'IN', route_id: '501', headsign: 'W', direction_id: 1, board_stop: 'B1', board_seq: 1, board_s: 33_000, alight_stop: 'A1', alight_seq: 9, alight_s: 34_500 },
+    { trip_id: 'OUT', route_id: '501', headsign: 'W', direction_id: 1, board_stop: 'B1', board_seq: 1, board_s: 83_400, alight_stop: 'A1', alight_seq: 9, alight_s: 84_900 },
+  ];
+  const app = await buildApi({ db: planDb([{ when: PLAN_JOIN, rows }]), poller: fakePoller });
+  try {
+    const body = (await app.inject({ method: 'GET', url: planUrl() })).json() as PlanResponse;
+    assert.equal(body.outcome, 'ride');
+    assert.deepEqual(body.candidates.map((c) => c.tripId), ['IN']);
   } finally {
     await app.close();
   }

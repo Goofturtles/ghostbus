@@ -6,9 +6,32 @@
 
 export type DbDriver = 'pg' | 'pglite';
 
+/**
+ * WHOSE FAULT A FAILURE WAS, on the wire.
+ *
+ * The client cannot tell these apart from an HTTP status alone, and it has to: rendering
+ * our own throttling as "can't reach the live TTC feed" blamed the transit agency for our
+ * rate limiter and is the defect DECISIONS §45 exists to close. So every error body names
+ * its own kind, and the UI's copy is keyed off that rather than off prose or a status code.
+ *
+ *   rateLimited  · OUR limiter refused the request (429). Nothing is wrong with the feed.
+ *   badRequest   · the request itself was invalid (4xx). A bug on our side, not an outage.
+ *   serverError  · OUR server failed (5xx). Still not the agency.
+ *
+ * No member of this union ever means "the TTC feed is down". That claim has exactly one
+ * honest source in the whole system: `HealthResponse.feeds`.
+ */
+export type ApiErrorKind = 'rateLimited' | 'badRequest' | 'serverError';
+
 /** A JSON error envelope. The API never returns a stack trace. */
 export interface ApiError {
   error: string;
+  statusCode?: number;
+  kind?: ApiErrorKind;
+  /** seconds until the rate-limit window resets. `kind: 'rateLimited'` only. */
+  retryAfterSec?: number;
+  /** the ceiling that was hit. `kind: 'rateLimited'` only. */
+  limit?: number;
 }
 
 // ---------- /api/health ----------
@@ -24,6 +47,31 @@ export interface FeedStatus {
   sinceMs: number | null;
 }
 
+/**
+ * Provenance of a recorded replay — everything the UI needs to put under the amber DEMO
+ * badge. Structurally the server's own `DemoModeInfo` (server/src/poller.ts), restated here
+ * because this file is the wire contract and `shared/` must not import from `server/`.
+ */
+export interface DemoProvenance {
+  fixturePath: string | null;
+  /** "RECORDING of live TTC data captured … through …. This is replayed history…" */
+  recordedNotice: string;
+  attribution: string;
+  captureStartMs: number;
+  captureEndMs: number;
+  captureStartToronto: string;
+  captureEndToronto: string;
+  /** the cadence the recording was captured at, ms */
+  cadenceMs: number;
+  /** replay speed multiplier (8 = eight recorded minutes per wall minute) */
+  speed: number;
+  loop: boolean;
+  /** how far into the recording replay currently is, in recording-time ms */
+  positionMs: number;
+  /** how many times replay has wrapped */
+  loops: number;
+}
+
 export interface HealthResponse {
   ok: boolean;
   dbDriver: DbDriver;
@@ -33,7 +81,20 @@ export interface HealthResponse {
   feeds: Record<FeedId, FeedStatus>;
   /** the loaded static GTFS board's calendar coverage, "YYYYMMDD..YYYYMMDD". */
   boardCoverage: string;
+  /**
+   * The server's DATA clock — what "now" means to the process that produced this response.
+   * Live it is the wall clock; on a recording it is the capture instant of the frame being
+   * replayed, so the client's countdowns stay correct against replayed departures.
+   */
   serverNowMs: number;
+  /**
+   * WHAT THE RIDER IS LOOKING AT. Decided once at server boot and immutable for the life of
+   * the process, so no response can ever be half live. This is the ONLY honest source for
+   * the DEMO badge — without it a recording and a live feed are identical on the wire.
+   */
+  mode: 'live' | 'demo';
+  /** null unless `mode === 'demo'`. */
+  demo: DemoProvenance | null;
 }
 
 // ---------- /api/vehicles ----------
@@ -82,6 +143,18 @@ export interface StopDto {
 export interface StopsResponse {
   stops: StopDto[];
   count: number;
+  /** the radius actually applied, after clamping. /nearby only. */
+  searchedRadiusM?: number;
+  /**
+   * The single closest stop AT ANY DISTANCE, present on /nearby ONLY when `stops` came
+   * back empty. It exists so "no stops near you" can carry a number instead of leaving
+   * the client to either say nothing or quietly show somebody else's stop.
+   *
+   * It is a measurement, not a recommendation: it may be tens of kilometres away and the
+   * client is what decides whether that is worth offering. `distanceM` is measured with
+   * the same haversine as every other distance in this response.
+   */
+  nearest?: StopDto;
 }
 
 // ---------- /api/stops/:id/arrivals ----------
@@ -196,6 +269,95 @@ export interface RouteShapeResponse {
   /** [lon, lat] pairs, Douglas–Peucker simplified. */
   coordinates: [number, number][];
   stops: RouteStopDto[];
+}
+
+// ---------- /api/plan ----------
+
+/** One end of a planned ride — a real GTFS stop, with its straight-line distance
+ *  from the rider (`board`) or to the destination (`alight`).
+ *
+ *  Distance only. The walk TIME is computed on the device from the rider's own pace
+ *  profile (`lib/walk.ts`), which is exactly where that preference already lives and
+ *  the one place it is allowed to stay: the server is never told how fast anyone walks. */
+export interface PlanStopDto {
+  stopId: string;
+  name: string | null;
+  lat: number;
+  lon: number;
+  wheelchairBoarding: number | null;
+  /** metres, straight line, from the query point this stop belongs to. */
+  distanceM: number;
+}
+
+/**
+ * One real single-ride option: board this trip at this stop, stay on it, get off there.
+ *
+ * Every field is read straight out of the agency's published schedule. A candidate
+ * exists ONLY when one `trip_id` genuinely calls at the boarding stop and later
+ * (strictly greater `stop_sequence`) at the alighting stop. Multi-leg journeys are out
+ * of scope by design — a trip that needs a transfer produces no candidate at all
+ * rather than a stitched-together one.
+ */
+export interface RideCandidateDto {
+  tripId: string;
+  routeId: string | null;
+  shortName: string | null;
+  longName: string | null;
+  routeType: number | null;
+  /** hex, no leading '#'. */
+  color: string;
+  headsign: string | null;
+  directionId: number | null;
+  /** human label for the direction (headsign, else "Direction 0/1"). */
+  directionLabel: string;
+  board: PlanStopDto;
+  alight: PlanStopDto;
+  boardStopSequence: number;
+  alightStopSequence: number;
+  /** stops ridden between boarding and alighting (alightSeq − boardSeq). */
+  stopsRidden: number;
+  /** scheduled departure at the boarding stop, epoch ms. */
+  departureMs: number;
+  /** scheduled arrival at the alighting stop, epoch ms. */
+  arrivalMs: number;
+  /** live ETA at the BOARDING stop when a TripUpdate references this trip; else null. */
+  liveEtaMs: number | null;
+  /** honest ETA for the boarding departure — same evidence rules as a departure board. */
+  honest: HonestEta;
+  evidence: EtaEvidence;
+  /** absent when there is no evidence (bucket 'none') — never a fabricated letter. */
+  grade?: TrustGrade;
+  /** absent unless the route×hour cell is both well-sampled and genuinely elevated. */
+  ghostRisk?: GhostRisk;
+}
+
+/**
+ * Why the planner answered the way it did. Each value is a different *fact*, and the
+ * UI must say which one it is rather than collapsing them into one "no route" shrug:
+ *
+ *   'ride'                      at least one real single-ride option was found.
+ *   'transfer'                  no trip in the whole schedule calls at a stop near the
+ *                               rider and later at a stop near the destination. The
+ *                               journey needs a transfer, which this tier does not plan.
+ *   'noService'                 a direct connection DOES exist in the schedule, but none
+ *                               departs inside the searched window (e.g. overnight).
+ *   'noStopsNearYou'            no stop at all within `radiusM` of the rider.
+ *   'noStopsNearDestination'    no stop at all within `radiusM` of the destination.
+ */
+export type PlanOutcome =
+  | 'ride' | 'transfer' | 'noService' | 'noStopsNearYou' | 'noStopsNearDestination';
+
+export interface PlanResponse {
+  from: { lat: number; lon: number };
+  to: { lat: number; lon: number };
+  serverNowMs: number;
+  /** the reference time the plan was computed against (epoch ms). */
+  atMs: number;
+  windowMinutes: number;
+  radiusM: number;
+  outcome: PlanOutcome;
+  /** soonest departure first; empty unless `outcome === 'ride'`. */
+  candidates: RideCandidateDto[];
 }
 
 // ---------- /api/alerts ----------

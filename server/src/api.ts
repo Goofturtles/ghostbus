@@ -28,9 +28,12 @@ import type {
   AlertsResponse, AlertDto, AlertInformedDto,
   GhostFeedResponse, GhostEventDto, GhostKind, GhostCounters,
   TrustGrade, GradeLetter, GhostRisk, EtaBucket,
+  PlanResponse, PlanStopDto, RideCandidateDto, PlanOutcome,
 } from '../../shared/types.ts';
 
-const AGENCY = 'ttc';
+// The agency namespace is NOT a module constant: it is read off the poller inside
+// `buildApi` (see the note there), because the poller is what decides which namespace
+// the rows it writes are tagged with — and in Demo Mode that is not 'ttc'.
 const AGENCY_TZ = 'America/Toronto';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // Vite builds the SPA to <root>/dist (vite.config.ts `build.outDir: '../dist'` with
@@ -58,6 +61,16 @@ const ARRIVALS_MAX_DEPARTURES = 60;
 const LIVE_ETA_MAX_SKEW_MS = 10 * 60_000; // only attach live ETAs to a near-"now" query
 const AT_FLOOR_MS = Date.parse('2020-01-01T00:00:00Z'); // reject nonsense far-past `at`
 const AT_MAX_FUTURE_MS = 30 * 86_400_000;               // reject `at` more than 30 days out
+const PLAN_DEFAULT_RADIUS_M = 500;
+const PLAN_MAX_RADIUS_M = 1500;
+/** Endpoint stops considered per side. More than this and the self-join below starts
+ *  scanning trips that stop nowhere near either end of the journey. */
+const PLAN_MAX_ENDPOINT_STOPS = 12;
+const PLAN_DEFAULT_WINDOW_MIN = 90;
+/** Same ceiling as arrivals: three days is enough to reach the next service board. */
+const PLAN_MAX_WINDOW_MIN = 4320;
+/** Raw (board, alight) pairs the SQL may return before ranking trims them. */
+const PLAN_SQL_ROW_LIMIT = 400;
 const ALERTS_DEFAULT_LIMIT = 50;
 const ALERTS_MAX_LIMIT = 100;
 const GHOSTS_DEFAULT_HOURS = 24;
@@ -225,6 +238,62 @@ export function ghostRiskFor(ghosts: number, scheduled: number, windowDays: numb
   };
 }
 
+// =====================================================================================
+// Single-ride plan ranking — pure, exported, unit-tested (api.test.ts).
+// =====================================================================================
+//
+// The SQL below returns every (boarding stop, alighting stop) pair a trip makes
+// available, which for a rider ringed by twelve stops is up to 144 rows for ONE trip.
+// They are all true, and almost all of them are noise: a rider does not want the same
+// streetcar listed 144 times.
+//
+// This trims the list WITHOUT deciding the journey. Which option is actually best
+// depends on how fast the rider walks, and that preference never leaves their device
+// (see PlanStopDto) — so the server hands back a small, honest menu ordered soonest
+// first and the client picks from it at the rider's own pace.
+//
+// The trim is: soonest departure first, nearest stops first as the tie-break; keep at
+// most PER_TRIP pairs of any one trip; stop once maxTrips distinct trips are in.
+// Deterministic, and it can only ever remove rows — never invent or reorder a fact.
+export const PLAN_PAIRS_PER_TRIP = 3;
+export const PLAN_MAX_TRIPS = 10;
+
+export interface RankableRide {
+  tripId: string;
+  departureS: number;
+  boardDistanceM: number;
+  alightDistanceM: number;
+  /** Breaks the tie a loop route creates: the SAME stop can be called twice on one
+   *  trip, so two rows can agree on departure AND on both distances while describing
+   *  a short ride and the long way around. Lower sequence = the shorter ride. */
+  alightStopSequence: number;
+}
+
+export function rankRideCandidates<T extends RankableRide>(
+  rows: readonly T[],
+  perTrip = PLAN_PAIRS_PER_TRIP,
+  maxTrips = PLAN_MAX_TRIPS,
+): T[] {
+  const sorted = rows.slice().sort((a, b) =>
+    a.departureS - b.departureS ||
+    (a.boardDistanceM + a.alightDistanceM) - (b.boardDistanceM + b.alightDistanceM) ||
+    a.alightStopSequence - b.alightStopSequence ||
+    // Total order, so the same input can never produce two different menus.
+    (a.tripId < b.tripId ? -1 : a.tripId > b.tripId ? 1 : 0));
+
+  const perTripCount = new Map<string, number>();
+  const out: T[] = [];
+  for (const r of sorted) {
+    const seen = perTripCount.get(r.tripId) ?? 0;
+    // A trip we have not admitted yet only gets in while there is room for a new one.
+    if (seen === 0 && perTripCount.size >= maxTrips) continue;
+    if (seen >= perTrip) continue;
+    perTripCount.set(r.tripId, seen + 1);
+    out.push(r);
+  }
+  return out;
+}
+
 /** One (route, scheduled-start-second) group of trips belonging to a single service_id. */
 export interface TripStartBucket { routeId: string; startS: number; n: number }
 export interface ForecastDay { ymd: number; midnightMs: number; serviceIds: readonly string[] }
@@ -289,6 +358,35 @@ export interface BuildApiOptions { db: Db; poller: PollerHandle }
 export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> {
   const { db, poller } = opts;
 
+  /**
+   * THE NAMESPACE EVERY QUERY IN THIS FILE IS SCOPED TO, taken from the poller rather
+   * than hardcoded — and this was a real, verified bug, not tidying.
+   *
+   * `mode` is decided once at boot and can never change for the life of the process, so
+   * one read here is correct for every request. Demo Mode writes its replayed rows under
+   * its OWN agency namespace precisely so a recording can never be mistaken for live
+   * history (DECISIONS §44). But every SELECT below used to bind the literal `'ttc'`.
+   *
+   * The consequence: a demo instance pointed at a database that ALSO holds live TTC rows
+   * would read the live rows and serve them under the amber DEMO badge. Live departures
+   * labelled "this is a recording" is the same class of lie as a recording labelled live
+   * — the badge would be attached to data it does not describe. Reading the namespace off
+   * the poller means the badge and the rows always come from the same decision.
+   */
+  const AGENCY = poller.getMode().agency;
+
+  /**
+   * The DATA clock. Live it is the wall clock; on a recording it is the capture instant of
+   * the frame being replayed. Anything that DATES this API's output has to use it, so a
+   * replayed board is judged against the moment its bytes came from rather than tonight.
+   *
+   * NOT used for the `trip_delay_obs.ts` / `ghosts.detected_at` cutoffs further down: those
+   * columns are stamped by the database's own `DEFAULT now()`, so their cutoffs have to be
+   * on the same wall clock. Mixing the two would compare a wall-clock column against a
+   * capture-window instant. Those calls stay `Date.now()` and say so at each site.
+   */
+  const dataNow = (): number => poller.now();
+
   // ----- static caches loaded once (small, read-only) -----
   const routeMeta = new Map<string, RouteMeta>();
   for (const r of (await db.query<{ route_id: string; short_name: string | null; long_name: string | null; route_type: number | null; color: string | null }>(
@@ -321,6 +419,8 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
   const cellOf = (epochMs: number) => ({ ymd: torontoDay(epochMs).ymd, how: hourOfWeek(epochMs) });
 
   async function refreshForecast(): Promise<void> {
+    // WALL clock: the trailing window below filters `trip_delay_obs.ts`, a `DEFAULT now()`
+    // column, and this runs on a background timer rather than in a request.
     const now = Date.now();
     const since = new Date(now - WINDOW_DAYS * 86_400_000).toISOString();
 
@@ -393,15 +493,113 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     origin: [/^http:\/\/localhost:\d+$/, /^http:\/\/127\.0\.0\.1:\d+$/],
     methods: ['GET'],
   });
-  await app.register(rateLimit, { max: 120, timeWindow: '1 minute' });
+  /**
+   * RATE LIMIT — RESCOPED, AND THIS FIXED A REPORTED USER-FACING BUG.
+   *
+   * The old budget was `max: 120` per minute per IP. That number came from spec-era
+   * caution — it was never measured against what this app's own client actually costs —
+   * and it is the direct cause of a rider's bug report: "when I allow it to use my
+   * location it kept saying can't reach the live TTC feed right now".
+   *
+   * WHAT ONE HONEST SESSION COSTS, measured on the shipped client:
+   *
+   *   vehicles  /api/vehicles      12 req/min   (MapCard polls every 5s while visible)
+   *   health    /api/health         3 req/min   (20s)
+   *   arrivals  /api/stops/:id/…    2 req/min   (30s)
+   *   alerts    /api/alerts         1 req/min   (60s)
+   *   ghosts    /api/ghosts/feed    1 req/min   (60s)
+   *                                --------
+   *   steady state per open tab    ~19 req/min
+   *
+   * A cold load adds ~10-15 one-shot requests (nearby, route shape, stats, the
+   * next-service probe walk, a search burst). So 120/min is only SIX open tabs' worth of
+   * idle polling — and far fewer in practice, because every reload, every granted
+   * location fix (which refetches nearby + arrivals + shape at the new coordinates),
+   * every search keystroke burst and every ⌘K peek spends out of the same bucket.
+   *
+   * WHY THAT PRODUCED THE BUG RATHER THAN A GRACEFUL DEGRADE. Everything on one machine
+   * shares one 127.0.0.1 bucket: the rider's tabs, a second window left open, and — on
+   * the day of the report — automated verification suites hammering the same port. The
+   * rider's own requests got the 429s. And a 429 from OUR server was rendered as "can't
+   * reach the live TTC feed", i.e. we blamed the transit agency for our own throttling.
+   * For an app whose entire thesis is honest attribution that is a first-class defect,
+   * worse than the throttling itself. The client half of that fix is in web/src/lib/api.ts
+   * (typed failure kinds + backoff) and DECISIONS §45; this half is making the ceiling
+   * one a human cannot reach by using the app normally.
+   *
+   * THE NEW NUMBER, and why it is not simply "large". 600/min is ~31 tabs of steady-state
+   * polling, or the same handful of tabs with generous headroom for reloads, location
+   * grants, search bursts and a verification agent sharing the machine. It is still a
+   * real ceiling: this is a read-only public JSON API over a local Postgres, the expensive
+   * endpoints have their own tighter budgets below, and a genuine abuser sending hundreds
+   * of requests a second is still stopped an order of magnitude short of hurting the box.
+   * Chosen from the measurement above, not from caution.
+   */
+  const GLOBAL_MAX_PER_MIN = 600;
+  /**
+   * The two endpoints that are NOT cheap, kept on their own tighter budgets so raising the
+   * global ceiling cannot turn into a way to make the database work hard.
+   *
+   *   /api/plan   runs the windowed board self-join (PLAN_SQL_ROW_LIMIT rows, two
+   *               endpoint stop sets) — the heaviest query in the file.
+   *   /api/stops  is a leading-wildcard ILIKE over the whole stops table, and the search
+   *               sheet is the one place a human generates requests as fast as they type.
+   *
+   * Both are far above what the client can generate on its own: the search sheet debounces
+   * to ~1 request per typing burst, and the planner issues at most two per destination. A
+   * rider cannot reach these; a script pointed at them will.
+   */
+  const PLAN_MAX_PER_MIN = 60;
+  const SEARCH_MAX_PER_MIN = 120;
 
-  // Uniform JSON errors — never leak a stack trace.
+  await app.register(rateLimit, { max: GLOBAL_MAX_PER_MIN, timeWindow: '1 minute' });
+
+  /** Per-route budget for the expensive endpoints. Fastify merges this with the global. */
+  const routeLimit = (max: number) => ({ rateLimit: { max, timeWindow: '1 minute' } });
+
+  /**
+   * Uniform JSON errors — never a stack trace, and always with the CULPRIT named.
+   *
+   * `kind` is the machine-readable fact the client keys its error copy off. It cannot do
+   * that from an HTTP status alone, and when it had to guess it guessed "can't reach the
+   * live TTC feed" — blaming the transit agency for our own rate limiter. A 4xx or 5xx
+   * here is OUR server; it is never the agency's feed. That claim has exactly one honest
+   * source in the whole system, `/api/health.feeds`, and nothing else may imply it.
+   *
+   * The 429 body is built HERE rather than in the limiter's `errorResponseBuilder`,
+   * because @fastify/rate-limit raises its refusal as an error that lands in this handler
+   * anyway — so a builder would have been a second code path whose richer fields this one
+   * then discarded (measured: it did exactly that). The plugin's own response headers are
+   * already set by the time we get here, so `retry-after` and `x-ratelimit-limit` are read
+   * straight off the reply: one code path, and the numbers are the limiter's own rather
+   * than a second guess at them.
+   */
   app.setErrorHandler((err, _req, reply) => {
     const status = err.statusCode && err.statusCode >= 400 ? err.statusCode : 500;
-    reply.code(status).send({ error: status === 429 ? 'rate limit exceeded' : status < 500 ? err.message : 'internal error' });
+    if (status === 429) {
+      const headerNum = (name: string): number | undefined => {
+        const raw = reply.getHeader(name);
+        const n = Number(Array.isArray(raw) ? raw[0] : raw);
+        return Number.isFinite(n) && n > 0 ? n : undefined;
+      };
+      return reply.code(429).send({
+        statusCode: 429,
+        kind: 'rateLimited',
+        error: 'Too many requests to the GhostBus API from this address.',
+        // Seconds until the window resets — what a backoff should actually wait.
+        retryAfterSec: headerNum('retry-after') ?? 60,
+        limit: headerNum('x-ratelimit-limit'),
+      });
+    }
+    return reply.code(status).send({
+      statusCode: status,
+      kind: status < 500 ? 'badRequest' : 'serverError',
+      error: status < 500 ? err.message : 'internal error',
+    });
   });
 
-  const bad = (reply: import('fastify').FastifyReply, msg: string) => reply.code(400).send({ error: msg });
+  const bad = (reply: import('fastify').FastifyReply, msg: string) =>
+    reply.code(400).send({ statusCode: 400, kind: 'badRequest', error: msg });
 
   // ---------- /api/health ----------
   app.get('/api/health', async (_req, reply) => {
@@ -411,9 +609,15 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       feeds[key] = { status: h.feeds[key].status, lastOkMs: h.feeds[key].lastOkMs, sinceMs: h.feeds[key].sinceMs };
     }
     const ok = Object.values(feeds).some((f) => f.status === 'ok');
+    // The one response that has to state what it IS as well as what it says. `mode` and
+    // `demo` are the client's only honest source for the amber DEMO badge; without them
+    // a recording and a live feed are indistinguishable on the wire, which is exactly
+    // the confusion Demo Mode exists to prevent (DECISIONS §44).
+    const m = poller.getMode();
     const body: HealthResponse = {
       ok, dbDriver: db.driver, lastPollAtMs: h.lastPollAtMs, collectorMode: 'in-process',
-      feeds, boardCoverage: poller.getJoinStats().boardCoverage, serverNowMs: Date.now(),
+      feeds, boardCoverage: poller.getJoinStats().boardCoverage, serverNowMs: dataNow(),
+      mode: m.mode, demo: m.demo,
     };
     return reply.send(body);
   });
@@ -435,14 +639,17 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       });
     }
     const body: VehiclesResponse = {
-      vehicles, count: vehicles.length, lastPollAtMs: health.lastPollAtMs, serverNowMs: Date.now(),
+      // DATA clock: these positions came out of a snapshot, and `serverNowMs` is what the
+      // client ages them against. `lastPollAtMs` stays on the wall clock (it answers "is
+      // our poll loop alive", which the poller stamps itself).
+      vehicles, count: vehicles.length, lastPollAtMs: health.lastPollAtMs, serverNowMs: dataNow(),
       bbox: [b.minLon, b.minLat, b.maxLon, b.maxLat],
     };
     return reply.send(body);
   });
 
   // ---------- /api/stops?q= ----------
-  app.get('/api/stops', async (req, reply) => {
+  app.get('/api/stops', { config: routeLimit(SEARCH_MAX_PER_MIN) }, async (req, reply) => {
     const q = (req.query as Record<string, string | undefined>).q?.trim() ?? '';
     if (q.length === 0) return bad(reply, 'q is required');
     if (q.length > Q_MAX_LEN) return bad(reply, `q too long (max ${Q_MAX_LEN})`);
@@ -479,7 +686,55 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       stops.push({ stopId: r.stop_id, name: r.name, lat: Number(r.lat), lon: Number(r.lon), wheelchairBoarding: r.wheelchair_boarding == null ? null : Number(r.wheelchair_boarding), distanceM: Math.round(distanceM) });
     }
     stops.sort((a, b2) => (a.distanceM ?? 0) - (b2.distanceM ?? 0));
-    const body: StopsResponse = { stops: stops.slice(0, NEARBY_MAX_RESULTS), count: Math.min(stops.length, NEARBY_MAX_RESULTS) };
+
+    /**
+     * NOTHING IN RANGE IS A FACT THE RIDER NEEDS, AND IT NEEDS A NUMBER ATTACHED.
+     *
+     * This closes a reported bug in which a rider standing outside TTC coverage (spoofed
+     * to Mississauga — MiWay territory) granted location, got an empty list, and the
+     * client silently kept showing the DEFAULT downtown stop as though it were theirs.
+     * "Here is your stop" about a stop 25 km away is the same class of lie as blaming the
+     * agency for our own throttling: the UI asserting something that is not true.
+     *
+     * So when the radius comes back empty we answer the obvious next question — how far
+     * away IS the nearest one — with the agency's own coordinates and our own haversine.
+     * `nearest` is the honest bridge between "no coverage here" and a usable action, and
+     * it is a MEASUREMENT, never a suggestion: the client is what decides whether 25 km
+     * is worth offering, and it must relabel the view as a default location when it does.
+     *
+     * COST. One extra query, and only on the empty path — the case where we did no work.
+     * It is ordered by squared planar degrees rather than a true great-circle distance so
+     * it stays a plain index-friendly sort; the winner is then re-measured with the same
+     * haversine as every other distance in this response, so the number we PRINT is never
+     * the approximation we sorted by. Over a metro-sized stop table the difference between
+     * the two orderings is nil, and a tie picked wrongly would still be a real stop with a
+     * real, correctly-measured distance.
+     */
+    let nearest: StopDto | null = null;
+    if (stops.length === 0) {
+      const nr = (await db.query<{ stop_id: string; name: string | null; lat: number | null; lon: number | null; wheelchair_boarding: number | null }>(
+        `SELECT stop_id, name, lat, lon, wheelchair_boarding FROM stops
+         WHERE agency=$1 AND lat IS NOT NULL AND lon IS NOT NULL
+         ORDER BY ((lat - $2) * (lat - $2) + (lon - $3) * (lon - $3) * $4) ASC
+         LIMIT 1`,
+        // Longitude degrees are shorter than latitude degrees by cos(lat); squaring that
+        // ratio makes the planar sort isotropic instead of biased east-west.
+        [AGENCY, lat, lon, Math.cos(lat * Math.PI / 180) ** 2])).rows[0];
+      if (nr?.lat != null && nr.lon != null) {
+        nearest = {
+          stopId: nr.stop_id, name: nr.name, lat: Number(nr.lat), lon: Number(nr.lon),
+          wheelchairBoarding: nr.wheelchair_boarding == null ? null : Number(nr.wheelchair_boarding),
+          distanceM: Math.round(haversineM(lat, lon, Number(nr.lat), Number(nr.lon))),
+        };
+      }
+    }
+
+    const body: StopsResponse = {
+      stops: stops.slice(0, NEARBY_MAX_RESULTS),
+      count: Math.min(stops.length, NEARBY_MAX_RESULTS),
+      searchedRadiusM: Math.round(radius),
+      ...(nearest ? { nearest } : {}),
+    };
     return reply.send(body);
   });
 
@@ -489,7 +744,11 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     if (!stopId || stopId.length > Q_MAX_LEN) return bad(reply, 'invalid stop id');
     const q = req.query as Record<string, string | undefined>;
 
-    const now = Date.now();
+    // DATA clock: "now" here means the moment the BOARD describes — the service day it
+    // resolves, the window it scans, and whether a live ETA is close enough to "now" to
+    // attach. On a recording all three have to be the capture instant, or a replayed
+    // board is judged against tonight and comes back empty.
+    const now = dataNow();
     let atMs = now;
     // Non-empty guard: Number('') === 0 would silently resolve `at` to 1970.
     if (q.at != null && q.at.trim() !== '') {
@@ -605,6 +864,253 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     return reply.send(body);
   });
 
+  // ---------- /api/plan?fromLat=&fromLon=&toLat=&toLon=&at=&windowMin=&radius= ----------
+  //
+  // SINGLE-RIDE ONLY, AND THAT IS THE POINT. A candidate exists only when one real
+  // `trip_id` calls at a stop near the rider and LATER (strictly greater stop_sequence)
+  // at a stop near the destination. A journey needing a transfer produces no candidate
+  // and is reported as `outcome: 'transfer'` — the planner never stitches two rides
+  // together and calls it a trip.
+  //
+  // The response is a small MENU, not a verdict: which option is best depends on how
+  // fast the rider walks, and that preference stays on their device.
+  app.get('/api/plan', { config: routeLimit(PLAN_MAX_PER_MIN) }, async (req, reply) => {
+    const q = req.query as Record<string, string | undefined>;
+    const num = (v: string | undefined) => (v == null || v.trim() === '' ? NaN : Number(v));
+    const fromLat = num(q.fromLat), fromLon = num(q.fromLon);
+    const toLat = num(q.toLat), toLon = num(q.toLon);
+    const latOk = (n: number) => Number.isFinite(n) && n >= -90 && n <= 90;
+    const lonOk = (n: number) => Number.isFinite(n) && n >= -180 && n <= 180;
+    if (!latOk(fromLat)) return bad(reply, 'fromLat must be a number in [-90, 90]');
+    if (!lonOk(fromLon)) return bad(reply, 'fromLon must be a number in [-180, 180]');
+    if (!latOk(toLat)) return bad(reply, 'toLat must be a number in [-90, 90]');
+    if (!lonOk(toLon)) return bad(reply, 'toLon must be a number in [-180, 180]');
+
+    let radius = q.radius == null || q.radius.trim() === '' ? PLAN_DEFAULT_RADIUS_M : Number(q.radius);
+    if (!Number.isFinite(radius) || radius <= 0) return bad(reply, 'radius must be a positive number (metres)');
+    radius = Math.min(radius, PLAN_MAX_RADIUS_M);
+
+    // DATA clock, for the same reason as the arrivals board: a plan is a statement about
+    // departures on a service day, and on a recording that day is the capture window's.
+    const now = dataNow();
+    let atMs = now;
+    if (q.at != null && q.at.trim() !== '') {
+      const n = Number(q.at);
+      atMs = Number.isFinite(n) ? n : Date.parse(q.at);
+      if (!Number.isFinite(atMs)) return bad(reply, 'at must be epoch ms or an ISO datetime');
+      if (atMs < AT_FLOOR_MS || atMs > now + AT_MAX_FUTURE_MS) return bad(reply, 'at must be between 2020-01-01 and 30 days from now');
+    }
+    let windowMin = q.windowMin == null || q.windowMin.trim() === '' ? PLAN_DEFAULT_WINDOW_MIN : Number(q.windowMin);
+    if (!Number.isFinite(windowMin) || windowMin <= 0) return bad(reply, 'windowMin must be a positive number');
+    windowMin = Math.min(windowMin, PLAN_MAX_WINDOW_MIN);
+    const windowMs = windowMin * 60_000;
+
+    const head = {
+      from: { lat: fromLat, lon: fromLon }, to: { lat: toLat, lon: toLon },
+      serverNowMs: now, atMs, windowMinutes: windowMin, radiusM: radius,
+    };
+    const answer = (outcome: PlanOutcome, candidates: RideCandidateDto[] = []) =>
+      reply.send({ ...head, outcome, candidates } satisfies PlanResponse);
+
+    /** The real stops within `radius` of a point, nearest first. Same bounding-box +
+     *  haversine method `/api/stops/nearby` uses, so the two can never disagree. */
+    async function endpointStops(lat: number, lon: number): Promise<PlanStopDto[]> {
+      const dLat = radius / 111_320;
+      const dLon = radius / (111_320 * Math.max(0.01, Math.cos(lat * Math.PI / 180)));
+      const rows = (await db.query<{ stop_id: string; name: string | null; lat: number | null; lon: number | null; wheelchair_boarding: number | null }>(
+        `SELECT stop_id, name, lat, lon, wheelchair_boarding FROM stops
+         WHERE agency=$1 AND lat BETWEEN $2 AND $3 AND lon BETWEEN $4 AND $5`,
+        [AGENCY, lat - dLat, lat + dLat, lon - dLon, lon + dLon])).rows;
+      const out: PlanStopDto[] = [];
+      for (const r of rows) {
+        if (r.lat == null || r.lon == null) continue;
+        const distanceM = haversineM(lat, lon, Number(r.lat), Number(r.lon));
+        if (distanceM > radius) continue;
+        out.push({
+          stopId: r.stop_id, name: r.name, lat: Number(r.lat), lon: Number(r.lon),
+          wheelchairBoarding: r.wheelchair_boarding == null ? null : Number(r.wheelchair_boarding),
+          distanceM: Math.round(distanceM),
+        });
+      }
+      out.sort((a, b) => a.distanceM - b.distanceM);
+      return out.slice(0, PLAN_MAX_ENDPOINT_STOPS);
+    }
+
+    const [boardStops, alightStops] = await Promise.all([
+      endpointStops(fromLat, fromLon),
+      endpointStops(toLat, toLon),
+    ]);
+    // Short-circuit before any join: an empty id array would otherwise buy a scan that
+    // can only ever return nothing.
+    if (boardStops.length === 0) return answer('noStopsNearYou');
+    if (alightStops.length === 0) return answer('noStopsNearDestination');
+
+    const boardById = new Map(boardStops.map((s) => [s.stopId, s]));
+    const alightById = new Map(alightStops.map((s) => [s.stopId, s]));
+    const boardIds = boardStops.map((s) => s.stopId);
+    const alightIds = alightStops.map((s) => s.stopId);
+
+    // Every service date whose window can overlap [at, at+window] — sized to the window,
+    // exactly as arrivals does, so a GTFS time past 24:00:00 lands on the day it runs
+    // and a wide window never silently truncates at a service-day boundary.
+    const dayList: Array<{ ymd: number; dow: number }> = [];
+    const seenYmd = new Set<number>();
+    for (let t = atMs - 86_400_000; t <= atMs + windowMs + 86_400_000; t += 86_400_000) {
+      const d = torontoDay(t);
+      if (!seenYmd.has(d.ymd)) { seenYmd.add(d.ymd); dayList.push(d); }
+    }
+
+    interface RawRide {
+      tripId: string; routeId: string | null; headsign: string | null; directionId: number | null;
+      boardStopId: string; boardStopSequence: number; departureMs: number;
+      alightStopId: string; alightStopSequence: number; arrivalMs: number;
+      boardDistanceM: number; alightDistanceM: number;
+      /** seconds since the service day's midnight — what ranking orders on. */
+      departureS: number;
+    }
+    const raw: RawRide[] = [];
+
+    for (const day of dayList) {
+      const svc = activeServicesFor(day.ymd, day.dow);
+      if (svc.length === 0) continue;
+      const midnight = midnightFor(day.ymd);
+      const loSec = Math.floor((atMs - midnight) / 1000);
+      const hiSec = Math.ceil((atMs + windowMs - midnight) / 1000);
+      if (hiSec < 0) continue;
+
+      // The whole planner, in one join: b and a are the SAME trip, a strictly later in
+      // the sequence. Ordered by boarding time first, so if the row cap ever bites it
+      // can only ever drop the LATEST options — never the soonest ones a rider wants.
+      const rows = (await db.query<{
+        trip_id: string; route_id: string | null; headsign: string | null; direction_id: number | null;
+        board_stop: string; board_seq: number; board_s: number | null;
+        alight_stop: string; alight_seq: number; alight_s: number | null;
+      }>(
+        `SELECT b.trip_id, t.route_id, t.headsign, t.direction_id,
+                b.stop_id AS board_stop, b.stop_sequence AS board_seq,
+                COALESCE(b.departure_s, b.arrival_s) AS board_s,
+                a.stop_id AS alight_stop, a.stop_sequence AS alight_seq,
+                COALESCE(a.arrival_s, a.departure_s) AS alight_s
+         FROM stop_times b
+         JOIN stop_times a ON a.agency = b.agency AND a.trip_id = b.trip_id
+                          AND a.stop_sequence > b.stop_sequence
+         JOIN trips t ON t.agency = b.agency AND t.trip_id = b.trip_id
+         WHERE b.agency = $1
+           AND b.stop_id = ANY($2::text[])
+           AND a.stop_id = ANY($3::text[])
+           AND t.service_id = ANY($4::text[])
+           AND COALESCE(b.departure_s, b.arrival_s) BETWEEN $5 AND $6
+         ORDER BY COALESCE(b.departure_s, b.arrival_s), b.trip_id, a.stop_sequence
+         LIMIT $7`,
+        [AGENCY, boardIds, alightIds, svc, Math.max(0, loSec), hiSec, PLAN_SQL_ROW_LIMIT])).rows;
+
+      for (const r of rows) {
+        if (r.board_s == null || r.alight_s == null) continue;
+        const departureMs = midnight + Number(r.board_s) * 1000;
+        const arrivalMs = midnight + Number(r.alight_s) * 1000;
+        // Re-filter against the REAL window: the per-day second range is a superset at
+        // the edges, and a service day is not the same thing as a wall-clock day.
+        if (departureMs < atMs || departureMs > atMs + windowMs) continue;
+        // A ride that arrives before it departs is a broken feed row, not a journey.
+        if (arrivalMs <= departureMs) continue;
+        const board = boardById.get(r.board_stop);
+        const alight = alightById.get(r.alight_stop);
+        if (!board || !alight) continue;
+        raw.push({
+          tripId: r.trip_id, routeId: r.route_id, headsign: r.headsign,
+          directionId: r.direction_id == null ? null : Number(r.direction_id),
+          boardStopId: r.board_stop, boardStopSequence: Number(r.board_seq), departureMs,
+          alightStopId: r.alight_stop, alightStopSequence: Number(r.alight_seq), arrivalMs,
+          boardDistanceM: board.distanceM, alightDistanceM: alight.distanceM,
+          departureS: Math.round(departureMs / 1000),
+        });
+      }
+    }
+
+    if (raw.length === 0) {
+      // Nothing departs in the window. Two very different facts hide behind that, and
+      // the rider deserves to know which. This probe is used ONLY as a NEGATIVE signal:
+      // no row means no trip in the entire published schedule links these two stop sets,
+      // so the journey genuinely needs a transfer. A row coming back proves only that
+      // some trip does it on some service day — never that one is running tonight —
+      // which is exactly what 'noService' claims and no more.
+      const anyDirect = (await db.query<{ ok: number }>(
+        `SELECT 1 AS ok FROM stop_times b
+         JOIN stop_times a ON a.agency = b.agency AND a.trip_id = b.trip_id
+                          AND a.stop_sequence > b.stop_sequence
+         WHERE b.agency = $1 AND b.stop_id = ANY($2::text[]) AND a.stop_id = ANY($3::text[])
+         LIMIT 1`, [AGENCY, boardIds, alightIds])).rows.length > 0;
+      return answer(anyDirect ? 'noService' : 'transfer');
+    }
+
+    const ranked = rankRideCandidates(raw);
+
+    // Evidence for the BOARDING departure, on exactly the terms a departure board uses:
+    // this stop's own history where there is enough of it, the route-hour rollup where
+    // there is not, and no estimate at all where there is neither.
+    const stopsInvolved = [...new Set(ranked.map((r) => r.boardStopId))];
+    const routesInvolved = [...new Set(ranked.map((r) => r.routeId).filter((x): x is string => !!x))];
+    const stopAgg = new Map<string, Agg>(); // `${stop}|${route}|${how}`
+    const routeAgg = new Map<string, Agg>(); // `${route}|${how}`
+    if (routesInvolved.length > 0) {
+      const [sRows, rRows] = await Promise.all([
+        db.query<{ stop_id: string; route_id: string; hour_of_week: number; n: number; p25: number; p50: number; p75: number }>(
+          `SELECT stop_id, route_id, hour_of_week, n, p25, p50, p75 FROM agg_delay
+           WHERE agency=$1 AND stop_id = ANY($2::text[]) AND route_id = ANY($3::text[])`,
+          [AGENCY, stopsInvolved, routesInvolved]),
+        db.query<{ route_id: string; hour_of_week: number; n: number; p25: number; p50: number; p75: number }>(
+          `SELECT route_id, hour_of_week, n, p25, p50, p75 FROM agg_delay_route
+           WHERE agency=$1 AND route_id = ANY($2::text[])`, [AGENCY, routesInvolved]),
+      ]);
+      for (const r of sRows.rows) {
+        stopAgg.set(`${r.stop_id}|${r.route_id}|${r.hour_of_week}`, { n: Number(r.n), p25: Number(r.p25), p50: Number(r.p50), p75: Number(r.p75) });
+      }
+      for (const r of rRows.rows) {
+        routeAgg.set(`${r.route_id}|${r.hour_of_week}`, { n: Number(r.n), p25: Number(r.p25), p50: Number(r.p50), p75: Number(r.p75) });
+      }
+    }
+
+    const candidates: RideCandidateDto[] = ranked.map((r) => {
+      const meta = r.routeId ? routeMeta.get(r.routeId) : undefined;
+      const how = hourOfWeek(r.departureMs);
+      const sAgg = r.routeId ? stopAgg.get(`${r.boardStopId}|${r.routeId}|${how}`) ?? null : null;
+      const rAgg = r.routeId ? routeAgg.get(`${r.routeId}|${how}`) ?? null : null;
+      const ev = selectEvidence(sAgg, rAgg);
+      const hasEst = ev.bucket !== 'none' && ev.p50 != null;
+      const liveEtaMs = Math.abs(r.departureMs - now) < LIVE_ETA_MAX_SKEW_MS
+        ? poller.getLivePredictionMs(r.tripId, r.boardStopId)
+        : null;
+      const grade = hasEst ? gradeFor(ev.bucket, ev.n, spreadMinutes(ev.p25 as number, ev.p75 as number)) : null;
+      const cell = r.routeId ? forecast.get(`${r.routeId}|${how}`) : undefined;
+      const ghostRisk = cell ? ghostRiskFor(cell.ghosts, cell.scheduled, WINDOW_DAYS) : null;
+
+      const c: RideCandidateDto = {
+        tripId: r.tripId, routeId: r.routeId,
+        shortName: meta?.shortName ?? null, longName: meta?.longName ?? null,
+        routeType: meta?.routeType ?? null, color: colorFor(meta),
+        headsign: r.headsign, directionId: r.directionId,
+        directionLabel: r.headsign ?? (r.directionId == null ? 'Unknown' : `Direction ${r.directionId}`),
+        board: boardById.get(r.boardStopId) as PlanStopDto,
+        alight: alightById.get(r.alightStopId) as PlanStopDto,
+        boardStopSequence: r.boardStopSequence, alightStopSequence: r.alightStopSequence,
+        stopsRidden: r.alightStopSequence - r.boardStopSequence,
+        departureMs: r.departureMs, arrivalMs: r.arrivalMs, liveEtaMs,
+        honest: {
+          estimateMs: hasEst ? r.departureMs + (ev.p50 as number) * 1000 : null,
+          bandLowMs: hasEst ? r.departureMs + (ev.p25 as number) * 1000 : null,
+          bandHighMs: hasEst ? r.departureMs + (ev.p75 as number) * 1000 : null,
+          medianDelaySec: hasEst ? (ev.p50 as number) : null,
+        },
+        evidence: { n: ev.n, windowDays: WINDOW_DAYS, bucket: ev.bucket },
+      };
+      if (grade) c.grade = grade;
+      if (ghostRisk) c.ghostRisk = ghostRisk;
+      return c;
+    });
+
+    return answer('ride', candidates);
+  });
+
   // ---------- /api/routes/:routeId/shape?dir= ----------
   // The route's most representative shape (the shape_id used by the most trips for
   // that route/direction) as a simplified polyline, plus the real ordered stops of a
@@ -673,7 +1179,11 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       if (!Number.isFinite(n) || n <= 0) return bad(reply, 'limit must be a positive number');
       limit = Math.min(Math.floor(n), ALERTS_MAX_LIMIT);
     }
-    const now = Date.now();
+    // DATA clock. `service_alerts.active_end` is the AGENCY's own activePeriod off the
+    // feed, not a column our database stamps, so "has this alert expired" has to be asked
+    // at the moment the snapshot describes. Asking it at tonight's wall clock would expire
+    // every alert in a recording and report an empty board as good news.
+    const now = dataNow();
     const nowIso = new Date(now).toISOString();
 
     // "Active" = not yet expired. An alert with no activePeriod is active by virtue of
@@ -748,6 +1258,12 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       if (!Number.isFinite(n) || n <= 0) return bad(reply, 'hours must be a positive number');
       hours = Math.min(n, GHOSTS_MAX_HOURS);
     }
+    // WALL clock, deliberately, and this whole handler stays on it. Every timestamp it
+    // filters or reports — `ghosts.detected_at` and both counter windows — is stamped by
+    // the database's own `DEFAULT now()` when OUR engine detects a ghost. A ghost feed
+    // answers "what has this process caught lately", which is a question about our own
+    // clock. Handing it the data clock would compare a wall-clock column against a
+    // capture-window instant and silently return nothing.
     const now = Date.now();
     const sinceIso = new Date(now - hours * 3_600_000).toISOString();
     const today = torontoDay(now);
@@ -800,6 +1316,10 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
   });
 
   // ---------- /api/stats ----------
+  // WALL clock throughout, and for the same reason as the ghost feed: every window below
+  // filters `trip_delay_obs.ts` or `ghosts.detected_at`, both of which the database stamps
+  // itself with `DEFAULT now()`. These counters describe what this process has collected,
+  // not what moment the data depicts, so `updatedAtMs` is a wall-clock stamp too.
   app.get('/api/stats', async (_req, reply) => {
     const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString();
     const [obs, ghosts, avg] = await Promise.all([
