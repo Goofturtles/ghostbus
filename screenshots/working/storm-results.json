@@ -2,7 +2,7 @@
   "06-before-storm": {
     "note": "healthy: the pill is Live",
     "state": {
-      "bodyTextLen": 624,
+      "bodyTextLen": 740,
       "stopHeader": "King St West at Spadina Ave West Side",
       "searchOpen": false,
       "searchRows": 0,
@@ -18,20 +18,20 @@
     }
   },
   "burst": {
-    "sent": 568,
-    "first429": 567,
+    "sent": 598,
+    "first429": 597,
     "body": {
       "statusCode": 429,
       "kind": "rateLimited",
       "error": "Too many requests to the GhostBus API from this address.",
-      "retryAfterSec": 47,
+      "retryAfterSec": 52,
       "limit": 600
     }
   },
   "07-throttled-honest": {
     "note": "OUR throttling, named as ours",
     "state": {
-      "bodyTextLen": 729,
+      "bodyTextLen": 845,
       "stopHeader": "King St West at Spadina Ave West Side",
       "searchOpen": false,
       "searchRows": 0,
@@ -53,7 +53,7 @@
   "08-recovered-by-itself": {
     "note": "no reload, no interaction — the backoff expired and it resumed",
     "state": {
-      "bodyTextLen": 627,
+      "bodyTextLen": 734,
       "stopHeader": "King St West at Spadina Ave West Side",
       "searchOpen": false,
       "searchRows": 0,

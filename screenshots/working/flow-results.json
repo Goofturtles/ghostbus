@@ -2,7 +2,7 @@
   "01-load-located": {
     "note": "cold load with a granted geolocation fix at King & Spadina",
     "state": {
-      "bodyTextLen": 628,
+      "bodyTextLen": 724,
       "stopHeader": "King St West at Spadina Ave West Side",
       "searchOpen": false,
       "searchRows": 0,
@@ -20,7 +20,7 @@
   "02-search-open": {
     "note": "the real search sheet, real results from /api/stops",
     "state": {
-      "bodyTextLen": 1157,
+      "bodyTextLen": 1253,
       "stopHeader": "King St West at Spadina Ave West Side",
       "searchOpen": true,
       "searchRows": 8,
@@ -57,12 +57,12 @@
   "04-plan-ride": {
     "note": "a real single-ride plan off the agency schedule",
     "state": {
-      "bodyTextLen": 1007,
+      "bodyTextLen": 1001,
       "stopHeader": null,
       "searchOpen": false,
       "searchRows": 0,
       "planLegs": 3,
-      "planTotal": "About 36 min door to door",
+      "planTotal": "About 41 min door to door",
       "stateTitle": null,
       "stateBody": null,
       "statusPill": "Live",

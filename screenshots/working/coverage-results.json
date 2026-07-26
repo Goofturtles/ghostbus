@@ -2,7 +2,7 @@
   "11-out-of-coverage": {
     "note": "Mississauga: no TTC stop in range, and it says so with a number",
     "state": {
-      "bodyTextLen": 487,
+      "bodyTextLen": 511,
       "stopHeader": null,
       "searchOpen": false,
       "searchRows": 0,
@@ -22,7 +22,7 @@
   "12-default-after-fallback": {
     "note": "downtown board, correctly labelled a default location",
     "state": {
-      "bodyTextLen": 668,
+      "bodyTextLen": 778,
       "stopHeader": "King St West at Spadina Ave West Side",
       "searchOpen": false,
       "searchRows": 0,
