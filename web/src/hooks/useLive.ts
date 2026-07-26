@@ -1,15 +1,25 @@
 // Live data flow against the real API. Everything personal (location) stays on
 // the device; only anonymous lat/lon queries leave it.
 //
-// Cadence (no map this phase, so no 5s vehicle polling): health every 20s,
-// arrivals every 30s, both paused while the tab is hidden. All timers cleared on
-// stop(). Server clock skew is tracked so freshness labels stay honest.
+// ONE POLLING DRIVER, NOT FOUR. This used to be four independent `setInterval`s
+// (health 20s, arrivals 30s, alerts 60s, ghosts 60s) plus ad-hoc refetches on
+// visibility and online events. Two problems, both measured in the network log:
+// identical requests went out twice within milliseconds because different components
+// asked independently, and NOTHING backed off — a throttled or restarting server was
+// hammered at exactly the same rate as a healthy one, so a session that fell into
+// 429s stayed there. Both fed the bug this file's `apiFailure` exists to report
+// honestly rather than blame on the transit agency (DECISIONS §45).
+//
+// Now: one heartbeat, each task with its own due-time, a shared exponential backoff
+// with jitter on failure, and a clean resume the moment a request succeeds again.
+// Server clock skew is still tracked so freshness labels stay honest.
 import { create } from 'zustand';
-import { api } from '@/lib/api';
+import { api, ApiFailure, failureKind, type ApiFailureKind } from '@/lib/api';
 import type {
   HealthResponse, ArrivalsResponse, StopDto, AlertsResponse, GhostFeedResponse,
 } from '@shared/types';
 import { useStore } from '@/store';
+import { haversineM } from '@/lib/search';
 
 /**
  * Fallback when geolocation is denied/unavailable: KING ST W AT SPADINA AVE — the
@@ -64,13 +74,40 @@ import { useStore } from '@/store';
  * UI says so on its face: "Using a default location — tap to use yours".
  */
 export const DEFAULT_LOCATION = { lat: 43.64354, lon: -79.39699 };
-const NEARBY_RADIUS_M = 800;
+export const NEARBY_RADIUS_M = 800;
 const HEALTH_INTERVAL_MS = 20_000;
 const ARRIVALS_INTERVAL_MS = 30_000;
 /** Alerts and ghosts change on the scale of minutes, not seconds. */
 const ALERTS_INTERVAL_MS = 60_000;
 const GHOSTS_INTERVAL_MS = 60_000;
 const GHOST_FEED_HOURS = 24;
+
+/**
+ * The heartbeat the four polling tasks hang off. It is a divisor of every cadence above,
+ * so a task fires within one tick of when it is due and no task needs a timer of its own.
+ *
+ * 5s also matches the map's own vehicle cadence, which means a visible tab settles into a
+ * predictable ~19 requests/minute — the number the server's rate-limit budget was sized
+ * against (see the comment on GLOBAL_MAX_PER_MIN in server/src/api.ts).
+ */
+const POLL_TICK_MS = 5_000;
+
+/**
+ * BACKOFF, and why it is shared across all four tasks rather than per-task.
+ *
+ * Every one of these failure kinds is a statement about the SERVER, not about one
+ * endpoint: a 429 means our whole budget is spent, a 5xx or a dead socket means the
+ * process is unhealthy or restarting. Backing off per-task would keep three other tasks
+ * hammering a server that just told us to stop, which is how a brief restart turned into
+ * a sustained outage in the log.
+ *
+ * 2s, doubling, capped at 60s, with jitter in [0.5, 1.0) of the computed delay so a
+ * reload storm across several tabs does not resynchronise into a thundering herd. A 429
+ * that carries `retryAfterSec` overrides the curve entirely — the server's own number is
+ * better than our guess. One success clears everything.
+ */
+const BACKOFF_BASE_MS = 2_000;
+const BACKOFF_MAX_MS = 60_000;
 /** When "now" has no departures, walk forward day-by-day from tomorrow (up to 8
  *  days) and surface the FIRST day that actually has scheduled service, so the
  *  section header's date is the genuine next service day. See DECISIONS §15. */
@@ -81,13 +118,52 @@ export type GeoStatus = 'pending' | 'granted' | 'default';
 
 interface LiveState {
   health: HealthResponse | null;
-  healthError: boolean;
+  /**
+   * WHY WE HAVE NO FRESH SERVER DATA — typed, so the UI can name the right culprit.
+   *
+   * This replaced a bare `healthError: boolean`. A boolean could only say "something went
+   * wrong", and the copy chosen for it was "can't reach the live TTC feed" — which blamed
+   * the transit agency for our own rate limiter. Every value this can hold is OUR side of
+   * the wire: `throttled`, `serverDown`, `unreachable`. None of them is ever allowed to
+   * become a claim about the agency's feed; that claim's only honest source is
+   * `health.feeds`, which is a different field with a different meaning.
+   */
+  apiFailure: ApiFailureKind | null;
+  /** Consecutive failed polls. Drives the backoff and lets the UI say "still trying". */
+  apiFailures: number;
+  /** epoch ms the poll loop is allowed to resume at. 0 when not backed off. */
+  retryAtMs: number;
 
   geo: { lat: number; lon: number } | null;
   geoStatus: GeoStatus;
 
   nearby: StopDto[];
   nearbyLoading: boolean;
+  /**
+   * THE RIDER IS SOMEWHERE WE DO NOT COVER, and we know how far the nearest stop is.
+   *
+   * Set when `/api/stops/nearby` returns an empty list for a fix the rider actually
+   * granted. This closes a reported bug: spoofed to Mississauga (MiWay territory), the
+   * "using a default location" banner disappeared — so the rider believed their location
+   * had taken effect — and the app carried on showing a downtown Toronto stop as though
+   * it were theirs. Silently substituting a location the rider did not choose is the same
+   * dishonesty as blaming the agency for our own throttling: the UI asserting something
+   * untrue.
+   *
+   * `nearest` is the closest stop at ANY distance, straight from the API, so the message
+   * can carry a real number instead of a shrug. Cleared the moment a fix finds coverage.
+   */
+  outOfCoverage: { nearest: StopDto | null; radiusM: number } | null;
+  /**
+   * A stop opened from search that is NOT in the nearby list.
+   *
+   * Without this, opening a stop across town leaves the header with no distance at
+   * all: `nearby` only covers NEARBY_RADIUS_M around the rider. Its `distanceM` is
+   * measured the same way the API measures the nearby ones — great-circle from the
+   * rider's own fix — so nothing here is a different kind of number, and it is only
+   * ever set when we genuinely know where the rider is.
+   */
+  pickedStop: StopDto | null;
 
   /** Departures for the selected stop at "now". */
   arrivals: ArrivalsResponse | null;
@@ -112,15 +188,45 @@ interface LiveState {
   /** navigator.onLine, kept in state so React re-renders when it flips. It is only
    *  ever used to *explain* an absence of data — never to suppress data we have,
    *  because it lies on captive portals. Where the two disagree, the app's own
-   *  fetch outcome (healthError / arrivalsError) is what the UI trusts. */
+   *  fetch outcome (apiFailure / arrivalsError) is what the UI trusts. */
   online: boolean;
 
   start: () => () => void;
+  /** Open a stop the rider chose from search, remembering it so the board's header
+   *  can still show a real distance when the stop is outside the nearby radius. */
+  openStop: (stop: { stopId: string; name: string | null; lat: number | null; lon: number | null; wheelchairBoarding?: number | null }) => void;
   requestLocation: () => void;
+  /** Abandon the rider's out-of-coverage fix and go back to the DEFAULT view — which
+   *  relabels itself as a default location, because that is what it is. Only ever called
+   *  from the explicit button in the out-of-coverage card; nothing does this silently. */
+  useDefaultLocation: () => void;
   refetchArrivals: () => void;
   refetchHealth: () => void;
   refetchAlerts: () => void;
   refetchGhosts: () => void;
+}
+
+/**
+ * THE THREE ATTRIBUTION STATES, derived in one place so no component can invent a fourth.
+ *
+ *   'demo'       · the server is replaying a recording. Amber DEMO badge + provenance.
+ *   'ourFault'   · WE cannot be reached, or we throttled ourselves. "GhostBus is catching
+ *                  up — retrying." Never mentions the agency.
+ *   'feedDown'   · our server is fine AND ITS OWN health says an agency feed is down or
+ *                  stale. This is the only state permitted to name the TTC.
+ *   'ok'         · everything is current.
+ *
+ * Order matters: demo first (a recording's feeds are honestly `ok`, and the badge is what
+ * stops that reading as live), then our own failures, and only then the agency's. A
+ * failure of ours must never be reported as a failure of theirs, which is the whole point.
+ */
+export type LiveAttribution = 'ok' | 'demo' | 'ourFault' | 'feedDown';
+
+export function attributionOf(s: Pick<LiveState, 'health' | 'apiFailure'>): LiveAttribution {
+  if (s.health?.mode === 'demo') return 'demo';
+  if (s.apiFailure != null) return 'ourFault';
+  if (s.health != null && !s.health.ok) return 'feedDown';
+  return 'ok';
 }
 
 function stopFor(id: string, list: StopDto[]): StopDto | undefined {
@@ -135,11 +241,15 @@ let ghostAnnounceSeq = 0;
 
 export const useLive = create<LiveState>((set, get) => ({
   health: null,
-  healthError: false,
+  apiFailure: null,
+  apiFailures: 0,
+  retryAtMs: 0,
   geo: null,
   geoStatus: 'pending',
   nearby: [],
   nearbyLoading: false,
+  outOfCoverage: null,
+  pickedStop: null,
   arrivals: null,
   arrivalsLoading: false,
   arrivalsError: false,
@@ -154,41 +264,62 @@ export const useLive = create<LiveState>((set, get) => ({
 
   start: () => {
     get().requestLocation();
-    get().refetchHealth();
-    get().refetchAlerts();
-    get().refetchGhosts();
+    // The first pass is immediate; everything after it is due-time driven below.
+    void pollDue(true);
 
-    const healthTimer = setInterval(() => { if (!document.hidden) get().refetchHealth(); }, HEALTH_INTERVAL_MS);
-    const arrivalsTimer = setInterval(() => { if (!document.hidden) get().refetchArrivals(); }, ARRIVALS_INTERVAL_MS);
-    const alertsTimer = setInterval(() => { if (!document.hidden) get().refetchAlerts(); }, ALERTS_INTERVAL_MS);
-    const ghostsTimer = setInterval(() => { if (!document.hidden) get().refetchGhosts(); }, GHOSTS_INTERVAL_MS);
-    const refetchAll = () => {
-      get().refetchHealth(); get().refetchArrivals(); get().refetchAlerts(); get().refetchGhosts();
-    };
-    const onVis = () => { if (!document.hidden) refetchAll(); };
-    // Coming back online recovers immediately rather than waiting out the next
-    // poll interval, so the offline empty state resolves itself without a reload.
-    const onOnline = () => { set({ online: true }); refetchAll(); };
+    /**
+     * ONE HEARTBEAT for all four tasks. Each keeps its own `dueAt`, so cadences are
+     * unchanged from the four-timer version — but there is exactly one place that decides
+     * whether a request may go out, which is what makes a shared backoff possible at all.
+     */
+    const tick = setInterval(() => { if (!document.hidden) void pollDue(false); }, POLL_TICK_MS);
+
+    /**
+     * Returning to a hidden tab, or regaining the network, is new information: the reason
+     * we backed off may be gone. So both clear the backoff and poll immediately rather
+     * than serving a stale error until the next scheduled attempt. This is the "resume
+     * cleanly" half of the backoff — without it a rider who fixed their wifi still stared
+     * at an error for up to a minute.
+     */
+    const resume = () => { clearBackoff(); void pollDue(true); };
+    const onVis = () => { if (!document.hidden) resume(); };
+    const onOnline = () => { set({ online: true }); resume(); };
     const onOffline = () => set({ online: false });
     document.addEventListener('visibilitychange', onVis);
     window.addEventListener('online', onOnline);
     window.addEventListener('offline', onOffline);
 
     return () => {
-      clearInterval(healthTimer);
-      clearInterval(arrivalsTimer);
-      clearInterval(alertsTimer);
-      clearInterval(ghostsTimer);
+      clearInterval(tick);
       document.removeEventListener('visibilitychange', onVis);
       window.removeEventListener('online', onOnline);
       window.removeEventListener('offline', onOffline);
     };
   },
 
+  openStop: (stop) => {
+    const geo = get().geo;
+    // Distance ONLY when we know where the rider is. A search result opened before
+    // the first fix simply has no distance, rather than one measured from a
+    // placeholder and printed as if it were theirs.
+    const distanceM = geo != null && stop.lat != null && stop.lon != null
+      ? Math.round(haversineM(geo, { lat: stop.lat, lon: stop.lon }))
+      : undefined;
+    set({
+      pickedStop: {
+        stopId: stop.stopId, name: stop.name, lat: stop.lat, lon: stop.lon,
+        wheelchairBoarding: stop.wheelchairBoarding ?? null,
+        ...(distanceM == null ? {} : { distanceM }),
+      },
+    });
+    // Changing the selection triggers the subscribe below, which refetches the board.
+    useStore.getState().selectStop(stop.stopId);
+  },
+
   requestLocation: () => {
     const apply = (lat: number, lon: number, status: GeoStatus) => {
       set({ geo: { lat, lon }, geoStatus: status });
-      void loadNearby(lat, lon, set, get);
+      void loadNearby(lat, lon, status, set, get);
     };
     if (!('geolocation' in navigator)) {
       apply(DEFAULT_LOCATION.lat, DEFAULT_LOCATION.lon, 'default');
@@ -201,10 +332,18 @@ export const useLive = create<LiveState>((set, get) => ({
     );
   },
 
+  useDefaultLocation: () => {
+    // An EXPLICIT fallback, and it relabels the view honestly: `geoStatus: 'default'`
+    // brings back the "Using a default location — tap to use yours" banner, so the rider
+    // is never left believing a downtown board describes where they are standing.
+    set({ geo: DEFAULT_LOCATION, geoStatus: 'default', outOfCoverage: null });
+    void loadNearby(DEFAULT_LOCATION.lat, DEFAULT_LOCATION.lon, 'default', set, get);
+  },
+
   refetchHealth: () => {
     api.health()
-      .then((health) => set({ health, healthError: false, skewMs: health.serverNowMs - Date.now() }))
-      .catch(() => set({ healthError: true }));
+      .then((health) => { noteOk(); set({ health, skewMs: health.serverNowMs - Date.now() }); })
+      .catch(noteFailure);
   },
 
   refetchArrivals: () => {
@@ -215,6 +354,7 @@ export const useLive = create<LiveState>((set, get) => ({
     set({ arrivalsLoading: get().arrivals == null });
     api.arrivals(stopId)
       .then((arrivals) => {
+        noteOk();
         if (!current()) return;
         set({ arrivals, arrivalsError: false, arrivalsLoading: false, skewMs: arrivals.serverNowMs - Date.now() });
         // No live departures right now → surface the next real scheduled service.
@@ -224,18 +364,23 @@ export const useLive = create<LiveState>((set, get) => ({
           set({ nextService: null });
         }
       })
-      .catch(() => { if (current()) set({ arrivalsError: true, arrivalsLoading: false }); });
+      .catch((e: unknown) => {
+        noteFailure(e);
+        if (failureKind(e) === 'aborted') return;
+        if (current()) set({ arrivalsError: true, arrivalsLoading: false });
+      });
   },
 
   refetchAlerts: () => {
     api.alerts()
-      .then((alerts) => set({ alerts, alertsError: false }))
-      .catch(() => set({ alertsError: true }));
+      .then((alerts) => { noteOk(); set({ alerts, alertsError: false }); })
+      .catch((e: unknown) => { noteFailure(e); set({ alertsError: true }); });
   },
 
   refetchGhosts: () => {
     api.ghostFeed(GHOST_FEED_HOURS)
       .then((ghosts) => {
+        noteOk();
         // Announce only genuinely new detections, and only after a first load has
         // established a baseline — a fresh page is not "N new ghosts".
         const prev = get().ghosts;
@@ -247,7 +392,7 @@ export const useLive = create<LiveState>((set, get) => ({
           ghostAnnouncement: fresh > 0 ? { count: fresh, seq: ++ghostAnnounceSeq } : get().ghostAnnouncement,
         });
       })
-      .catch(() => set({ ghostsError: true }));
+      .catch((e: unknown) => { noteFailure(e); set({ ghostsError: true }); });
   },
 }));
 
@@ -281,13 +426,43 @@ async function probeNextService(
  *  nearest so the board reflects where the rider actually is. */
 async function loadNearby(
   lat: number, lon: number,
+  status: GeoStatus,
   set: (p: Partial<LiveState>) => void,
   get: () => LiveState,
 ): Promise<void> {
   set({ nearbyLoading: true });
   try {
     const res = await api.nearby(lat, lon, NEARBY_RADIUS_M);
+    noteOk();
     set({ nearby: res.stops, nearbyLoading: false });
+
+    /**
+     * NOTHING IN RANGE OF A FIX THE RIDER ACTUALLY GRANTED.
+     *
+     * The reported bug: spoofed to Mississauga, the rider tapped "use my location", the
+     * default-location banner vanished, and the app kept showing King St W at Spadina as
+     * though it were their stop. The empty result was simply dropped on the floor.
+     *
+     * It is recorded as a state now, with the nearest real stop and its real distance, so
+     * the UI can say so — and CRUCIALLY the old selection is left untouched rather than
+     * silently re-presented as theirs. The card the state renders is the only thing that
+     * can move the rider back to the default view, and it says that it is doing so.
+     *
+     * Only for a GRANTED fix. The default location is downtown Toronto and always has
+     * coverage; if it ever did not, "you are out of coverage" would be a lie about a
+     * position the rider never claimed.
+     */
+    if (res.stops.length === 0 && status === 'granted') {
+      set({
+        outOfCoverage: {
+          nearest: res.nearest ?? null,
+          radiusM: res.searchedRadiusM ?? NEARBY_RADIUS_M,
+        },
+      });
+      return; // No board to load here — the honest card replaces it.
+    }
+    set({ outOfCoverage: null });
+
     const selected = useStore.getState().selectedStopId;
     if (res.stops.length > 0 && !stopFor(selected, res.stops)) {
       // Changing the selection triggers the subscribe below, which refetches.
@@ -295,10 +470,67 @@ async function loadNearby(
     } else {
       get().refetchArrivals();
     }
-  } catch {
+  } catch (e) {
+    noteFailure(e);
+    // A FAILED nearby query is not evidence of no coverage — it is evidence of no answer,
+    // which `apiFailure` already reports honestly. Leave `outOfCoverage` alone.
     set({ nearbyLoading: false });
     get().refetchArrivals();
   }
+}
+
+// =====================================================================================
+// the poll driver: one heartbeat, four due-times, one shared backoff
+// =====================================================================================
+
+/** Next epoch ms each task may run at. 0 = due now. */
+const dueAt = { health: 0, arrivals: 0, alerts: 0, ghosts: 0 };
+
+/** A success anywhere means the server is answering again: resume full cadence at once. */
+function noteOk(): void {
+  if (useLive.getState().apiFailure == null && useLive.getState().apiFailures === 0) return;
+  clearBackoff();
+}
+
+function clearBackoff(): void {
+  useLive.setState({ apiFailure: null, apiFailures: 0, retryAtMs: 0 });
+}
+
+/**
+ * Record a failure and set the shared backoff.
+ *
+ * An `aborted` request is a decision we made, not a failure — counting it would let the
+ * search sheet's own cancellations throttle the whole app. A `badRequest` is our bug and
+ * retrying it faster will not fix it, so it is reported but never backed off (the poll
+ * loop has no malformed requests in it; this exists so a future one is visible).
+ */
+function noteFailure(e: unknown): void {
+  const kind = failureKind(e);
+  if (kind === 'aborted' || kind === 'badRequest') return;
+  const fails = useLive.getState().apiFailures + 1;
+  const curve = Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** (fails - 1));
+  // The server's own retry-after wins over our curve — it knows when its window resets.
+  const asked = e instanceof ApiFailure && e.retryAfterSec != null ? e.retryAfterSec * 1000 : null;
+  // Jitter in [0.5, 1.0): several tabs that failed together must not retry in lockstep.
+  const wait = asked ?? Math.round(curve * (0.5 + Math.random() * 0.5));
+  useLive.setState({ apiFailure: kind, apiFailures: fails, retryAtMs: Date.now() + wait });
+}
+
+/**
+ * Run whichever tasks are due. `force` ignores the due-times (first paint, tab refocus,
+ * network regained) but still honours the backoff window unless it was just cleared.
+ */
+async function pollDue(force: boolean): Promise<void> {
+  const s = useLive.getState();
+  const now = Date.now();
+  // Backed off: say nothing, spend nothing, and let the window expire.
+  if (s.retryAtMs > now) return;
+
+  const live = useLive.getState();
+  if (force || now >= dueAt.health) { dueAt.health = now + HEALTH_INTERVAL_MS; live.refetchHealth(); }
+  if (force || now >= dueAt.arrivals) { dueAt.arrivals = now + ARRIVALS_INTERVAL_MS; live.refetchArrivals(); }
+  if (force || now >= dueAt.alerts) { dueAt.alerts = now + ALERTS_INTERVAL_MS; live.refetchAlerts(); }
+  if (force || now >= dueAt.ghosts) { dueAt.ghosts = now + GHOSTS_INTERVAL_MS; live.refetchGhosts(); }
 }
 
 // Re-fetch arrivals whenever the selected stop changes.
@@ -314,7 +546,13 @@ export function liveNow(): number {
   return Date.now() + useLive.getState().skewMs;
 }
 
-/** The StopDto for the currently-selected stop (carries distanceM for walk math). */
+/** The StopDto for the currently-selected stop (carries distanceM for walk math).
+ *  Falls back to a stop opened from search, which is the only way the selection can
+ *  be somewhere the nearby query never reached. */
 export function selectedNearbyStop(): StopDto | undefined {
-  return stopFor(useStore.getState().selectedStopId, useLive.getState().nearby);
+  const id = useStore.getState().selectedStopId;
+  const s = useLive.getState();
+  const near = stopFor(id, s.nearby);
+  if (near) return near;
+  return s.pickedStop?.stopId === id ? s.pickedStop : undefined;
 }

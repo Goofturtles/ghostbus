@@ -40,46 +40,68 @@ export function RouteBadge({ color, short, size = 'md' }: { color: string; short
   );
 }
 
-type PillKind = 'live' | 'stale' | 'scheduled' | 'offline' | 'loading';
+type PillKind = 'live' | 'stale' | 'scheduled' | 'catchingUp' | 'demo' | 'loading';
 
-/** Honest status pill, driven entirely by /api/health. Never claims "Live"
- *  unless a feed is genuinely fresh; falls back to "Scheduled" when feeds are
- *  down and "Offline" when the API is unreachable. */
+/**
+ * Honest status pill, driven entirely by /api/health.
+ *
+ * FOUR REAL STATES, and the distinction between two of them is the whole point. The pill
+ * used to read "Offline" whenever the health FETCH failed — which lumped our own rate
+ * limiter and our own restarts in with a genuine network outage, and fed the copy that
+ * blamed the TTC. Now:
+ *
+ *   demo        · the server is replaying a recording (amber). Nothing here is live.
+ *   catchingUp  · WE could not be reached or WE throttled ourselves. Ours, and retrying.
+ *   stale/sched · our server is fine and says an AGENCY feed is stale/down. Theirs.
+ *   live        · a feed is genuinely fresh.
+ *
+ * See `attributionOf` in hooks/useLive.ts and DECISIONS §45.
+ */
 export function StatusPill({ compact = false }: { compact?: boolean }) {
   const { t } = useTranslation();
   const health = useLive((s) => s.health);
-  const healthError = useLive((s) => s.healthError);
+  const apiFailure = useLive((s) => s.apiFailure);
   const [open, setOpen] = useState(false);
   useTick(1000);
 
-  const kind: PillKind = healthError
-    ? 'offline'
-    : !health
-      ? 'loading'
-      : health.ok
-        ? 'live'
-        : Object.values(health.feeds).some((f) => f.status === 'stale')
-          ? 'stale'
-          : 'scheduled';
+  const kind: PillKind = health?.mode === 'demo'
+    ? 'demo'
+    : apiFailure != null
+      ? 'catchingUp'
+      : !health
+        ? 'loading'
+        : health.ok
+          ? 'live'
+          : Object.values(health.feeds).some((f) => f.status === 'stale')
+            ? 'stale'
+            : 'scheduled';
 
   const lastMs = health?.lastPollAtMs ?? null;
   const secs = lastMs ? Math.max(0, Math.round((liveNow() - lastMs) / 1000)) : 0;
-  const freshness = lastMs == null
-    ? t('status.scheduledTimes')
-    : secs < 90
-      ? t('status.updatedAgo', { secs })
-      : t('status.updatedMinAgo', { mins: Math.round(secs / 60) });
+  const freshness = kind === 'catchingUp'
+    // Our own trouble explains itself rather than quoting a feed age that is not the issue.
+    ? t('status.catchingUpDetail')
+    : kind === 'demo'
+      ? t('status.demoNote', { agency: t('agency.short') })
+      : lastMs == null
+        ? t('status.scheduledTimes')
+        : secs < 90
+          ? t('status.updatedAgo', { secs })
+          : t('status.updatedMinAgo', { mins: Math.round(secs / 60) });
 
   const cfg: Record<PillKind, { label: string; cls: string; dot: boolean }> = {
     live: { label: t('status.live'), cls: 'sp-live', dot: true },
     stale: { label: t('status.stale'), cls: 'sp-stale', dot: false },
     scheduled: { label: t('status.scheduled'), cls: 'sp-sched', dot: false },
-    offline: { label: t('status.offline'), cls: 'sp-offline', dot: false },
+    catchingUp: { label: t('status.catchingUp'), cls: 'sp-catchup', dot: false },
+    demo: { label: t('status.demoBadge'), cls: 'sp-demo', dot: false },
     loading: { label: t('status.scheduled'), cls: 'sp-sched', dot: false },
   };
   const c = cfg[kind];
-  // Stale surfaces its age inline (per spec: "Stale — last updated X min ago").
-  const inlineDetail = kind === 'stale' && !compact;
+  // Stale surfaces its age inline (per spec: "Stale — last updated X min ago"), and so
+  // does our own trouble — a rider who sees a changed pill deserves the reason without
+  // having to tap it, and "retrying" is the part that stops the app looking broken.
+  const inlineDetail = (kind === 'stale' || kind === 'catchingUp') && !compact;
 
   return (
     <button

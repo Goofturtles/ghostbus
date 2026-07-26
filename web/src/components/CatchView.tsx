@@ -47,9 +47,22 @@ export function CatchView({ dep, onClose }: Props) {
   const { t } = useTranslation();
   useTick(1000);
   const arrivals = useLive((s) => s.arrivals);
-  // The vehicle feed's own health. Anything but 'ok' — or an unreachable API —
-  // means the fix we hold can no longer be refreshed, so it stops being evidence.
-  const feedDown = useLive((s) => s.healthError || (s.health != null && s.health.feeds.vehicles.status !== 'ok'));
+  /**
+   * TWO REASONS A FIX STOPS BEING EVIDENCE, and they must not share a sentence.
+   *
+   * For the VERDICT the distinction is irrelevant: either way the position we hold can no
+   * longer be refreshed, so it stops counting. `staleFix` keeps that logic exactly as it
+   * was.
+   *
+   * For the COPY the distinction is everything. This component used to fold both into one
+   * flag and then reach for "the vehicle feed is down" — announcing an agency outage when
+   * the real cause was our own rate limiter or our own restart. `ourFault` is what splits
+   * the message, so we only ever say "the TTC feed is down" when our server is reachable
+   * and its own health says exactly that. See DECISIONS §45.
+   */
+  const ourFault = useLive((s) => s.apiFailure != null);
+  const agencyFeedDown = useLive((s) => s.apiFailure == null && s.health != null && s.health.feeds.vehicles.status !== 'ok');
+  const staleFix = ourFault || agencyFeedDown;
   const pace = useStore((s) => s.pace);
   const imperial = useStore((s) => s.units) === 'imperial';
   const ref = useRef<HTMLDivElement>(null);
@@ -139,7 +152,7 @@ export function CatchView({ dep, onClose }: Props) {
 
   // ---------------- the verdict ----------------
   const mps = paceMps(pace);
-  const v = computeVerdict({ nowMs: now, rider, stop: boarding, paceMps: mps, arrivalMs, vehicle: fix, feedDown });
+  const v = computeVerdict({ nowMs: now, rider, stop: boarding, paceMps: mps, arrivalMs, vehicle: fix, feedDown: staleFix });
   // 'noGeo' covers two different absences; only one of them is about the rider.
   const noStop = boarding == null && rider != null;
 
@@ -178,7 +191,8 @@ export function CatchView({ dep, onClose }: Props) {
         // A down feed is not an old fix. Saying "last fix 1 min ago" about a
         // five-second-old position because the feed went down would be a lie in
         // the opposite direction from the one we are guarding against.
-        if (feedDown) return t('catch.vUnseenFeedDown');
+        if (ourFault) return t('catch.vUnseenApiDown');
+        if (agencyFeedDown) return t('catch.vUnseenFeedDown');
         return everSeen && v.fixAgeSec != null
           ? t('catch.vUnseenAgo', { min: Math.max(1, Math.round(v.fixAgeSec / 60)) })
           : t('catch.vUnseenNever', { route: short });
@@ -232,16 +246,20 @@ export function CatchView({ dep, onClose }: Props) {
   const kmh = (mps * 3.6).toFixed(1);
   const ev = live?.evidence ?? dep.evidence;
   const grade = live?.grade ?? dep.grade ?? null;
-  const freshness = feedDown
-    ? t('catch.evFeedDown')
+  const freshness = ourFault
+    ? t('catch.evApiDown')
+    : agencyFeedDown
+      ? t('catch.evFeedDown')
     : v.fixAgeSec == null
       ? t('catch.evNoFix')
       : v.fixAgeSec < AGE_IN_SECONDS_BELOW
         ? t('status.updatedAgo', { secs: v.fixAgeSec })
         : t('status.updatedMinAgo', { mins: Math.round(v.fixAgeSec / 60) });
 
-  const vehicleLine = feedDown
-    ? t('catch.evVehicleFeedDown')
+  const vehicleLine = ourFault
+    ? t('catch.evVehicleApiDown')
+    : agencyFeedDown
+      ? t('catch.evVehicleFeedDown')
     : v.vehicleDistM != null
       ? t('catch.evVehicle', { route: short, dist: fmtDistance(v.vehicleDistM, imperial) })
       : everSeen

@@ -11,9 +11,29 @@ const en = {
     stops: 'Stops',
     routes: 'Routes',
     places: 'Places',
-    empty: 'Nothing here yet — search a stop, route, or place.',
-    noResults: 'No matches. Nearest covered area: {{area}}.',
+    title: 'Search stops and routes',
+    destinationTitle: 'Choose a destination',
+    destinationPlaceholder: 'Where are you going?',
+    open: 'Search stops and routes',
+    close: 'Close',
+    clear: 'Clear',
+    searching: 'Searching…',
+    resultCount: '{{count}} result',
+    resultCount_other: '{{count}} results',
+    empty: 'Search a stop by name or number, or a route by its number.',
+    emptyDestination: 'Search the stop you are travelling to.',
+    noResults: 'Nothing matches “{{q}}”.',
+    coverage: 'GhostBus only covers the TTC, in Toronto.',
+    coverageNear: 'GhostBus only covers the TTC, in Toronto. The nearest stop it can see is {{area}}.',
+    failed: "Couldn't reach the stop search just now.",
+    defaultLocationNote: 'Distances are measured from a default location until you share yours.',
+    hintMove: 'move',
+    hintOpen: 'open',
+    hintClose: 'close',
   },
+  // The agency's own name. Identical in every locale on purpose — it is a proper noun,
+  // and translating the operator of the buses would be inventing a fact.
+  agency: { short: 'TTC', full: 'Toronto Transit Commission' },
   status: {
     live: 'Live',
     stale: 'Stale',
@@ -24,10 +44,17 @@ const en = {
     updatedMinAgo: 'Last updated {{mins}} min ago',
     scheduledTimes: 'Scheduled times',
     offlineSince: 'offline — last live data {{time}}',
+    // STATE (b): our server is reachable and ITS OWN health says an agency feed is down.
+    // These two are the only strings in the app permitted to name the agency as the cause.
     feedDown: '{{agency}} feed unreachable since {{time}}',
     feedDownGeneric: 'TTC feed unreachable — showing scheduled times.',
+    // STATE (c): the server is replaying a recording.
     demoBadge: 'DEMO',
     demoNote: 'Replaying a recorded slice of real {{agency}} data. Nothing here is live.',
+    // STATE (a): OUR server is throttled, restarting or unreachable. Says so, and says
+    // that it is fixing itself. Never mentions the TTC — see DECISIONS §45.
+    catchingUp: 'Catching up',
+    catchingUpDetail: 'GhostBus is catching up — retrying automatically',
   },
   sections: {
     currentStop: 'Current stop',
@@ -153,8 +180,32 @@ const en = {
     scheduleOnlyAgency: "schedule only — {{agency}} doesn't publish live data",
     requestCity: 'Request my city',
     noCoverage: 'No transit coverage here yet.',
-    apiDownTitle: "Can't reach the live feed",
-    apiDownBody: "GhostBus can't reach the TTC data right now. Check your connection and try again.",
+    /**
+     * STATE (a) — OUR SERVER, and the exact copy that was wrong.
+     *
+     * These two keys used to read "Can't reach the live feed" / "GhostBus can't reach the
+     * TTC data right now." They were shown on ANY failed request to our own API, including
+     * a 429 from our own rate limiter — which is precisely what a rider hit and reported.
+     * The message named the transit agency as the cause of our own throttling.
+     *
+     * The replacement says who is actually at fault, says the app is fixing it, and asks
+     * the rider for nothing. "Check your connection" was also wrong: their connection was
+     * fine, and the offline case has its own card (offline.*).
+     */
+    apiDownTitle: 'GhostBus is catching up',
+    apiDownBody: "Our own server is busy or restarting, so there is nothing fresh to show yet. GhostBus is retrying on its own — this is us, not the TTC.",
+    apiDownThrottled: "GhostBus asked its own server for too much at once and is waiting its turn. It will resume by itself in a moment — the TTC feed is fine.",
+    apiDownRetrying: 'Retrying…',
+    /**
+     * The rider is genuinely outside the agency's coverage. Never silently substituted
+     * with somebody else's stop — and the way back is an explicit button that relabels
+     * the view as a default location, because that is what it is.
+     */
+    noCoverageTitle: 'No TTC stops within {{dist}} of you',
+    noCoverageNearest: 'The nearest stop GhostBus covers is {{stop}}, about {{dist}} away.',
+    noCoverageUnknown: 'GhostBus only covers the TTC, in Toronto.',
+    noCoverageAction: 'Browse downtown Toronto instead',
+    noCoverageActionNote: 'That view is labelled as a default location, not as where you are.',
     defaultLocation: 'Using a default location — tap to use yours',
     noWindow: 'No departures in the next {{min}} minutes',
     nextServiceNote: "This stop's live board isn't active yet — here's its scheduled service.",
@@ -179,7 +230,11 @@ const en = {
     vUnseen: "Can't see this vehicle right now",
     vUnseenAgo: 'Last fix {{min}} min ago — GhostBus will not guess where it is now.',
     vUnseenNever: 'No {{route}} in the live feed near this stop yet.',
+    // (b) the AGENCY's vehicle feed is genuinely down — our server told us so.
     vUnseenFeedDown: 'The live vehicle feed is down, so the position we hold cannot be refreshed.',
+    // (a) OUR server is the one we cannot read. Same consequence, different culprit, and
+    // the rider is told which. See DECISIONS §45.
+    vUnseenApiDown: 'GhostBus cannot reach its own server, so the position we hold cannot be refreshed. Retrying.',
     vGone: 'This run has left the live board',
     vNoGeo: "GhostBus can't work out your walk",
     vNoGeoBody: 'Without your position there is no walk to time, so there is no honest verdict. The departure is below.',
@@ -197,8 +252,10 @@ const en = {
     evVehicleStale: 'Last {{route}} fix is too old to place it',
     evVehicleNone: 'No {{route}} visible in the live feed near this stop',
     evVehicleFeedDown: 'Vehicle feed unavailable',
+    evVehicleApiDown: 'GhostBus server unavailable — retrying',
     evNoFix: 'No position received yet',
     evFeedDown: 'Nothing to refresh it with right now',
+    evApiDown: 'Our server is catching up — retrying',
     basis: 'This verdict is recomputed continuously from your position and the vehicle feed. It is never frozen, and never carried over from a fix GhostBus can no longer stand behind.',
     basisVehicle: 'The feed names vehicles by route, not by run, so the vehicle above is the closest tracked one on this route.',
     // Tier 2 — the guided walk/wait/board choreography. Not built in Tier 0.
@@ -363,7 +420,44 @@ const en = {
   },
   plan: {
     title: 'Plan a trip',
-    body: "Trip planning is designed — it isn't wired up in this build yet.",
+    sub: 'One ride, end to end. GhostBus plans trips you can make without changing vehicles.',
+    chooseDestination: 'Choose a destination',
+    clearDestination: 'Clear destination',
+    recentTrips: 'Recent trips',
+    emptyTitle: 'Where are you going?',
+    emptyBody: 'Pick a destination and GhostBus will find a single ride to it — the stop to walk to, the vehicle to board, and where to get off.',
+    noGeoTitle: 'GhostBus needs your position to plan',
+    noGeoBody: 'A trip starts where you are standing. Without your location there is no walk to time, so there is no honest plan.',
+    errorTitle: "Can't reach the planner",
+    errorBody: 'The trip planner is unreachable right now. Nothing here is cached, because a replayed plan looks exactly like a live one.',
+    // The single-ride scope, said plainly. This is a limit, not a failure.
+    transferTitle: 'This trip needs a transfer',
+    transferBody: 'No single TTC vehicle runs from a stop near you to a stop near your destination. Full trip planning is coming — GhostBus will not invent a connection it cannot see.',
+    transferFine: 'The link below opens your maps app with the destination only. Your own position never leaves this device.',
+    openInMaps: 'Open in a maps app',
+    noServiceTitle: 'Nothing direct is running',
+    noServiceBody: 'A direct ride exists in the schedule, but none departs in the days GhostBus searched.',
+    noStopsYouTitle: 'No stop near you',
+    noStopsDestTitle: 'No stop near that destination',
+    noStopsBody: 'GhostBus found no TTC stop within {{m}} m of it, so there is nowhere to start or finish the ride.',
+    unreachableTitle: "You can't reach any of these on foot",
+    unreachableBody: 'All {{count}} direct rides GhostBus found depart before you could walk to their stop at your pace.',
+    resultLabel: 'Your single-ride plan',
+    summaryEyebrow: 'Best single ride',
+    nextServiceEyebrow: 'Next scheduled service',
+    doorToDoor: 'About {{min}} min door to door',
+    arriveAt: 'Arrive around {{time}}',
+    walkTo: 'Walk {{dist}} · {{min}} min to {{stop}}',
+    leaveBy: 'Leave by {{time}}',
+    rideDetail: 'Board {{board}} · {{count}} stop · get off {{alight}}',
+    rideDetail_other: 'Board {{board}} · {{count}} stops · get off {{alight}}',
+    alightAt: 'Get off at {{stop}}',
+    walkFrom: 'Walk {{dist}} · {{min}} min to {{dest}}',
+    basisRide: 'Walking times use your pace profile with a 1.25 route factor.',
+    basisScheduled: 'The boarding time and the running time are both the agency’s published schedule.',
+    basisPredicted: 'The boarding time is GhostBus’s live estimate; the running time after it is the agency’s published schedule, which assumes the trip keeps to it.',
+    basisSingleRide: 'GhostBus plans one ride only — it never joins two together.',
+    defaultLocationNote: 'Planned from a default location until you share yours.',
   },
   alerts: {
     title: 'Alerts',
