@@ -3019,3 +3019,192 @@ So the reference's *density, openness and calm* are now matched to within a few 
 structural statistic, and its *granularity* is not — because its granularity is not what the data
 says is there. That residual is the honest floor of this approach, and it is where this line of work
 should stop.
+
+---
+
+## §42 — The inset was swept and it is already right; the welding was the road network, not the buildings
+
+**This section reports a negative result on the change it was sent to make, and a positive one on
+why.** The brief was to raise `INSET_M` until our separated masses stopped welding: our p90
+separated mass measured 11,203 m2 against the reference's 4,162, so our masses were 2.7x too LARGE,
+and an inset — which draws strictly less than the real footprint and can never claim ground a
+building does not occupy — was the honest lever for pulling them apart. The sweep was run. The
+inset does move that number, exactly as predicted. **It should still not be raised, because the
+reason our masses measured too large is that `structure.py` was counting our road network as
+buildings, and once that is corrected every honest statistic says our city is too SPARSE and its
+gaps too WIDE — so every metre of inset makes the real gap worse while making the measured one
+better.**
+
+`INSET_M` therefore ships unchanged at 1.2 m. The only code changes in this section are comments,
+and the MapCard chunk is byte-identical at **1,511.21 kB raw / 397.99 kB gzipped**.
+
+### 1. The sweep, run as asked
+
+Eight values, each with its own production build and its own browser window in its own rate-limit
+window, `cap41.mjs` refusing to write pixels unless the app really rendered, all measured through
+§41's one-code-path harness at the reference's own 0.950 m/px over the same 709 x 570 px crop.
+"masses/ha" and "p90" are the SEVERED statistics (`sevPerHa`, `sevP90M2`) — the ones §41 quoted.
+
+| INSET_M | ground | open | masses/ha | **p90 mass** | p90 unsevered | roofs/ha | edge | banded px |
+|---|---|---|---|---|---|---|---|---|
+| reference | 37.8% | 7.7% | 1.29 | **4,162** | 6,074 | 3.30 | 15.0% | 0.012% |
+| 0.5 | 35.3% | 7.6% | 0.92 | 12,820 | 65,857 | 3.39 | 17.0% | **0.039%** |
+| 0.9 | — | — | — | — | — | — | — | 0.004% |
+| **1.2 (shipped)** | **37.0%** | **8.0%** | **1.05** | **11,324** | **51,096** | **3.20** | **16.9%** | **0.009%** |
+| 1.6 | — | — | — | — | — | — | — | 0.006% |
+| 2.0 | 39.4% | 8.7% | 1.11 | 9,650 | 17,753 | 3.26 | 16.9% | 0.004% |
+| 3.0 | 41.8% | 9.2% | **1.32** | 7,184 | 17,424 | 3.08 | 17.1% | 0.004% |
+| 4.0 | 44.3% | 9.8% | 1.36 | 5,582 | 16,661 | 2.91 | 17.1% | — |
+| 6.0 | 49.5% | 11.8% | 1.58 | **2,740** | 17,646 | 2.55 | 17.1% | — |
+
+Read on its own terms the sweep looks like a win: at 3 m the masses-per-hectare lands on the
+reference's 1.29 almost exactly, and p90 separated mass falls from 2.7x the reference to 1.7x. The
+unsevered p90 collapses from 51,096 to 17,753 between 1.2 and 2.0 m and then **stops moving** — a
+plateau at ~17,000 m2 that no further inset touches. That plateau is what sent this section
+looking, because a lever that keeps costing and stops paying is a lever aimed at the wrong thing.
+
+**The generalisation floor was swept against the inset too**, since both knobs only ever draw less
+and they push ground share in opposite directions: at 3 m inset, dropping §41's 500 m2 floor to
+300 m2 buys back 1.0 point of ground share and 0.19 roofs/ha, but p90 mass gets *worse*
+(7,184 -> 8,044) because the restored small buildings bridge the big masses. The floor stayed at
+500 m2 on that evidence — and then §3 below overturned the evidence.
+
+### 2. The instrument was counting the roads as buildings
+
+`structure.py` classifies by absolute luminance, ground below 30 and building above, which §40
+justified because the measured tones already matched. Rendering the classification back over both
+images is what exposed it. `DIAGNOSTIC-ground-classification.png` is the whole finding in one
+sheet: **in the reference the sub-30 region IS the street grid, a clean connected lattice; in ours
+the streets are above the boundary and the sub-30 region is the leftover scatter between them.**
+
+Captured with the three voxel layers hidden — same app, same camera, `capbase.mjs`:
+
+* **24.7% of the frame is above the "ground" threshold from the BASEMAP ALONE**, and 17% of it is
+  unoccluded road surface.
+* Our road surface measures luminance **39.8 (p50) to 46.8**; our ground fill measures 20.4.
+* The reference's street surface measures **p10 15.5, p50 20.0, p90 25.2** — level with its own
+  ground, not 20 levels above it. Confirmed independently of any mask by raw vertical cuts across
+  the reference sheet, which run 13-29 across every street and 60-95 across every roof.
+
+The road network is a connected graph across the whole frame. Painting it above the
+building/ground boundary therefore welds every block to every other block, which is why our
+largest component measured so large and why 21.5% of its pixels are basemap rather than city. The
+belief that produced it is written down at the head of `mapStyle.ts`'s DARK palette — "its streets
+are a lavender-slate around luminance 35-45" — and it is simply wrong. That comment now says so,
+in place, with the numbers.
+
+### 3. What §38-§41 actually measured, restated honestly
+
+Re-running the identical probe with the road surface stencilled down to our own ground tone — a
+simulation, and it only ever moves pixels that the basemap-only capture proves nothing was drawn
+over — gives the corrected picture. Two independent methods agree, one of them using **no
+luminance threshold on our side at all** (a pixel counts as city if it differs from the
+basemap-only capture):
+
+| | ours (1.2 m) | reference |
+|---|---|---|
+| built coverage | **43.5%** (threshold-free: 45.9%) | **58.6%** (62.2%) |
+| ground share | 55.5% | 37.8% |
+| open street-wide ground | 31.6% | 7.7% |
+| ground-corridor width, p50 | **17.0 m** | **6.0 m** |
+| ground-corridor width, p90 | 67.4 m | 16.2 m |
+| edge density | 11.9% | 15.0% |
+
+**§41's headline — "ground share 37.1% vs the reference's 37.8%" — was two errors cancelling**:
+roads ~17 points too bright, buildings ~15 points too few. The corridor row is the finding in one
+number: the typical gap between built things is 6 m in the reference and 17 m in ours, and our p90
+corridor is four times the reference's. Our city is not welded. It is thin.
+
+That also reverses §41's own floor sweep. Re-measured through the corrected instrument, on §41's
+own captures at no extra cost:
+
+| floor | built | ground | open | roofs/ha | edge |
+|---|---|---|---|---|---|
+| reference | 58.6% | 37.8% | 7.7% | 3.30 | 15.0% |
+| 0 | **47.2%** | 51.7% | 27.7% | 3.74 | 13.8% |
+| 500 (shipped) | 43.5% | 55.5% | 31.6% | 3.32 | 11.9% |
+| 900 | 36.1% | 63.1% | 39.6% | 2.38 | 9.6% |
+| 2500 | 11.1% | 88.6% | 69.1% | 0.32 | 2.9% |
+
+The floor is monotonically harmful on every statistic except the ones that improve merely because
+the city is being deleted. §41 chose 500 m2 because the contaminated instrument reported floor 0 as
+*under* the reference's ground share (34.1%) when the true value is far *over* it (51.7%), so the
+sweep was pushed toward deleting buildings when it should have been pushed the other way. And note
+what the floor-0 row settles: **even drawing every loaded ring, we reach 47.2% built against
+58.6%.** §41's §8 conclusion survives, restated correctly — the deficit is in the data, not in the
+floor.
+
+### 4. Why 1.2 m is right, pinned from both sides
+
+* **Below ~0.9 m the banding comes back.** At 0.5 m the boxes close back up on each other and
+  `zfight.py` reports **0.039%** of the frame banded against the reference's 0.012% and this
+  build's 0.009% — worse than §41's pre-fix render. The inset is part of §41's coplanar-roof fix,
+  not decoration. 0.9 and 1.6 were built specifically to find that cliff and both come back clean.
+* **Above ~1.6 m every honest statistic degrades monotonically**, at roughly 3 points of built
+  coverage per metre, on a render already 15 points short.
+* **Between 0.9 and 1.6 nothing is resolvable.** The same unchanged configuration measured twice,
+  40 minutes apart, gives ground 55.5 / 55.5, open 31.6 / 31.6, edge 11.9 / 11.9 — but masses/ha
+  1.35 / 1.32, median mass 714 / 810 m2, roofs/ha 3.32 / 3.17. **The run-to-run spread on the mass
+  statistics is about 13%**, which is larger than the difference between 0.9 and 1.2 on any of
+  them. That repeatability figure is new here and no earlier section had it; a difference of one or
+  two percent in §38-§41's mass numbers should not have been read as a difference at all.
+
+So 1.2 sits mid-interval with a measured cliff below it and a measured slope above it, and it does
+not move.
+
+### 5. What is deliberately NOT fixed here, and why
+
+The road tone is the largest known defect in this render and it is left in place, for the reason
+§41 gave for leaving the `cellRand` and `pickTint` hash bugs: **the fix invalidates the
+measurements of the pass that found it.** Specifically:
+
+1. Darkening 17% of the frame by ~17 levels drops frame mean luminance from 40.6 to ~37.6 against
+   the reference's 39.9 — so it **regresses §40's verified tonal match**, which this section was
+   told not to do.
+2. `mapStyle.ts` already records a failed attempt at exactly this change: pass 1 dropped the roads
+   toward the ground tone and "the grid vanished — the render came back as one continuous mass of
+   rooftops with no sense of place." The reference gets away with dark streets because its blocks
+   cover 58.6% of the frame and read as bright masses against them. At our 43.5% the same change
+   would expose the sparseness rather than fix it. **The pale roads are currently, accidentally,
+   compensating for the missing density.**
+
+Roads and density have to move together, in one pass, with their own before/after and their own
+tonal re-verification. That is the next piece of work in this file, and it now has an instrument
+that will not lie to it. The correction is written into `mapStyle.ts` at both the palette and the
+casing layer so it cannot be missed.
+
+### 6. Verification
+
+Production build, real Chrome, each of the four combinations in its own rate-limit window, every
+probe gated on the app having rendered:
+
+```
+desktop/dark : zoom 16.182 pitch 48 fov 16 | layers 3/3 treeCubes 227 | stop true walk "230m 4min"
+               | overlaps 0 | markerCollisions 0 spill 0 | clip 0 | errors 0
+               | built-coverage diorama 63.0% -> z17.8 66.1% | frames p50 4.2 p95 5.3 (n=1042)
+desktop/light: same       mobile/dark: zoom 15.4 | same       mobile/light: same
+```
+
+`npm test` **214 / 214**. `tsc --noEmit` clean. Bundle unchanged at 1,511.21 kB raw /
+**397.99 kB gzipped** — the diff is comments only, and every changed line in it begins with `//` or
+`*`.
+
+Evidence in `screenshots/reference-match/final7/`:
+`SCALE-MATCHED-190m-inset-sweep.png` and the 620 m version (reference beside 1.2 / 3 / 6 m, each
+resampled so a cube is the same size on screen in every tile — the wide one shows 3 m and 6 m
+hollowing the city into scattered pebbles); `FACES-5x-inset-sweep.png`; and
+`DIAGNOSTIC-ground-classification.png`, which is the section in one picture.
+
+### 7. The honest answer to the question that was asked
+
+**No. p90 separated mass did not reach the reference's 4,162 m2 and masses/ha did not stably reach
+1.29.** At 3 m of inset the numbers say 7,184 and 1.32; at 6 m they say 2,740 and 1.58, overshooting
+from the other side. Neither was shipped, because the corrected instrument shows both were bought
+by shrinking buildings in a frame that is already 15 points short of the reference's coverage and
+whose gaps are already three times too wide. The measured gap this section was sent to widen is
+2.85 m in the reference and 5.70 m in ours — ours are already the wider of the two.
+
+The residual §41 called granularity is real, and this section narrows what it is: not that our
+masses are too big and welded, but that **our masses are too small, too few and too far apart** —
+and that a fifth of what looked like our massing was the road grid. The lever that closes it is
+density plus road tone, together, and it is not an inset.

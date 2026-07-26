@@ -246,8 +246,29 @@ const PALETTES: Record<VoxelTheme, MeshPalette> = {
  * to the circumscribed oriented box, which over-covers a non-rectangular footprint.
  * The area-true scale below now does that job properly and measurably, so this is the
  * GAP and only the gap. The two do compound — the total pull-in per side is
- * `(1 - k) * half + INSET_M` — which is why the value was left where the reference
- * measurement put it rather than re-tuned on top of the new scale.
+ * `(1 - k) * half + INSET_M`.
+ *
+ * §41 left the value where the reference measurement put it rather than re-tuning it on
+ * top of the new area-true scale. §42 DID sweep it — at 0.5, 0.9, 1.2, 1.6, 2, 3, 4 and
+ * 6 m, a production build and its own browser window each — and the answer is that 1.2
+ * is already in the only safe interval, pinned from BOTH sides:
+ *
+ *   below ~0.9 m the banding comes back. At 0.5 m the boxes close back up on each other
+ *   and `zfight.py` reports 0.039% of the frame banded against the reference's 0.012%
+ *   and this build's 0.009% — i.e. worse than §41's pre-fix render. The inset is part of
+ *   the coplanar-roof fix, not merely decoration;
+ *
+ *   above ~1.6 m every honest structural statistic degrades monotonically. Per metre of
+ *   inset the city loses ~3 points of built coverage and its ground corridors widen, and
+ *   we are ALREADY 15 points short of the reference on coverage and 3x too wide on
+ *   corridors (§42 measures 44% vs 59%, and 17.0 m vs 6.0 m). An inset that separates
+ *   masses does it by shrinking buildings we do not have enough of.
+ *
+ * Between 0.9 and 1.6 nothing is resolvable: the run-to-run spread of the probe on ONE
+ * unchanged configuration is larger than the difference (§42 quantifies it). So 1.2 sits
+ * mid-interval and there is no measured reason to move it. Do not re-sweep this without
+ * first reading DECISIONS §42 — the instrument that made the old numbers look like a
+ * welding problem was counting the road network as buildings.
  */
 const INSET_M = 1.2;
 /** A block never insets below this half-extent, so small real buildings survive. */
