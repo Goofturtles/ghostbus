@@ -4537,3 +4537,134 @@ Two things generalise:
 2. **When two mechanisms share an observable, the observable cannot be the evidence.** The
    only instrument that could tell path A from path B was one that recorded whether the
    callback ran. That is what got built this time, and it is checked in.
+
+
+## §51 — The walk path follows streets, and the data was already on the device
+
+A rider testing the live app filed it in one sentence: **the walk path cuts through
+buildings.** It did. The map drew the rider's walk to the boarding stop as a two-point
+LineString, and a straight line through downtown Toronto crosses whatever is in the
+way. In an app whose argument is that it does not show people things that are not
+true, that line was a fiction drawn in the loudest place available — and it was drawn
+*over* the very buildings the voxel city renders from real footprints.
+
+### 1. Where the streets come from — and the three options that lost
+
+* **An external routing API (OSRM / Valhalla public instances)** — rejected. A
+  third-party dependency with rate limits, on the critical path of a screen that must
+  work when the transit feed is down, in Demo Mode, and offline-ish. It would also mean
+  sending the rider's live position to somebody else's server, which is the one
+  guarantee this app makes about location (see `plan.ts` `transitDirectionsUrl`, which
+  deliberately sends the destination and never the rider).
+* **A server-side pedestrian graph precomputed at seed time** — the option that fits
+  this codebase's honest-precompute habit, and the one I expected to choose. It loses
+  on its data source. There is no OSM extract anywhere in this project: `seed_toronto`
+  downloads GTFS and nothing else. Building a graph for the coverage area would mean
+  either an Overpass query over 630 km² (hundreds of MB, rate-limited, fragile at seed
+  time) or fetching and decoding vector tiles server-side — *the same tiles the client
+  has already downloaded and parsed* — plus an MVT decoder, a cache table, an endpoint
+  and a rate limiter, to answer a question the client can already answer.
+* **A pedestrian graph out of the GTFS shapes we already store** — genuinely tempting:
+  zero new data, fully offline, already seeded. Rejected because it can only ever
+  follow bus routes. A walk down a residential side street would be snapped onto an
+  arterial and reported several hundred metres long. That is a real walk, but it is not
+  *the* walk, and the detour would be invisible to the rider.
+
+**What shipped: a client-side graph over the basemap's own tiles.** The map already
+renders OpenFreeMap vector tiles on the OpenMapTiles schema, and `voxelMesh.ts` already
+reads that source's `building` polygons to build the city. The `transportation` layer
+in the *same tiles* carries the OSM ways that draw the streets under the path —
+footways, sidewalks, crossings, steps, laneways. `map.querySourceFeatures('omt', {
+sourceLayer: 'transportation' })` hands them over already decoded. Measured in the
+running app at King & Spadina: 883 features in the tile cache, 476 walkable line parts
+inside the walk's bounding box, 2,041 vertices. **Routing therefore costs zero new
+network.** Demo Mode is unaffected by construction — it replays transit data, and this
+asks the basemap.
+
+The price is stated rather than hidden: **where there is no map there is no route.** On
+a phone's Plan tab the map card is unmounted, so a leg that was never routed on the
+Nearby tab stays an estimate — and says so.
+
+### 2. Two measurements that changed the design
+
+Both against `fixtures/walk-king-spadina.json`: the real content of the two z14 tiles
+over King & Spadina, 734 walkable ways and 378 building footprints, checked in.
+
+**(a) Vector tiles are clipped, and a naive graph comes apart along the seam.** A
+street crossing a tile boundary arrives as two pieces, and the piece from the
+neighbouring tile overruns into the buffer, so its cut end lands in the *middle* of the
+other piece rather than on one of its vertices. Merging coincident vertices cannot see
+that. Unhealed, four of five realistic walks had no path at all and one routed at 16.9×
+the straight line. Healing every dangling end (degree 1) onto a segment within a few
+metres fixes all five.
+
+**(b) The tolerance is 8 m, and 3 m was not enough — the app's own opening screen
+proved it.** Three metres passed those five because a long walk absorbs a missing link.
+`DEFAULT_LOCATION` (Front & Spadina) to the stop the board opens on (King St W at
+Spadina Ave West Side) is 225 m, and one unjoined 7 m gap sent it 1,152 m round the
+block — over the detour ceiling, so the very first screen a rider sees fell back to the
+straight line this whole wave exists to remove. At 8 m it is 419 m. Every other pair is
+identical from 3 m to 12 m, measured over the fixture *and* over lines captured live out
+of the running app's tile cache, so the change buys the short walks without loosening
+the long ones. The joint is charged to the route like any other edge: a healed crossing
+is walked, not teleported.
+
+### 3. The complaint, made measurable
+
+Metres of the drawn line that lie inside a building footprint, sampled every 2 m:
+
+| walk | straight line | routed |
+|---|---|---|
+| from the northwest, 363 m | 191 m inside (53%) | 24 m (3%) |
+| from south of the corridor, 549 m | 146 m (27%) | 8 m (1%) |
+| from the west, 603 m | 92 m (15%) | 36 m (4%) |
+| from inside the block, 157 m | 96 m (61%) | 36 m (15%) |
+| from the north, 445 m | 130 m (29%) | 8 m (1%) |
+
+The residue is the two end stubs — you do walk out of the building you are standing in
+— plus places where OSM draws a footway under a footprint. `walkRoute.test.ts` asserts
+the comparison rather than a zero, because a zero would be a claim about Toronto's
+mapping rather than about our router.
+
+### 4. What is refused, and what a refusal looks like
+
+`routeWalk` returns **null** — a first-class answer meaning *this device cannot say* —
+when the ways have not loaded, when an endpoint is more than 150 m from any way, when
+the two ends are unconnected, and when the route is both over 3× the straight line and
+more than 250 m longer than it. That last guard needs both halves: a rider 30 m from the
+stop but on the far side of Spadina Ave routes 182 m, because crossing six lanes means
+walking to the light — ratio 6.1, and completely true. A ratio alone cannot tell that
+from a broken graph; a ratio plus an absolute detour can, because a broken graph
+overshoots by kilometres, not by metres.
+
+**A null is never drawn as a route.** The straight line still appears, because the stop
+is still that way, but it appears as a thin pale dash with no beads, no drop shadow and
+no walker glyph riding it — and every number derived from it is printed with `≈`, in all
+three locales, with `plan.basisRide` and `catch.evWalkBasis` stating which of the two a
+reader is looking at.
+
+### 5. The 1.25 route factor is retired for routed walks
+
+It was an apology for not knowing the route: a documented guess at how much longer the
+pavement is than the crow's flight. Applying it to a measured distance would bill a real
+620 m as 775 m — a correction for an error no longer being made. `walkLegSeconds` applies
+it only to the straight-line fallback, where it still means what it always meant.
+Measured detours on this fixture run 1.16×–1.95×, so 1.25 was optimistic anyway, which
+is the wrong direction for a number a rider uses to decide whether to run.
+
+### 6. Three things deliberately left alone
+
+* **The 1,500 m gate stays on the straight line.** `WALKABLE_MAX_M` mirrors the
+  planner's own `PLAN_MAX_RADIUS_M`, which the server applies as a straight-line radius.
+  It asks "does this app consider these two points connected on foot at all", and that
+  answer must not change because the pavement wanders. A stop 1,400 m away routes past
+  1,500 m and is still drawn; the route then tells the truth about the walk inside the
+  gate, however long it turns out to be.
+* **The plan's ranking never sees a measured walk.** A measured walk arrives after the
+  plan is chosen. Letting it change the choice would let the answer rewrite the question
+  — option A picked, map routes to A, longer walk makes A unreachable, B picked, map
+  routes to B, A reachable again. `pickBestRide` ranks on the estimate every candidate
+  shares; only the chosen plan is re-timed.
+* **The alighting leg is not routed.** It happens at the far end of a ride, in tiles this
+  device has no reason to have loaded. It stays the estimate it has always been and is
+  marked as one, rather than quietly borrowing the first leg's credibility.
