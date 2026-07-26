@@ -13,6 +13,9 @@
     "start": "node --import tsx server/src/server.ts",
     "seed:toronto": "tsx server/src/seed_toronto.ts",
     "collect": "tsx server/src/collect.ts",
+    "record:demo": "tsx server/src/record_demo.ts",
+    "demo": "tsx server/src/server.ts --demo",
+    "demo:collect": "tsx server/src/collect.ts --demo",
     "aggregate": "tsx server/src/aggregate.ts",
     "test": "node --import tsx --test \"server/src/**/*.test.ts\" \"web/src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit"

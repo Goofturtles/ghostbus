@@ -171,7 +171,19 @@ export interface DelayEngine {
   getIndex(): PatternIndex;
 }
 
-export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): DelayEngine {
+/**
+ * `agency` is the STATIC board to read (the seeded GTFS schedule). `writeAgency` is the
+ * namespace every learned or observed row is written under, and it defaults to `agency`
+ * so the live path is unchanged.
+ *
+ * They differ in exactly one case: a recorded replay (Demo Mode) reads the same published
+ * board a live run reads — a schedule is not an observation, and there is only one — while
+ * writing its crosswalk, bindings, delay observations and slot claims under 'ttc-demo'.
+ * That makes the spec's "never blend demo and live data" rule a property of the primary
+ * keys rather than of anyone's discipline: every read here is already agency-filtered, so
+ * neither mode can see the other's rows even by accident.
+ */
+export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT, writeAgency: string = agency): DelayEngine {
   let index: PatternIndex = emptyPatternIndex();
   let boardTag = '?..?';
   let ready = false;
@@ -347,7 +359,7 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
       }>(
         `SELECT rt_stop_id, stop_id, votes, distinct_patterns, geo_resid_m, source, state, confidence
            FROM rt_stop_xwalk WHERE agency=$1 AND board_tag=$2`,
-        [agency, boardTag],
+        [writeAgency, boardTag],
       );
       let usable = 0;
       for (const r of res.rows) {
@@ -725,7 +737,7 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
           claimedStatic.delete(res.tripId);
           fireAndLog(db.query(
             "UPDATE rt_trip_binding SET state='voided' WHERE agency=$1 AND service_date=$2 AND rt_trip_id=$3",
-            [agency, inp.serviceDate, holderRt]), 'void losing binding');
+            [writeAgency, inp.serviceDate, holderRt]), 'void losing binding');
         } else {
           births.delete(rtTripId);
           refusedTrips.set(rtTripId, 'refused_ambiguous');
@@ -765,7 +777,7 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
          VALUES ($1,$2,$3,$4,'claimed')
          ON CONFLICT (agency, service_date, trip_id)
          DO UPDATE SET rt_trip_id=EXCLUDED.rt_trip_id, state='claimed', updated=now()`,
-        [agency, inp.serviceDate, res.tripId, rtTripId]), 'slot claim');
+        [writeAgency, inp.serviceDate, res.tripId, rtTripId]), 'slot claim');
     }
   }
 
@@ -793,7 +805,7 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
             method, state, first_stop_resid_s, margin_s, headway_s, anchors, agree, confidence)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
          ON CONFLICT (agency, service_date, rt_trip_id) DO NOTHING`,
-        [agency, serviceDate, rtTripId, staticTripId, rtPatternId, staticPatternId, routeId,
+        [writeAgency, serviceDate, rtTripId, staticTripId, rtPatternId, staticPatternId, routeId,
           res.method, staticTripId ? 'bound' : 'refused',
           res.residS == null ? null : Math.round(res.residS),
           res.marginS == null ? null : Math.round(res.marginS),
@@ -870,7 +882,7 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
         claimedStatic.delete(b.staticTripId);
         fireAndLog(db.query(
           "UPDATE rt_trip_binding SET state='voided' WHERE agency=$1 AND service_date=$2 AND rt_trip_id=$3",
-          [agency, inp.serviceDate, rtTripId]), 'void drifted binding');
+          [writeAgency, inp.serviceDate, rtTripId]), 'void drifted binding');
         continue;
       }
 
@@ -903,13 +915,13 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
       `${bad.expected}, crosswalk says ${bad.got}; voided binding + quarantined pattern`);
     fireAndLog(db.query(
       "UPDATE rt_trip_binding SET state='voided' WHERE agency=$1 AND service_date=$2 AND rt_trip_id=$3",
-      [agency, serviceDate, rtTripId]), 'void inconsistent binding');
+      [writeAgency, serviceDate, rtTripId]), 'void inconsistent binding');
     fireAndLog(db.query(
       'DELETE FROM trip_delay_obs WHERE agency=$1 AND trip_id=$2 AND service_date=$3',
-      [agency, rtTripId, serviceDate]), 'remove inconsistent obs');
+      [writeAgency, rtTripId, serviceDate]), 'remove inconsistent obs');
     fireAndLog(db.query(
       "UPDATE rt_pattern SET state='quarantined', updated=now() WHERE agency=$1 AND rt_pattern_id=$2 AND board_tag=$3",
-      [agency, b.rtPatternId, boardTag]), 'quarantine pattern');
+      [writeAgency, b.rtPatternId, boardTag]), 'quarantine pattern');
   }
 
   // ---------- persistence ----------
@@ -942,7 +954,7 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
   async function persistCrosswalk(): Promise<void> {
     const anchorRows: unknown[][] = [];
     for (const [key, acc] of anchors) {
-      anchorRows.push([agency, rtStopOfKey(key), routeOfKey(key), acc.n, acc.sumLat, acc.sumLon, acc.vehicles.size]);
+      anchorRows.push([writeAgency, rtStopOfKey(key), routeOfKey(key), acc.n, acc.sumLat, acc.sumLon, acc.vehicles.size]);
     }
     await upsertBatch('rt_stop_anchor',
       ['agency', 'rt_stop_id', 'route_id', 'n', 'sum_lat', 'sum_lon', 'n_vehicles'], anchorRows,
@@ -953,7 +965,7 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
     // The raw vote ledger, so the promoted winner is always recomputable from evidence.
     const voteRows: unknown[][] = [];
     for (const [key, stop] of geoAnchors) {
-      voteRows.push([agency, rtStopOfKey(key), boardTag, stop, routeOfKey(key), 'geo',
+      voteRows.push([writeAgency, rtStopOfKey(key), boardTag, stop, routeOfKey(key), 'geo',
         anchors.get(key)?.n ?? 1, geoResid.get(key) ?? 0]);
     }
     await upsertBatch('rt_stop_xwalk_votes',
@@ -963,7 +975,7 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
 
     const xwRows: unknown[][] = [];
     for (const e of xwalk.values()) {
-      xwRows.push([agency, e.rtStopId, boardTag, e.stopId, e.votes, e.distinctPatterns,
+      xwRows.push([writeAgency, e.rtStopId, boardTag, e.stopId, e.votes, e.distinctPatterns,
         e.geoResidM, e.source, e.state, e.confidence]);
     }
     await upsertBatch('rt_stop_xwalk',
@@ -976,7 +988,7 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
 
     const patRows: unknown[][] = [];
     for (const p of rtPatterns) {
-      patRows.push([agency, p.rtPatternId, boardTag, p.routeId,
+      patRows.push([writeAgency, p.rtPatternId, boardTag, p.routeId,
         JSON.stringify([...p.seqStops.entries()].sort((a, b) => a[0] - b[0])),
         p.seqStops.size, resolvedStatic.get(p.rtPatternId) ?? null,
         resolvedIter.get(p.rtPatternId) ?? null, patternStates.get(p.rtPatternId) ?? 'unresolved']);
@@ -995,7 +1007,7 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT): Dela
     const cols = ['agency', 'route_id', 'stop_id', 'trip_id', 'static_trip_id', 'stop_sequence',
       'hour_of_week', 'delay_s', 'sched_epoch_s', 'event_epoch_s', 'service_date', 'method',
       'source', 'confidence', 'xwalk_conf', 'match_margin_s', 'headway_s', 'board_tag'];
-    const asRow = (r: DelayRow): unknown[] => [agency, r.routeId, r.stopId, r.rtTripId, r.staticTripId,
+    const asRow = (r: DelayRow): unknown[] => [writeAgency, r.routeId, r.stopId, r.rtTripId, r.staticTripId,
       r.stopSequence, r.hourOfWeek, r.delayS, r.schedEpochS, r.eventEpochS, r.serviceDate, r.method,
       r.source, r.confidence, r.xwalkConf, r.matchMarginS, r.headwayS, r.boardTag];
     let inserted = 0;

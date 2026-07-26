@@ -24,6 +24,30 @@
 // `createPoller(db)` returns a handle with start/stop and getters the API reads from.
 // All the Phase-1 honesty guards are intact: feedsFresh, retention, eviction, the
 // mass-ghost breaker, and now the delay engine's own gates on top.
+//
+// ---------------------------------------------------------------------------------
+// TWO CLOCKS AND ONE OPTIONAL SOURCE (Demo Mode)
+//
+// The poller has no idea Demo Mode exists. It has a `source`, which is `undefined` for
+// the live TTC network fetch and supplied for a recorded replay, and it reads time from
+// two clocks that are the same thing live and different things on a recording:
+//
+//   WALL CLOCK  (`Date.now()`)  — is our own poll loop alive? Backoff, feed staleness,
+//                                 lastPollAtMs. Answers "did we get a snapshot just now".
+//   DATA CLOCK  (`dataNow()`)   — what time is the DATA from? Service date, the ghost due
+//                                 window, the engine's nowMs, retention. Answers "what
+//                                 moment does this snapshot describe".
+//
+// Live, `dataNow() === Date.now()`. On a recording, `dataNow()` is the capture instant of
+// the frame currently being replayed, so the whole pipeline sees the coherent past the
+// bytes actually came from instead of judging 22:45-on-Saturday data against tonight's
+// wall clock. That distinction is the difference between a demo that works and one that
+// declares every bus in Toronto a ghost.
+//
+// The source also carries the AGENCY NAMESPACE every row this poller writes is tagged
+// with ('ttc' live, 'ttc-demo' on a recording). Static schedule tables are always read
+// under 'ttc' — a schedule is not an observation, and both modes are describing the same
+// published board. See DECISIONS.md §44.
 
 import GtfsRealtimeBindings from 'gtfs-realtime-bindings';
 import type { Db } from './db.ts';
@@ -36,7 +60,13 @@ import type { FeedId, FeedStatusKind } from '../../shared/types.ts';
 
 const { transit_realtime } = GtfsRealtimeBindings;
 
-const AGENCY = 'ttc';
+/**
+ * The agency whose STATIC schedule we read. Never varies: the seeded GTFS board is the
+ * same published schedule in both modes, and reading it is not an observation.
+ */
+const STATIC_AGENCY = 'ttc';
+/** Default namespace for rows this poller WRITES. A recorded source overrides it. */
+const AGENCY = STATIC_AGENCY;
 const FEEDS: Record<FeedId, string> = {
   vehicles: 'https://bustime.ttc.ca/gtfsrt/vehicles',
   trips: 'https://bustime.ttc.ca/gtfsrt/trips',
@@ -116,29 +146,101 @@ export interface JoinStats {
   delayEngine: DelayEngineStats;
 }
 
+/** Where this poller's bytes come from. Never inferred, never guessed, never blended. */
+export type PollerMode = 'live' | 'demo';
+
+/** Provenance of a recorded replay. Everything the UI needs under the amber DEMO badge. */
+export interface DemoModeInfo {
+  fixturePath: string | null;
+  /** "RECORDING of live TTC data captured … through …. This is replayed history…" */
+  recordedNotice: string;
+  attribution: string;
+  captureStartMs: number;
+  captureEndMs: number;
+  captureStartToronto: string;
+  captureEndToronto: string;
+  /** the cadence the recording was captured at, ms */
+  cadenceMs: number;
+  /** replay speed multiplier (8 = eight recorded minutes per wall minute) */
+  speed: number;
+  loop: boolean;
+  /** how far into the recording replay currently is, in recording-time ms */
+  positionMs: number;
+  /** how many times replay has wrapped */
+  loops: number;
+}
+
+/**
+ * The honest answer to "what am I looking at". `mode` is decided once at boot and can
+ * never change for the life of the process, so no response can ever be half live.
+ */
+export interface ModeInfo {
+  mode: PollerMode;
+  /** the namespace every row this poller writes is tagged with. */
+  agency: string;
+  /** the DATA clock — what "now" means to this process. Live: the wall clock. */
+  dataNowMs: number;
+  /** the wall clock, always. Equal to dataNowMs when live. */
+  wallNowMs: number;
+  /** null unless mode === 'demo'. */
+  demo: DemoModeInfo | null;
+}
+
+export type FeedMessage = ReturnType<typeof transit_realtime.FeedMessage.decode>;
+
+/**
+ * A replacement for the network fetch layer AND the clock, together, because they are the
+ * same fact: bytes recorded at time T must be judged at time T. Supplying one is how Demo
+ * Mode happens; nothing else in this file branches on the mode.
+ */
+export interface PollerSource {
+  readonly mode: Exclude<PollerMode, 'live'>;
+  /** namespace for every row written while this source is in use. */
+  readonly agency: string;
+  /** how often the poller should ask, so replay consumes every recorded frame exactly once. */
+  readonly pollMs: number;
+  /** the capture instant of the frame currently being replayed. */
+  dataNow(): number;
+  /** never throws; structurally identical to what the live fetch returns. */
+  fetch(feed: FeedId): { status: 'ok'; msg: FeedMessage } | { status: 'error'; reason: string };
+  describe(): DemoModeInfo;
+}
+
 export interface PollerHandle {
   start(): void;
   stop(): Promise<void>;
   runOnce(cycle: number): Promise<void>;
   getVehicleStates(): VehicleState[];
-  getFeedHealth(): { feeds: Record<FeedId, FeedRuntime>; lastPollAtMs: number | null };
+  getFeedHealth(): { feeds: Record<FeedId, FeedRuntime>; lastPollAtMs: number | null; mode: PollerMode };
   getLivePredictionMs(staticTripId: string, stopId: string): number | null;
   getJoinStats(): JoinStats;
   isIndexReady(): boolean;
+  /** The DATA clock. Anything that dates this poller's output must use it, not Date.now(). */
+  now(): number;
+  getMode(): ModeInfo;
 }
 
-type FeedMessage = ReturnType<typeof transit_realtime.FeedMessage.decode>;
 interface FetchState { etag?: string; lastModified?: string; fails: number; nextAttemptAt: number; status: FeedStatusKind; lastOkMs: number | null; sinceMs: number | null }
 
 export interface PollerOptions {
   pollMs?: number;
   maxCycles?: number;     // 0 = forever
   onExit?: () => void;    // called when maxCycles reached (standalone wrapper uses this)
+  /** Recorded replay source. Absent = live network + wall clock. */
+  source?: PollerSource;
 }
 
 export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle {
-  const pollMs = options.pollMs ?? POLL_MS;
+  const source = options.source ?? null;
+  const mode: PollerMode = source ? source.mode : 'live';
+  // Every row this poller writes carries this. Static schedule reads always use
+  // STATIC_AGENCY, so a recording shares the board it is a recording OF and shares
+  // nothing else.
+  const agency = source ? source.agency : AGENCY;
+  const pollMs = options.pollMs ?? source?.pollMs ?? POLL_MS;
   const maxCycles = options.maxCycles ?? 0;
+  /** The DATA clock. See the two-clocks note at the top of this file. */
+  const dataNow = (): number => (source ? source.dataNow() : Date.now());
 
   // ----- in-memory live state -----
   const positions = new Map<string, VehicleState>();
@@ -162,7 +264,8 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
   // The delay engine owns the static pattern index, the learned stop crosswalk, trip
   // binding, and every delay row written. The poller feeds it decoded feeds and asks it
   // which static trips are present.
-  const engine = createDelayEngine(db, AGENCY);
+  // Static reads under STATIC_AGENCY, every learned/observed row under `agency`.
+  const engine = createDelayEngine(db, STATIC_AGENCY, agency);
 
   // Ghost confirmation/retraction state (keyed `${tripId}|${startEpoch}`):
   const ghostMissStreak = new Map<string, number>();   // consecutive cycles a due trip has been absent
@@ -189,10 +292,31 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
   let timer: NodeJS.Timeout | null = null;
 
   // ---------- feed fetch ----------
+  /**
+   * The ONLY place the byte origin varies. Everything after it — health bookkeeping,
+   * staleness, the engine, ghosts — is the same code on the same shapes in both modes.
+   *
+   * The health bookkeeping (`markOk`) lives on this side of the branch deliberately. An
+   * earlier sketch of Demo Mode returned recorded frames *instead of* calling fetchFeed,
+   * which meant `lastOkMs` was never set, `refreshStaleness` moved all three feeds to
+   * `down`, and `/api/health` answered `ok:false` while the app was happily serving a
+   * complete recorded snapshot. A demo whose first act is to report itself dead is worse
+   * than no demo, so the recorded path goes through the same door as the live one.
+   */
   async function fetchFeed(key: FeedId): Promise<{ status: 'ok'; msg: FeedMessage } | { status: 'notmodified' | 'skip' | 'error'; reason?: string }> {
     const st = feedState[key];
-    const now = Date.now();
+    const now = Date.now();   // WALL clock: backoff and freshness are about our own loop
     if (now < st.nextAttemptAt) return { status: 'skip', reason: `backoff ${(st.nextAttemptAt - now) / 1000 | 0}s` };
+    if (source) {
+      const r = source.fetch(key);
+      if (r.status === 'ok') { markOk(st, now); return r; }
+      // A recorded failure is replayed once, exactly where the recorder hit it, and then
+      // the recording moves on. No exponential backoff: the frames are already laid out in
+      // time, and a 5-minute wall backoff would skip ~53 recorded minutes at 8x — turning
+      // a faithfully reproduced 45-second hiccup into a hole the original never had.
+      st.fails++;
+      return { status: 'error', reason: r.reason };
+    }
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
     try {
@@ -235,19 +359,19 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
   // never sees a half-cleared calendar/trip map during a reload.
   async function loadStaticContext(): Promise<void> {
     const cal = await db.query<{ service_id: string; mon: boolean; tue: boolean; wed: boolean; thu: boolean; fri: boolean; sat: boolean; sun: boolean; start_date: number; end_date: number }>(
-      'SELECT service_id, mon, tue, wed, thu, fri, sat, sun, start_date, end_date FROM calendar WHERE agency=$1', [AGENCY]);
+      'SELECT service_id, mon, tue, wed, thu, fri, sat, sun, start_date, end_date FROM calendar WHERE agency=$1', [STATIC_AGENCY]);
     const newCalendar: CalendarRow[] = cal.rows.map((r) => ({
       service_id: r.service_id, days: [r.mon, r.tue, r.wed, r.thu, r.fri, r.sat, r.sun],
       start_date: Number(r.start_date), end_date: Number(r.end_date),
     }));
     const cd = await db.query<{ service_id: string; date: number; exception_type: number }>(
-      'SELECT service_id, date, exception_type FROM calendar_dates WHERE agency=$1', [AGENCY]);
+      'SELECT service_id, date, exception_type FROM calendar_dates WHERE agency=$1', [STATIC_AGENCY]);
     const newCalendarDates: CalendarDateRow[] = cd.rows.map((r) => ({ service_id: r.service_id, date: Number(r.date), exception_type: Number(r.exception_type) }));
 
     const starts = await db.query<{ trip_id: string; route_id: string | null; service_id: string | null; start_s: number | null }>(
       `SELECT DISTINCT ON (t.trip_id) t.trip_id, t.route_id, t.service_id, COALESCE(st.departure_s, st.arrival_s) AS start_s
        FROM trips t JOIN stop_times st ON st.agency = t.agency AND st.trip_id = t.trip_id
-       WHERE t.agency = $1 ORDER BY t.trip_id, st.stop_sequence`, [AGENCY]);
+       WHERE t.agency = $1 ORDER BY t.trip_id, st.stop_sequence`, [STATIC_AGENCY]);
     const newStarts = new Map<string, TripStart>();
     const newStaticIds = new Set<string>();
     for (const r of starts.rows) {
@@ -283,7 +407,7 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
       try {
         await loadStaticContext();
         await buildIndex();
-        lastStaticLoadAt = Date.now();
+        lastStaticLoadAt = dataNow();
         lastStaticLoadYmd = torontoYmd(lastStaticLoadAt);
       } catch (e) {
         console.error('[poller] static reload failed (keeping previous context):', e);
@@ -362,7 +486,7 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
       const tsS = presentInt(v, 'timestamp');
       // Absent means "we do not know when this ping was taken", so the fallback is now —
       // reading the proto2 default made it 1970-01-01 and the fallback unreachable.
-      const ts = (tsS ?? Math.floor(Date.now() / 1000)) * 1000;
+      const ts = (tsS ?? Math.floor(dataNow() / 1000)) * 1000;
       const heading = presentFloat(v.position, 'bearing');
       const speedMs = presentFloat(v.position, 'speed');
       positions.set(vid, { id: vid, tripId, routeId: presentStr(v.trip, 'routeId'), seq, lat: v.position.latitude, lon: v.position.longitude, heading, speedMs, ts, cycleSeen: cycle });
@@ -505,7 +629,7 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
       const dedupe = `${tripId}|${startEpoch}`;
       if (seen.has(dedupe)) continue;
       seen.add(dedupe);
-      rows.push([AGENCY, tripId, info.routeId, new Date(startEpoch).toISOString(), 'cancelled']);
+      rows.push([agency, tripId, info.routeId, new Date(startEpoch).toISOString(), 'cancelled']);
     }
     return rows;
   }
@@ -536,16 +660,23 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
          ON CONFLICT (agency, alert_id) DO UPDATE SET
            effect=EXCLUDED.effect, cause=EXCLUDED.cause, header=EXCLUDED.header, description=EXCLUDED.description,
            active_start=EXCLUDED.active_start, active_end=EXCLUDED.active_end, informed=EXCLUDED.informed, is_accessibility=EXCLUDED.is_accessibility`,
-        [AGENCY, e.id, effect, cause, header, description, activeStart, activeEnd, JSON.stringify(informed), isAccessibility]);
+        [agency, e.id, effect, cause, header, description, activeStart, activeEnd, JSON.stringify(informed), isAccessibility]);
     }
     return n;
   }
 
+  /**
+   * WALL clock, deliberately, even in demo mode: the column this filters (`trip_delay_obs.ts`)
+   * is stamped by the database's own `DEFAULT now()`, so its cutoff has to be on the same
+   * clock. Mixing them would compare a wall-clock column against a capture-window instant.
+   */
   async function retention(now: number): Promise<void> {
     const ymd = torontoYmd(now);
     if (ymd === lastRetentionYmd) return;
     const cutoff = new Date(now - RETENTION_DAYS * 86_400_000).toISOString();
-    const r = await db.query('DELETE FROM trip_delay_obs WHERE ts < $1', [cutoff]);
+    // Agency-scoped on purpose: unscoped, a recorded-replay process would prune the
+    // LIVE observation table, which is exactly the blend Demo Mode may never cause.
+    const r = await db.query('DELETE FROM trip_delay_obs WHERE agency=$1 AND ts < $2', [agency, cutoff]);
     lastRetentionYmd = ymd; // only mark done after a successful prune, so a failure retries
     if (r.rowCount > 0) console.log(`[poller][retention] deleted ${r.rowCount} obs older than ${RETENTION_DAYS}d`);
   }
@@ -555,12 +686,17 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
   }
 
   async function poll(cycle: number): Promise<void> {
-    const now = Date.now();
-    await retention(now);
+    // DATA clock: everything below dates the snapshot, not our own liveness.
+    const now = dataNow();
+    await retention(Date.now());
     maybeReloadStatic(now);
 
     const [vr, tr, ar] = await Promise.all([fetchFeed('vehicles'), fetchFeed('trips'), fetchFeed('alerts')]);
-    refreshStaleness(now);
+    // WALL clock: staleness asks whether OUR poll loop is still getting snapshots, and
+    // `markOk`/`getFeedHealth` both stamp it from Date.now(). Feeding it the data clock
+    // would leave `sinceMs` carrying a capture-window instant or a wall-clock one
+    // depending on which caller wrote it last — and `sinceMs` is API-visible.
+    refreshStaleness(Date.now());
 
     const vehicleTripIds = new Set<string>();
     let vehicles = 0;
@@ -687,7 +823,7 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
           }
         }
         for (const d of toRetract) {
-          const r = await db.query("DELETE FROM ghosts WHERE agency=$1 AND trip_id=$2 AND scheduled_start=$3 AND kind='ghost'", [AGENCY, d.tripId, new Date(d.startEpoch).toISOString()]);
+          const r = await db.query("DELETE FROM ghosts WHERE agency=$1 AND trip_id=$2 AND scheduled_start=$3 AND kind='ghost'", [agency, d.tripId, new Date(d.startEpoch).toISOString()]);
           retracted += r.rowCount;
           ghostInserted.delete(d.key);
           ghostMissStreak.delete(d.key);
@@ -719,7 +855,7 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
         if (suppressed) joinStats.massGhostTrippedCycles++;
 
         if (toInsert.length > 0) {
-          const rows = toInsert.map((d) => [AGENCY, d.tripId, d.routeId, new Date(d.startEpoch).toISOString(), 'ghost']);
+          const rows = toInsert.map((d) => [agency, d.tripId, d.routeId, new Date(d.startEpoch).toISOString(), 'ghost']);
           ghostsIns = await insertRows('ghosts', ['agency', 'trip_id', 'route_id', 'scheduled_start', 'kind'], rows, 'ON CONFLICT (agency, trip_id, scheduled_start) DO NOTHING');
           for (const d of toInsert) ghostInserted.set(d.key, { tripId: d.tripId, startEpoch: d.startEpoch });
           totals.ghosts += ghostsIns;
@@ -752,6 +888,15 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
 
     const jr = joinRate == null ? 'n/a(index warming)' : `${(joinRate * 100).toFixed(1)}%`;
     const cancTag = canceledSeen > 0 ? ` canceled(seen=${canceledSeen} id=${canceledIdentified} anon=${canceledUnidentified})` : '';
+    // A demo cycle is labelled in the log for the same reason it is labelled in the UI:
+    // a line that looks like a live cycle and is not would be the worst artefact this
+    // codebase could produce.
+    if (source) {
+      const p = source.describe();
+      console.log(`[poller][cycle ${cycle}] DEMO replay t+${(p.positionMs / 1000).toFixed(0)}s of ` +
+        `${((p.captureEndMs - p.captureStartMs) / 1000).toFixed(0)}s (loop ${p.loops}, ${p.speed}x) ` +
+        `data clock ${new Date(now).toISOString()} — recorded, not live`);
+    }
     console.log(
       `[poller][cycle ${cycle}] vehicles=${vehicles} tripUpdates=${tripUpdates} obs+=${obsInserted} ` +
       `join=${jr} due=${dueCount} ghosts+=${ghostsIns} retracted=${retracted} cancelled+=${cancelledIns}${cancTag} alerts=${alerts} ` +
@@ -779,7 +924,7 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
   let started = false;
   async function initStatic(): Promise<void> {
     await loadStaticContext();
-    lastStaticLoadAt = Date.now();
+    lastStaticLoadAt = dataNow();
     lastStaticLoadYmd = torontoYmd(lastStaticLoadAt);
     // Build the (heavy) join index in the background so start() returns fast.
     buildIndex().catch((e) => {
@@ -817,6 +962,10 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
     async runOnce(cycle: number) { await poll(cycle); },
     getVehicleStates() { return [...positions.values()]; },
     getFeedHealth() {
+      // WALL clock: `status`/`lastOkMs` answer "is our poll loop getting snapshots", which
+      // is a question about this process, not about the data's age. On a recording they
+      // are honestly `ok` — a recorded frame did arrive, just now — and `mode` alongside
+      // them is what stops that from reading as "live".
       const now = Date.now();
       refreshStaleness(now);
       const feeds = {} as Record<FeedId, FeedRuntime>;
@@ -824,10 +973,20 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
         const st = feedState[key];
         feeds[key] = { status: st.status, lastOkMs: st.lastOkMs, sinceMs: st.sinceMs };
       }
-      return { feeds, lastPollAtMs };
+      return { feeds, lastPollAtMs, mode };
     },
     getLivePredictionMs(staticTripId, stopId) { return livePredictions.get(staticTripId)?.get(stopId) ?? null; },
     getJoinStats() { return { ...joinStats }; },
     isIndexReady() { return engine.isReady(); },
+    now() { return dataNow(); },
+    getMode() {
+      return {
+        mode,
+        agency,
+        dataNowMs: dataNow(),
+        wallNowMs: Date.now(),
+        demo: source ? source.describe() : null,
+      };
+    },
   };
 }

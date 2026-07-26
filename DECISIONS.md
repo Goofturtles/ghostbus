@@ -2275,19 +2275,19 @@ first; keep our flat measured face tones and you lose the second. The illustrati
 consistent in a way a real city at real coordinates is not.
 
 That conclusion is correct as far as it goes, and it is also **not the interesting one**, because
-the premise it shares with �38 � that the gap was about how BIG a building is � turned out to be
+the premise it shares with �38 � that the gap was about how BIG a building is � turned out to be
 wrong. See the next part.
 
 **The `coarseBlocks` implementation was reverted and is NOT in the tree.** It worked, it is fully
 specified above (sibling source pinned to `maxzoom: 13` with its tile template read off the live
 source, a zero-opacity carrier layer so MapLibre actually fetches it, a `sourcedata` listener to
 rebuild when those tiles land, and a max-height join by point-in-polygon), and a review of it found
-a real bug in the base-height join � but it lost on every measure that mattered, so shipping ~120
+a real bug in the base-height join � but it lost on every measure that mattered, so shipping ~120
 lines of dead code to preserve a negative result was the wrong trade. The numbers above are the
 record.
 
 **And the whole line of enquiry was superseded.** Magnifying the reference to 5x showed that
-granularity was never the gap at all � see below.
+granularity was never the gap at all � see below.
 
 ### Verification (production build, `npx vite build`, real Chrome, PGlite-backed API)
 
@@ -3208,3 +3208,281 @@ The residual §41 called granularity is real, and this section narrows what it i
 masses are too big and welded, but that **our masses are too small, too few and too far apart** —
 and that a fifth of what looked like our massing was the road grid. The lever that closes it is
 density plus road tone, together, and it is not an inset.
+
+---
+
+## §43 — The seed's window is the board's own span, and `GHOSTBUS_SEED_WINDOW_DAYS` is gone
+
+**This supersedes §3.** §3 described the seed window as granted latitude: load only the services
+active in the next `GHOSTBUS_SEED_WINDOW_DAYS` (default 7) days, keep this week exact, keep the
+load fast. That trade was real but it was priced wrong, and BLOCKERS.md entry 9 is the invoice.
+
+### The defect, confirmed in code before it was fixed
+
+`calendar` and `calendar_dates` were loaded **whole**; `trips`, `stop_times` and `shapes` were
+filtered to the services active in a rolling window measured from the **seed date**. Two
+different windows over one dataset, and nothing anywhere required them to agree. So the calendar
+could — and did — declare a service active on a date whose trips had never been loaded.
+
+Seeded 2026-07-24 against a board that starts 2026-07-26, the window covered
+20260724..20260730, whose only Saturday predates the board. Service `2` (Saturdays, 32,874
+trips) had no active day inside it and was dropped whole; service `4` (the 2026-08-03 civic
+holiday, 31,295 trips) exists only via a `calendar_dates` row outside the window and was
+dropped too — and because that same date carries `1,20260803,2`, the weekday board is switched
+*off* on the holiday. Seven of the board's 42 days held no schedule at all, and before the
+`boardIntegrity` gate (§34) they rendered exactly like days on which nothing went wrong.
+
+### The fix: one window, and the feed defines it
+
+```
+filter = activeServiceIds(calendar, calendar_dates, boardDays(calendar, calendar_dates))
+```
+
+`boardDays` (exported from `seed_toronto.ts`, unit-tested in `seed_toronto.test.ts`) enumerates
+`min(start_date)..max(end_date)` across the loaded `calendar`, widened by any `calendar_dates`
+exception date outside that span, each day sampled at **Toronto local noon** so a DST
+transition can never shift one onto its neighbour. It is pure and takes no clock reading: the
+window depends on the feed alone. The calendar the runtime resolves against and the trips the
+seeder loads are now the same window **by construction**, which is the property that was
+missing, not merely a wider number.
+
+`GHOSTBUS_SEED_WINDOW_DAYS` is **removed rather than re-defaulted**, deliberately. Any value of
+it narrower than the board reintroduces exactly this defect, and a knob whose only effect is to
+reproduce a shipped bug is not a feature. Two flags remain, both diagnostic:
+
+- `GHOSTBUS_SEED_FULL=1` — no filter at all. On this feed that adds 1,112 trips for services
+  `6702`/`6703`/`6704`, which carry no weekday flags and no `calendar_dates` rows and are
+  therefore never active in the **feed**. It is the control that proves the filter drops
+  nothing a calendar day can ask for.
+- `GHOSTBUS_SEED_SKIP_DOWNLOAD=1` — reuse the extract already in `.data/gtfs/extracted` instead
+  of re-downloading from CKAN. This exists for the swap procedure below: a re-seed meant to
+  repair a running deployment must load the **same** board that deployment has been observing,
+  and re-downloading silently permits a different one.
+
+The seeder also now checks itself: after loading `trips` it compares the calendar-active
+services against the services that actually got rows, and prints either
+`integrity: all 9 calendar-active service_id(s) have trips loaded` or a warning naming the empty
+services and the days they would blank. That is the seed-time twin of the `boardIntegrity` gate,
+which stays — the gate still covers what this fix cannot, a feed that publishes a calendar
+service with no trips of its own.
+
+### Proof: replay every board day, against both boards, side by side
+
+Both seeded from the same `.data/gtfs/extracted`, PGlite, download excluded; the control is the
+old seeder restored from `HEAD` and run at its default 7-day window on the same machine.
+
+| | trips | stop_times | shapes | blank days | seed time |
+|---|---:|---:|---:|---|---:|
+| windowed (old default) | 68,401 | 2,151,105 | 1,374 | **7** | 40.2 s |
+| board span (new) | **132,570** | **4,175,275** | **1,472** | **0** | 67.2 s |
+| published `trips.txt` | 133,682 | — | — | — | — |
+
+Replaying `activeServiceIds` day by day over 20260726..20260905, the trips each day resolves to:
+
+| day | before | after / published |
+|---|---:|---:|
+| six Saturdays (08-01, -08, -15, -22, -29, 09-05) | **0** | **32,874** each |
+| 2026-08-03 (civic holiday, service 4) | **0** | **31,295** |
+| the other 35 days | 29,870–38,517 | unchanged, matches the feed exactly |
+
+All 42 days now equal the published feed; seven of them did not before.
+
+### What completeness costs, measured rather than estimated
+
+| | windowed | complete | delta |
+|---|---:|---:|---|
+| PGlite seed, download excluded | 40.2 s | 67.2 s | **+27.0 s (+67%)** |
+| `stop_times` rows | 2,151,105 | 4,175,275 | +2,024,170 (+94%) |
+| `stop_times` heap / indexes | 139.1 / 201.7 MiB | 270.0 / 372.8 MiB | ~1.9x |
+| all relations | 357.5 MiB | **669.7 MiB** | **+312.2 MiB** |
+| PGlite directory on disk | 845 MiB | 1.5 GiB | — |
+
++27 seconds on a load that runs once, against seven days of the board that were silently
+missing. That is not a trade-off; it is a bug that had been priced as one.
+
+### Swapping the live database (wave 2), without losing what has been observed
+
+`.data/pglite3` is open by the running :8799 server and is accumulating real `trip_delay_obs`.
+PGlite is single-writer — a second process opening that directory corrupts it, and §41 records
+an hour lost to exactly that. So the swap is a stop, a load, and a start, in that order.
+
+**The seed's entire write surface is: `TRUNCATE` + `INSERT` on `routes`, `stops`, `trips`,
+`stop_times`, `shapes`, `calendar`, `calendar_dates`, and one `UPDATE cities SET min_lat…`.**
+It issues no other statement against any other table, there are no foreign keys anywhere in the
+schema (so no `TRUNCATE` can cascade), and `trip_delay_obs`, `agg_delay`, `agg_delay_route`,
+`ghosts`, `service_alerts`, `rt_stop_anchor`, `rt_stop_xwalk`, `rt_stop_xwalk_votes`,
+`rt_pattern`, `rt_trip_binding`, `sched_slot_claim` and `pattern_index_cache` are never named in
+the file. Verified empirically as well as by reading: marker rows were written to
+`trip_delay_obs`, `ghosts` and `agg_delay`, the same directory was re-seeded in place, and all
+three survived intact (`delay_s` 321 still 321) while the static tables reloaded to identical
+counts. The re-seed is idempotent.
+
+```
+1.  Stop the :8799 server CLEANLY (Ctrl-C / SIGTERM, never a hard kill — a killed PGlite
+    leaves "PANIC: could not locate a valid checkpoint record", which clearing
+    postmaster.pid does not recover; that is how pglite, pglite2 and pglite3 were each
+    lost once).
+2.  Confirm nothing holds the directory: no node process, and .data/pglite3/postmaster.pid
+    gone. Copy .data/pglite3 aside first if the observations matter more than the disk.
+3.  Re-seed IN PLACE, reusing the same extract the server has been running against:
+      DATABASE_URL= PGLITE_DIR=<abs path>/.data/pglite3 GHOSTBUS_SEED_SKIP_DOWNLOAD=1 \
+        node --import tsx server/src/seed_toronto.ts
+    (In PowerShell, $env:DATABASE_URL = '' DELETES the variable and the seeder falls
+     through to Neon — see §41. Spawn with an explicit empty-string env instead.)
+4.  Read the seeder's own last lines before restarting: board span must be
+    20260726..20260905 (42 days), trips 132,570, stop_times 4,175,275, and
+    "integrity: all 9 calendar-active service_id(s) have trips loaded".
+5.  Restart the server. The pattern index cache does NOT need clearing: its key is a
+    content fingerprint over calendar/calendar_dates/trips/stop_times/stops, so a
+    re-seeded board cannot match a stale entry, and writeFileCache prunes the old
+    .gbpx. Budget for one rebuild at the new size — roughly double the 2.15M-row
+    rebuild, since it is linear in stop_times.
+```
+
+A fresh directory (`PGLITE_DIR=.data/pglite4`) instead of an in-place re-seed is the safer shape
+**only** if the observations are copied across first; a new directory starts with an empty
+`trip_delay_obs`, which throws away the only thing in that database we cannot re-download.
+
+### What the Neon re-seed will need when the quota returns
+
+The transfer quota is currently exhausted (§35, §36) and Neon refuses even `SELECT 1`. When it
+returns, three things are true and only the first is comfortable:
+
+1. **Time.** The windowed board took **622.7 s** over Neon against 40.2 s on PGlite. The
+   complete board is 1.94x the rows, so budget **~20 minutes**, with the pool at `max: 4` and
+   1000-row multi-row INSERTs unchanged. Run it once, with `GHOSTBUS_SEED_SKIP_DOWNLOAD=1` so
+   the board Neon receives is provably the board verified here.
+2. **Storage, and this is the hard one.** The complete board is **669.7 MiB** of relations
+   against 357.5 MiB windowed. That does not fit in a 0.5 GiB free-tier project. Confirm the
+   plan's current storage allowance before starting, because the honest options if it is still
+   0.5 GiB are all uncomfortable: pay for a tier, or drop `idx_stop_times_stop_dep` and rebuild
+   it after (indexes are 372.8 MiB of the 642.9 MiB `stop_times` total), or run production on a
+   deliberately truncated board **with the `boardIntegrity` gate visibly firing on the missing
+   days**. Narrowing the seed window quietly is the one option that is not available: that is
+   the defect this section fixed.
+3. **Transfer.** A pattern-index rebuild reads the whole board — 143.70 MiB at 2.15M rows
+   (§36), so **~279 MiB** at 4.18M. The §36 index cache means a boot no longer pays it, but the
+   first build after the re-seed does, and so does every 6-hourly refresh that finds a new
+   fingerprint. Seeding plus one rebuild is on the order of half a gigabyte of transfer; plan
+   the re-seed for the start of a quota window, not the end of one.
+
+### Documentation that still describes the removed flag
+
+Not edited here because this workstream owns only `seed_toronto.ts`, its tests, and this file:
+`.env.example:49-52`, `README.md:341-343`, `DEVPOST.md:841-847`, and §3 above all still present
+`GHOSTBUS_SEED_WINDOW_DAYS` as live. Setting it now does nothing at all. Those four places
+should be corrected by whoever owns them; this section is the authority in the meantime.
+
+## §44 — Demo Mode is wired: two clocks, one namespace, and the bug that made it report itself dead
+
+`server/src/demo.ts` and `server/src/record_demo.ts` shipped in an earlier wave with tests
+and an honesty contract, and with a header admitting they wired into nothing. This entry is
+the wiring, and the three decisions it forced.
+
+### The wiring is one line, on purpose
+
+```ts
+const source = demoRequested() ? await bootDemoSource() : undefined;
+const poller = createPoller(db, { source });
+```
+
+`PollerSource` carries four things — the bytes, the clock, the poll cadence and the agency
+namespace — and nothing else in `poller.ts` branches on the mode. That is the spec's
+"identical pipeline" made structural rather than promised: there is exactly one place where
+a demo process differs from a live one, and it is the fetch layer.
+
+### 1. The bug: the obvious wiring makes the app report itself dead
+
+`demo.ts`'s own header suggested:
+
+```ts
+// inside fetchFeed(key), before any network call:
+if (isDemoActive()) return activeDemoSource()!.fetchFeed(key);
+```
+
+That returns before `markOk(st, now)`. `markOk` is the only writer of `lastOkMs` and
+`lastPollAtMs`, so with it skipped, `refreshStaleness` walks all three feeds to `down`
+(`lastOkMs == null`), and `/api/health` — whose `ok` is *some feed is ok* — answers
+`ok:false, lastPollAtMs:null` while the process is serving a complete recorded snapshot of
+1,157 buses. The app declares itself dead at the exact moment it is proving it is not.
+
+The fix is placement, not logic: the recorded branch sits **inside** `fetchFeed`, after the
+backoff check, and falls through the same `markOk`. Health bookkeeping is about our own
+poll loop — did a snapshot arrive just now — and on a recording one genuinely did.
+`mode:'demo'` in the same payload is what stops that from reading as "live". Verified: the
+real `/api/health` now answers `ok:true` with all three feeds `ok` under replay.
+
+One deliberate asymmetry: a recorded **failure** frame replays once and the recording moves
+on, with no exponential backoff. Backoff is a politeness protocol with a live server; the
+frames are already laid out in time, and a 5-minute wall backoff at 8x would skip ~53
+recorded minutes — turning a faithfully reproduced 45-second hiccup into a hole the
+original never had.
+
+### 2. Two clocks, because a recording is bytes *and* the moment they were taken
+
+The poller now reads a WALL clock (backoff, feed staleness, `lastPollAtMs` — "is our loop
+alive") and a DATA clock (`dataNow()`: service date, the ghost due window, the engine's
+`nowMs`, retention — "what moment does this snapshot describe"). Live they are the same
+function. On a recording `dataNow()` is the capture instant of the frame being replayed.
+
+This is not cosmetic. `computeDue` selects static trips whose scheduled start is 6–30
+minutes ago. Judged against the wall clock, every trip in a recording taken an hour earlier
+is outside that window, the entire calendar-active board reads as due-but-absent, and the
+mass-ghost breaker fires on 100% of it. Demo Mode's failure mode is not a blank screen, it
+is **a confident claim that the whole network has been cancelled** — the single worst thing
+this codebase could output. Proven the other way in `poller_demo.test.ts`: a trip seeded 10
+minutes before the capture instant is found due (`due=1`) on the data clock; on the wall
+clock, now hours past the capture, it cannot be.
+
+`DemoFrame.slotMs` was added for the same coherence reason. A frame's `offsetMs` is when
+its response *finished arriving*, so it carries 0.3–1.5 s of the recorder's own fetch
+latency. Selecting frames by it puts every frame just past the cadence tick a replaying
+poller lands on, shifting the replay a frame late and serving frame 0 twice per loop. The
+recorder polls on a grid it re-anchors every cycle, so `seq * cadenceMs` is the frame's
+intended position and network luck is not. `capturedAtMs` still carries the true instant —
+it is the provenance, it is just not the clock.
+
+### 3. Isolation: a separate agency namespace, not a separate database
+
+The spec's anti-blend rule is absolute, so it had to be enforced by something other than
+discipline. Three options were live:
+
+- **A separate database.** Structurally perfect and operationally useless: the demo needs
+  the seeded static board (2.15M `stop_times`), so a second database means a second 46 s
+  seed and a second Neon instance in the deploy — precisely the moving parts that will not
+  exist on the day the live feed is down.
+- **An in-memory overlay.** Reads must fall through to the shared board while writes and
+  their read-backs do not, which is a small database. Rejected on cost.
+- **A separate agency namespace.** Chosen. Every observation table is keyed `(agency, …)`
+  and every read is already agency-filtered, so tagging demo rows `ttc-demo` makes the rule
+  a property of the primary keys. Neither mode can see the other's rows even by accident.
+
+The static board is read under `ttc` in both modes, and that is not a leak: a schedule is
+not an observation, there is one published board, and a recording is a recording *of* it.
+The pattern-index cache is likewise shared — it is a pure function of the static board,
+contains nothing realtime-derived, and is keyed by board fingerprint.
+
+`createDelayEngine(db, agency, writeAgency = agency)` gained one defaulted parameter to
+express the same split: two static call sites keep `agency`, thirteen runtime ones move to
+`writeAgency`. The live path is byte-identical by construction.
+
+Two consequences fell out:
+
+- **`retention()` had no agency filter at all** — `DELETE FROM trip_delay_obs WHERE ts < $1`.
+  Harmless while one namespace existed; a demo process would have pruned live observations
+  on its first cycle. Now scoped, and pinned by a test that seeds a 7-month-old live row.
+- **Aggregation is skipped in demo mode.** `runAggregation` rebuilds `agg_delay` for the
+  live agency; a recorded-replay process must not rewrite live aggregates, and a ten-minute
+  recording could not honestly fill a fourteen-day window anyway. Demo arrivals therefore
+  fall back to schedule-only ETAs with `bucket:'none'` — the truthful answer to "what does
+  history say" when there is no history, and not something wave 2 should paper over.
+
+### What was deliberately NOT built: a runtime toggle
+
+The spec offers Demo Mode when the live feed is unreachable or the URL says `?demo=1`.
+Mode is nonetheless decided once, at boot (`--demo` / `GHOSTBUS_DEMO=1`), and `demo.ts`'s
+latch keeps it irreversible. A running poller holds in-memory state — positions, live
+predictions, engine bindings — that a mid-flight switch would leave as a blend of live and
+recorded, under one badge, in one session. Serving `?demo=1` from a single process means
+two poller instances and a per-request selection in `api.ts`; that is a real design, it is
+not this one, and pretending otherwise in a footnote would be worse than saying so here.

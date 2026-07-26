@@ -22,20 +22,31 @@
 //    exactly what the TTC published during the capture window.
 // ==============================================================================
 //
-// WIRING (for the integration agent — this module wires into nothing by itself):
-//   const fixture = await loadFixture('fixtures/ttc-demo-<stamp>.json.gz');
-//   const source  = createDemoSource(fixture, { speed: 8, loop: true });
-//   activateDemoMode(source);
-//   // then, inside poller.ts fetchFeed(key), before any network call:
-//   //   if (isDemoActive()) return activeDemoSource()!.fetchFeed(key);
-//   // The returned object is `{ status:'ok', msg }` / `{ status:'error', reason }`,
-//   // structurally identical to what fetchFeed already returns.
+// 4. THE DATA CLOCK MOVES WITH THE DATA. A demo source is not just bytes, it is bytes
+//    *and the moment they were taken*. `dataNow()` returns the capture instant of the
+//    frame being replayed, and the poller runs its whole cycle on it. Judging a recording
+//    against the wall clock is not a cosmetic error: every trip in the recording would be
+//    scheduled hours ago, absent from the current due window, and the ghost detector would
+//    declare the entire network dead. See poller.ts, "TWO CLOCKS".
+// 5. DEMO ROWS LIVE IN THEIR OWN NAMESPACE. Everything a demo process writes is tagged
+//    `agency = 'ttc-demo'` (DEMO_AGENCY). The static schedule is read under 'ttc' because
+//    a schedule is not an observation and there is only one published board. Rule 1 is
+//    thereby enforced by the primary keys, not by convention.
+//
+// WIRING:
+//   const source = await loadDemoSource();          // newest bundled fixture, 8x, looping
+//   const poller = createPoller(db, { source });    // that is the entire integration
+// `createPoller` needs nothing else: the source carries the bytes, the clock, the cadence
+// and the namespace, and the poller never asks which mode it is in.
 
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { gunzipSync } from 'node:zlib';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import GtfsRealtimeBindings from 'gtfs-realtime-bindings';
 import type { FeedId } from '../../shared/types.ts';
 import type { DemoFixtureFile, DemoManifest, RecordedFrame } from './record_demo.ts';
+import type { DemoModeInfo, PollerSource } from './poller.ts';
 
 const { transit_realtime } = GtfsRealtimeBindings;
 
@@ -45,11 +56,31 @@ type FeedMessage = ReturnType<typeof transit_realtime.FeedMessage.decode>;
 export const SUPPORTED_SCHEMA_VERSIONS = [1];
 export const FIXTURE_KIND = 'ghostbus-demo-fixture';
 export const DEFAULT_SPEED = 8;
+/**
+ * The namespace every row a demo process writes is tagged with. Deliberately NOT 'ttc':
+ * one SELECT that forgets a WHERE clause is all it would take to publish recorded history
+ * as live measurement, and there is no such SELECT if the rows are not there.
+ */
+export const DEMO_AGENCY = 'ttc-demo';
+/** Where bundled fixtures live, relative to this file. */
+const FIXTURES_DIR = fileURLToPath(new URL('../../fixtures/', import.meta.url));
 
 /** A recorded frame with its payload already base64-decoded back to bytes. */
 export interface DemoFrame extends Omit<RecordedFrame, 'payloadBase64'> {
   /** Raw GTFS-realtime protobuf bytes. null on a frame that recorded a failed poll. */
   bytes: Buffer | null;
+  /**
+   * The frame's slot on the replay timeline: `seq * cadenceMs`, NOT its raw `offsetMs`.
+   *
+   * `offsetMs` is the instant the response finished arriving, so it carries the recorder's
+   * own fetch latency — 0.3 s to 1.5 s, different every cycle. Selecting frames by it puts
+   * every frame just past the cadence tick a replaying poller lands on, which shifts the
+   * whole replay one frame late and serves frame 0 twice per loop. The recorder polls on a
+   * fixed grid it re-anchors every cycle (no drift), so `seq` is the frame's intended
+   * position and network luck is not. The true capture instant is still carried, unaltered,
+   * on `capturedAtMs` — it is the provenance, it is just not the clock.
+   */
+  slotMs: number;
 }
 
 export interface DemoFixture {
@@ -92,7 +123,10 @@ export function parseFixture(gz: Buffer): DemoFixture {
     if (typeof f.offsetMs !== 'number' || !Number.isFinite(f.offsetMs)) fail(`frame ${i} has no offsetMs`);
     if (f.ok && !f.payloadBase64) fail(`frame ${i} is marked ok but carries no payload`);
     const { payloadBase64, ...rest } = f;
-    return { ...rest, bytes: payloadBase64 ? Buffer.from(payloadBase64, 'base64') : null };
+    // A fixture written before `seq` was trustworthy falls back to the raw offset rather
+    // than being rejected: a slightly-shifted replay beats no replay.
+    const slotMs = Number.isFinite(f.seq) && f.seq >= 0 ? f.seq * manifest.cadenceMs : f.offsetMs;
+    return { ...rest, slotMs, bytes: payloadBase64 ? Buffer.from(payloadBase64, 'base64') : null };
   });
 
   const byFeed: Record<FeedId, DemoFrame[]> = { vehicles: [], trips: [], alerts: [] };
@@ -102,16 +136,38 @@ export function parseFixture(gz: Buffer): DemoFixture {
     bucket.push(f);
   }
   for (const id of Object.keys(byFeed) as FeedId[]) {
-    byFeed[id].sort((a, b) => a.offsetMs - b.offsetMs);
+    byFeed[id].sort((a, b) => a.slotMs - b.slotMs);
   }
 
-  const maxOffset = frames.reduce((m, f) => Math.max(m, f.offsetMs), 0);
-  return { manifest, frames, byFeed, timelineMs: maxOffset + manifest.cadenceMs };
+  const maxSlot = frames.reduce((m, f) => Math.max(m, f.slotMs), 0);
+  return { manifest, frames, byFeed, timelineMs: maxSlot + manifest.cadenceMs };
 }
 
 /** Load a fixture from disk (gzipped JSON produced by record_demo.ts). */
 export async function loadFixture(path: string): Promise<DemoFixture> {
   return parseFixture(await readFile(path));
+}
+
+/**
+ * Which fixture a demo process replays: `GHOSTBUS_DEMO_FIXTURE` if set, otherwise the
+ * lexicographically last `fixtures/*.json.gz`. The recorder's filenames are
+ * `ttc-demo-YYYYMMDD-HHMM.json.gz`, so "last by name" is "most recent capture" — and it
+ * is a pure function of the directory contents, which "most recently modified" is not
+ * (a checkout or a copy rewrites mtimes and would silently change which demo ships).
+ */
+export async function resolveFixturePath(): Promise<string> {
+  const override = process.env.GHOSTBUS_DEMO_FIXTURE?.trim();
+  if (override) return resolve(override);
+  let names: string[];
+  try {
+    names = (await readdir(FIXTURES_DIR)).filter((n) => n.endsWith('.json.gz')).sort();
+  } catch (e) {
+    throw new Error(`demo: cannot read ${FIXTURES_DIR} (${e instanceof Error ? e.message : String(e)})`);
+  }
+  if (names.length === 0) {
+    throw new Error(`demo: no fixture in ${FIXTURES_DIR} — record one with: npm run record:demo`);
+  }
+  return resolve(FIXTURES_DIR, names[names.length - 1]);
 }
 
 // ---------- replay clock (pure math, exported so it is directly testable) ----------
@@ -171,8 +227,10 @@ export interface DemoSourceOptions {
   loop?: boolean;
   /** Wall clock at which replay began. Defaults to now. */
   startedAtMs?: number;
-  /** Injectable clock, for tests. */
+  /** Injectable WALL clock, for tests. Never the data clock — that comes from the frames. */
   now?: () => number;
+  /** Recorded provenance for the UI; purely informational. */
+  fixturePath?: string;
 }
 
 interface DemoFetchBase {
@@ -193,7 +251,11 @@ export interface DemoFetchError extends DemoFetchBase {
 /** Structurally matches the live poller's fetchFeed result, plus demo labelling. */
 export type DemoFetchResult = DemoFetchOk | DemoFetchError;
 
-export interface DemoSource {
+/**
+ * A recorded replay, shaped as a `PollerSource` so `createPoller(db, { source })` is the
+ * whole integration. The extra members beyond PollerSource are for tests and diagnostics.
+ */
+export interface DemoSource extends PollerSource {
   readonly isDemo: true;
   readonly manifest: DemoManifest;
   readonly speed: number;
@@ -211,12 +273,13 @@ export function createDemoSource(fixture: DemoFixture, options: DemoSourceOption
   const loop = options.loop ?? true;
   const now = options.now ?? (() => Date.now());
   const startedAtMs = options.startedAtMs ?? now();
+  const fixturePath = options.fixturePath ?? null;
   if (!(speed > 0)) throw new Error(`demo: speed must be positive, got ${speed}`);
 
   const offsets: Record<FeedId, number[]> = {
-    vehicles: fixture.byFeed.vehicles.map((f) => f.offsetMs),
-    trips: fixture.byFeed.trips.map((f) => f.offsetMs),
-    alerts: fixture.byFeed.alerts.map((f) => f.offsetMs),
+    vehicles: fixture.byFeed.vehicles.map((f) => f.slotMs),
+    trips: fixture.byFeed.trips.map((f) => f.slotMs),
+    alerts: fixture.byFeed.alerts.map((f) => f.slotMs),
   };
 
   function position(): ReplayPosition {
@@ -251,7 +314,95 @@ export function createDemoSource(fixture: DemoFixture, options: DemoSourceOption
     }
   }
 
-  return { isDemo: true, manifest: fixture.manifest, speed, loop, fetchFeed, position, currentFrame };
+  /**
+   * The DATA clock: the capture instant of the frame currently being replayed, derived
+   * from the replay position rather than read off a frame, so all three feeds agree on
+   * "now" even when their frames were written milliseconds apart.
+   */
+  function dataNow(): number {
+    return fixture.manifest.captureStartMs + position().timelineMs;
+  }
+
+  function describe(): DemoModeInfo {
+    const p = position();
+    const m = fixture.manifest;
+    return {
+      fixturePath,
+      recordedNotice: m.recordedNotice,
+      attribution: m.attribution,
+      captureStartMs: m.captureStartMs,
+      captureEndMs: m.captureEndMs,
+      captureStartToronto: m.captureStartToronto,
+      captureEndToronto: m.captureEndToronto,
+      cadenceMs: m.cadenceMs,
+      speed,
+      loop,
+      positionMs: p.timelineMs,
+      loops: p.loops,
+    };
+  }
+
+  return {
+    mode: 'demo',
+    agency: DEMO_AGENCY,
+    // Poll once per recorded frame: at 8x, a 45s capture cadence is a 5.625s poll. Leaving
+    // the poller on its 45s live cadence would show one recorded frame in every eight and
+    // call it a replay.
+    pollMs: Math.max(1, Math.round(fixture.manifest.cadenceMs / speed)),
+    dataNow,
+    fetch: fetchFeed,
+    describe,
+    isDemo: true,
+    manifest: fixture.manifest,
+    speed,
+    loop,
+    fetchFeed,
+    position,
+    currentFrame,
+  };
+}
+
+/**
+ * The one call a demo process makes: resolve the bundled fixture, build the replay source
+ * at the spec's 8x, and latch this process into Demo Mode. Hand the result to
+ * `createPoller(db, { source })`.
+ */
+export async function loadDemoSource(
+  options: DemoSourceOptions = {},
+): Promise<DemoSource> {
+  const path = options.fixturePath ?? (await resolveFixturePath());
+  const fixture = await loadFixture(path);
+  const source = createDemoSource(fixture, { ...options, fixturePath: path });
+  activateDemoMode(source);
+  return source;
+}
+
+/** `--demo` on the command line, or GHOSTBUS_DEMO=1 in the environment. */
+export function demoRequested(
+  argv: readonly string[] = process.argv,
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return argv.includes('--demo') || env.GHOSTBUS_DEMO === '1';
+}
+
+/**
+ * Load the recorded source and announce it loudly on stdout. Throws when there is no
+ * fixture: a demo that boots with nothing to replay would be worse than one that refuses.
+ */
+export async function bootDemoSource(options: DemoSourceOptions = {}): Promise<DemoSource> {
+  const source = await loadDemoSource(options);
+  const d = source.describe();
+  const mins = ((d.captureEndMs - d.captureStartMs) / 60_000).toFixed(1);
+  console.log('');
+  console.log('  ##  DEMO MODE — replaying a recording. NOTHING here is live.  ##');
+  console.log(`  fixture   ${d.fixturePath}`);
+  console.log(`  captured  ${d.captureStartToronto}  ..  ${d.captureEndToronto}  (${mins} min)`);
+  console.log(`  replay    ${d.speed}x${d.loop ? ', looping' : ''}, ${(source.pollMs / 1000).toFixed(3)}s per recorded frame`);
+  console.log(`  writes    agency='${source.agency}' — no live observation is read or written`);
+  console.log(`  shares    the static GTFS board, and its derived pattern-index cache, under 'ttc'`);
+  console.log(`  ${d.attribution}`);
+  console.log('');
+  return source;
 }
 
 // ---------- the all-or-nothing latch ----------

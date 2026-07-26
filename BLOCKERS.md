@@ -17,7 +17,7 @@ Last reconciled against the source tree, the production database and the running
 | 6 | RESOLVED in code, data purged | The feed publishes no `delay` field at all |
 | 7 | OPEN, mitigated | Realtime and static `stop_id` are disjoint namespaces |
 | 8 | OPEN (feed limitation) | `TripDescriptor` carries no start time, date or direction |
-| 9 | OPEN in the seed, GATED in the engine | The seeded board has no Saturday trips |
+| 9 | RESOLVED in the seed (2026-07-25), gate kept | The seeded board had no Saturday trips |
 | 10 | RESOLVED (gate unchanged, learning fixed) | Crosswalk coverage is below its own publication gate |
 | 11 | RESOLVED for the crosswalk, OPEN for the anchors | The learned crosswalk is not restored across restarts |
 | 12 | OPEN (new risk) | Ghost detection now inherits every binding refusal |
@@ -244,7 +244,7 @@ wire. Direction must be inferred from the stop pattern and must never be read fr
 
 ---
 
-## 9. OPEN in the seed, GATED in the engine (`seed_toronto.ts` is not owned by this workstream) — the seeded board is missing Saturdays and the civic holiday
+## 9. RESOLVED in the seed 2026-07-25 (gate kept) — the seeded board was missing Saturdays and the civic holiday
 
 **The symptom.** `calendar` contains service_id `'2'` with `sat = true`, but **zero trips
 reference it**. Trips per service in the seeded board: `1` = 38,112 (Mon–Fri), `3` = 29,870
@@ -313,6 +313,46 @@ must be derived from the loaded board's own validity span
 (`min(start_date)..max(end_date)` across `calendar`), or at minimum unioned with it, so that a
 service the calendar declares active can never lack its trips. Until that runs, this entry
 stays OPEN.
+
+### The seed now derives its window from the board, and all 42 days are complete
+
+Landed 2026-07-25 in `seed_toronto.ts`. The diagnosis above was **confirmed exactly, not
+corrected**: the two windows were the whole cause, and the arithmetic closes to the row.
+
+`GHOSTBUS_SEED_WINDOW_DAYS` is **removed**. The trip/stop_times/shapes filter is now
+`activeServiceIds(calendar, calendar_dates, boardDays(calendar, calendar_dates))`, where
+`boardDays` enumerates `min(start_date)..max(end_date)` across the loaded calendar, widened by
+any `calendar_dates` date outside that span, sampled at Toronto local noon so a DST transition
+cannot shift a day onto its neighbour. The calendar the runtime resolves against and the trips
+the seeder loads are now **the same window by construction**, and that window does not depend
+on the seed date at all. `GHOSTBUS_SEED_FULL=1` still disables the filter entirely; a new
+`GHOSTBUS_SEED_SKIP_DOWNLOAD=1` reuses the extracted feed on disk so a re-seed provably loads
+the same board a running server is already observing.
+
+**Proof, by replay across all 42 board days.** Both boards seeded from the same
+`.data/gtfs/extracted`, on PGlite, download excluded; the old seeder re-run from `HEAD` with
+its default 7-day window as the control:
+
+| | trips | stop_times | shapes | blank board days |
+|---|---:|---:|---:|---|
+| windowed (old default) | 68,401 | 2,151,105 | 1,374 | **7**: 08-01, 08-03, 08-08, 08-15, 08-22, 08-29, 09-05 |
+| board span (new) | **132,570** | **4,175,275** | **1,472** | **0** |
+| published in `trips.txt` | 133,682 | — | — | — |
+
+Every one of the 42 days now matches the published feed exactly — the six Saturdays load
+32,874 trips each and 2026-08-03 loads 31,295, against zero before. The 1,112-trip difference
+from `trips.txt` is services `6702`/`6703`/`6704`, which the feed itself never activates; a
+`GHOSTBUS_SEED_FULL=1` seed would load them and no calendar day would ever reference them.
+
+**The gate stays.** `boardIntegrity` is not redundant now — it is the check that this never
+regresses silently, and it also covers the case this fix cannot: a feed that publishes a
+calendar service with no trips of its own. The seeder now performs the same check at load time
+and prints either `integrity: all N calendar-active service_id(s) have trips loaded` or a named
+warning listing the empty services and the days they would blank.
+
+**Cost, measured on the same machine.** 40.2 s -> **67.2 s** on PGlite (+27 s, and the seed is
+a one-time load), 357.5 MiB -> **669.7 MiB** of Postgres relations. See DECISIONS.md §43 for
+the wave-2 swap procedure and the Neon consequence, which is the one number in this that hurts.
 
 ---
 
@@ -673,6 +713,49 @@ being published — both were audits that would not catch the error they exist t
 a worse failure for this project than a missing feature, which is why it was filed at this
 priority.
 
+## 18. OPEN, filed against `api.ts` and `web/` — Demo Mode is wired server-side and INVISIBLE client-side
+
+The poller now replays the bundled fixture through the identical pipeline and reports
+`mode: 'demo'` honestly (DECISIONS §44). Nothing downstream reads it. Measured against the
+real API, in-process, replaying `fixtures/ttc-demo-20260725-2242.json.gz`:
+
+- **`GET /api/health` carries no mode field.** It answers `ok:true`, all three feeds `ok`,
+  `boardCoverage`, `serverNowMs` — and nothing that distinguishes a recording from live
+  service. `HealthResponse` in `shared/types.ts` has no `mode`. A judge reading the API
+  literally cannot tell. The poller exposes everything needed (`getMode()`, and `mode` on
+  `getFeedHealth()`); it is not surfaced.
+- **`GET /api/vehicles` dates recorded buses against the wall clock.** `serverNowMs` is
+  `Date.now()`, while each `ts` is the recorded ping. Measured on a 4-cycle replay: every
+  vehicle reads **1,297–1,719 seconds stale** (21–29 min). Any UI that greys out or hides a
+  stale vehicle will grey out or hide the entire fleet. `serverNowMs` must come from
+  `poller.now()`.
+- **`api.ts` reads `const AGENCY = 'ttc'`, so it cannot see demo rows.** In the verified run
+  the poller wrote 34 alerts under `ttc-demo` and `/api/alerts` returned **0**. That is the
+  benign shape of this bug, because that database held no live rows. **In the deployed
+  database it is the dangerous shape**: `api.ts` would serve LIVE ghosts, delays and alerts
+  under the amber DEMO badge, which is precisely the blend the spec forbids absolutely.
+
+**This is a blocker on shipping Demo Mode to a judge, not a polish item.** Until `api.ts`
+derives its agency from the poller, a demo instance must not be pointed at a database that
+holds live observations. The server-side half is complete and tested; the client-side half
+is one const, one timestamp and one badge.
+
+## 19. NOTE — the bundled demo fixture captures real service but an inactive board
+
+`fixtures/ttc-demo-20260725-2242.json.gz` is a genuine 9.8-minute capture (42/42 frames ok,
+1,157 vehicles, 1,179 trip updates, 34 alerts per cycle) taken 2026-07-25 22:42–22:52
+Toronto. Its service day is **20260725**, and the loaded board covers **20260726..20260905**
+— so replaying it reproduces today's live `boardActive` suppression faithfully rather than
+showcasing the delay engine. That is honest behaviour, not a defect in the wiring: the demo
+is inert in exactly the way the live app is inert right now (entry 14).
+
+Re-record after the board activates (04:00 Sunday 2026-07-26 Toronto; ~09:00 for real
+daytime service) with `npm run record:demo`. No code change is needed — `resolveFixturePath`
+takes the lexicographically last `fixtures/*.json.gz`, and the recorder's
+`ttc-demo-YYYYMMDD-HHMM` naming makes the newest capture win automatically. On a
+board-active fixture the expected honest suppression reason shifts from `boardActive` to
+`xwalkOccurrenceCoverage` while the crosswalk learns.
+
 ---
 
 ## Cross-document note (not a blocker in this file's own scope)
@@ -680,3 +763,12 @@ priority.
 `DECISIONS.md` §12 and `DEVPOST.md` still describe `server/src/join.ts` as a shipped
 component. Entry 3 records that it is deleted. Those files are owned by other workstreams and
 were not edited here; the contradiction is flagged rather than fixed.
+
+`README.md` ("Not built") states of Demo Mode: *"It is not wired into the poller … So there
+is no working Demo Mode today."* `DEVPOST.md`'s status table says the same
+(**[IN PROGRESS]** — "still not wired into the poller"). Both were true when written and are
+now false: the wiring landed with DECISIONS §44, and `npm run demo` replays the bundled
+fixture through the poller, the engine and the ghost detector at 8x. What remains untrue is
+the *client* half, which is entry 18 above — so the honest replacement is "wired and tested
+server-side; not yet surfaced in the UI", not "working". Those files are owned by other
+workstreams and were not edited here.

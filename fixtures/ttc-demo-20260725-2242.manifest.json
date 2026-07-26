@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "kind": "ghostbus-demo-fixture",
+  "agency": "ttc",
+  "timezone": "America/Toronto",
+  "attribution": "Real-time data from the Toronto Transit Commission (bustime.ttc.ca GTFS-realtime). Contains information licensed under the Open Government Licence – Toronto.",
+  "recordedNotice": "RECORDING of live TTC data captured 2026-07-25 22:42:57 America/Toronto through 2026-07-25 22:52:42 America/Toronto. This is replayed history, not live service.",
+  "captureStartMs": 1785033777177,
+  "captureStartIso": "2026-07-26T02:42:57.177Z",
+  "captureStartToronto": "2026-07-25 22:42:57 America/Toronto",
+  "captureEndMs": 1785034362352,
+  "captureEndIso": "2026-07-26T02:52:42.352Z",
+  "captureEndToronto": "2026-07-25 22:52:42 America/Toronto",
+  "durationMs": 585175,
+  "cadenceMs": 45000,
+  "frameCount": 42,
+  "cycleCount": 14,
+  "totalPayloadBytes": 7365856,
+  "feeds": {
+    "vehicles": {
+      "url": "https://bustime.ttc.ca/gtfsrt/vehicles",
+      "frames": 14,
+      "okFrames": 14,
+      "errorFrames": 0,
+      "totalBytes": 1034410
+    },
+    "trips": {
+      "url": "https://bustime.ttc.ca/gtfsrt/trips",
+      "frames": 14,
+      "okFrames": 14,
+      "errorFrames": 0,
+      "totalBytes": 6213728
+    },
+    "alerts": {
+      "url": "https://bustime.ttc.ca/gtfsrt/alerts",
+      "frames": 14,
+      "okFrames": 14,
+      "errorFrames": 0,
+      "totalBytes": 117718
+    }
+  }
+}
