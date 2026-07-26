@@ -4092,6 +4092,15 @@ Every number either script prints traces to a parameterized, agency-scoped (`'tt
 
 ## §48 — A schedule is not an observation: §45 §7's agency fix overshot, and the limiter was refusing the app itself
 
+> **PARTLY SUPERSEDED (2026-07-26) — see §49.** ONE sentence in §6 below is false and always
+> was: *"anything not positively identifiable as non-API is **limited** — including 404s"*.
+> Unmatched paths bypass the budget entirely, at any exhaustion state — Fastify routes them
+> on a separate internal 404 router that never fires the `onRequest` hook the limiter attaches
+> to, so the `allowList` fallback it describes is never consulted. Everything else in §48 —
+> the agency split, the cross-seam join, the `/api`-only scoping and the `%61pi` encoded
+> bypass, all of it measured — stands unchanged. §49 records the finding, the real exposure,
+> and why the code is deliberately NOT being changed.
+
 Two corrections to §45, both found by testers on the build §45 describes, and both in the same
 file. **§45 is left exactly as written** — it records what was decided and why at the time,
 and the honest way to handle a decision that turned out to be half right is to say so in a
@@ -4283,3 +4292,116 @@ of a 107,385-response 429 storm and eight of a genuinely dead server. What chang
 when either one fails.
 
 334 tests green, both typechecks clean, §F still zero across all eight combinations.
+
+## §49 — Unmatched routes were never rate-limited, the claim that they were is withdrawn, and the code stays as it is
+
+§48 §6 ended with a sentence I wrote with confidence and never tested:
+
+> anything not positively identifiable as non-API is **limited** — including 404s, which is
+> precisely what a scanner generates.
+
+**That is false, and it was false when written.** Two testers found it independently — T2's
+adversarial rerun confirmed it empirically three times and root-caused it in the plugin and
+Fastify sources; T3's docs re-check flagged the same sentence from the other direction. The
+coordinator verified it against the not-found handler before this entry was written.
+
+The §48 marker is scoped to that one sentence. The rest of §48 was measured and stands.
+
+### 1. Why the fallback never runs
+
+Two facts, both read out of `node_modules/` rather than assumed:
+
+* **`@fastify/rate-limit` attaches to `onRequest`** (`index.js`, `const defaultHook =
+  'onRequest'`).
+* **Fastify's 404 handling has a router of its own.** `lib/fourOhFour.js` builds a separate
+  `FindMyWay` instance, commented in the source as *"404 router, used for handling
+  encapsulated 404 handlers"*.
+
+An unmatched request is dispatched by that second router, which never fires the main router's
+`onRequest` chain. **The limiter's hook is not called at all, so the `allowList` callback — and
+therefore the careful fallback branch §48 §6 describes — is never consulted.** The fallback is
+dead code on that path. It is still correct for what it does cover, and it stays, because it
+guards the case where a route *is* matched but the pattern is unavailable.
+
+Note what this does **not** affect: every bypass §48 §6 actually measured was against a
+*matched* route (`/%61pi/stops` resolves to `/api/stops`). Those refusals were real and remain
+real. What was never true is the extra claim layered on top of them.
+
+### 2. The real exposure, per branch
+
+Read off the not-found handler in `server/src/api.ts` (the `app.setNotFoundHandler` block, the
+last handler registered before the server starts). It is a four-branch funnel, and three of the
+four exit cheaply:
+
+| unmatched request | branch | cost |
+|---|---|---|
+| `/api` or `/api/…` | explicit JSON 404 | negligible — no I/O |
+| `/assets/…` or any known asset extension | JSON 404 | negligible — no I/O |
+| non-`GET`/`HEAD`, or no HTML `Accept` **and** has an extension | JSON 404 | negligible — no I/O |
+| a genuine navigation (no extension, or explicit `text/html`) | SPA shell | **`readFileSync(index.html)`, uncached, per request** |
+
+So the unlimited surface is not "the API" and not "the database" — it is a handful of string
+comparisons for anything that looks like an API path, an asset, or a non-navigation, and one
+synchronous file read for anything shaped like a navigation. **A scanner spraying `/admin`,
+`/.env`, `/wp-login.php` hits the last row.** That is the wart: a synchronous read on the event
+loop, once per navigation-shaped 404, with no cache in front of it.
+
+### 3. Why the code is not being changed
+
+This is a deliberate decision, not an oversight deferred for want of time.
+
+**The documented fix would re-break a user-facing bug that was just fixed.** The standard
+pattern for limiting a not-found handler is `preHandler: app.rateLimit()` on
+`setNotFoundHandler`. Applying it means that during an exhausted budget the SPA shell — served
+from exactly that handler for every client-side route — answers **429 instead of the app**.
+That is precisely the failure §48 §5 fixed and T1 verified: a rider who reloads while throttled
+must get GhostBus, which then explains the throttle honestly, rather than raw JSON. **Limiting
+scanner noise does not outrank a rider being able to load the app.** Given the choice, the
+rider wins.
+
+**And the thing being protected is already cheap.** The budget exists to keep the database from
+being made to work hard (§45 §1). Not one of these four branches touches the database. Three do
+no I/O at all. The one that does reads a ~1.2 kB file that the OS page cache will hold.
+
+### 4. Deferred hardening, and where it is tracked
+
+Two viable options, neither shipped:
+
+* **Cache the shell, but not naively.** A boot-time `readFileSync` into a module constant would
+  remove the per-request read — and would reintroduce the **§28** family of failures directly:
+  rebuild the bundle under a running server and every navigation is served a stale `index.html`
+  pointing at hashed assets that no longer exist, i.e. a blank screen with 404s in the console.
+  **§27** is the other half of why that is nasty: the service worker will happily cache whatever
+  the shell URL returns, and hashed URLs are never revalidated, so a stale shell can outlive the
+  server that served it. The viable forms are an **mtime-checked cache** (`statSync` is far
+  cheaper than reading, and it self-heals across a rebuild) or an **async read**, which at least
+  stops blocking the event loop.
+
+  *(Citation corrected while writing this entry: the hand-off that prompted §49 cited "§26" for
+  this failure. §26 is the Vite dev-server config fix, and §27 already records that §26's
+  "production is unaffected" claim was itself measured false. The stale-shell/hashed-asset
+  failure is §28, with §27 supplying the service-worker half. Checked rather than copied —
+  which is the whole subject of this section.)*
+* **A navigation-exempt rate limit on the handler** — limit the three cheap JSON-404 branches,
+  leave the navigation branch unlimited so the shell always loads. This keeps §48 §5's guarantee
+  and removes most scanner traffic, at the cost of a second limiter configuration to keep in
+  step with the first.
+
+**Tracked in `SECURITY.md` §8, "Known open items, in priority order"** — the list this repo
+actually uses for security follow-ups, alongside the Fastify 5 upgrade and the `trustProxy`
+item. It is filed low in that list on purpose: it is a resource wart on an unauthenticated
+cheap path, not an access-control or data-exposure defect.
+
+### 5. The lesson worth keeping
+
+§48 §6 closed with a general rule — *any budget decision keyed on a URL must be keyed on the
+value the router resolved* — and that rule is still right. **What went wrong is the sentence
+next to it: I described the behaviour of a code path I had reasoned about but never exercised.**
+The `%61pi` bypass in the same section was measured, and it was correct. The fallback claim was
+inferred, and it was wrong. A ledger entry that mixes the two teaches a reader to trust both
+equally.
+
+The correction is procedural, not just factual: **a claim about what a hook does needs a probe
+that makes the hook fail to fire, not a reading of the code that registers it.** The
+seam-test lesson in §48 §4 was the same shape — a test that encodes a wrong rule defends the
+defect — and this is that lesson again, one layer up, in prose instead of in a test.

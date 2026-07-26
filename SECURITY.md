@@ -244,8 +244,23 @@ rider.
 3. **Set a Content-Security-Policy.** Either re-enable helmet's CSP with an allowlist
    for the tile host, or add the header in the SPA shell. (§2)
 4. **Bump `vite`** to clear the dev-server advisories. Low risk, low urgency. (§5.3)
+5. **Cache the SPA shell behind an mtime check, or read it async.** Unmatched routes are
+   not rate-limited — Fastify dispatches them on a separate internal 404 router that never
+   fires the `onRequest` hook `@fastify/rate-limit` attaches to, so the limiter's
+   `allowList` is never consulted on that path. Three of the not-found handler's four
+   branches exit as cheap JSON 404s with no I/O; the fourth serves the SPA shell with an
+   uncached `readFileSync` per request, which is what a scanner spraying `/admin`,
+   `/.env` etc. reaches. Deliberately NOT fixed with the documented
+   `preHandler: app.rateLimit()` pattern: that would answer 429 for the shell during an
+   exhausted budget, re-breaking the "the app still loads while throttled" guarantee
+   (DECISIONS §48 §5). A boot-time cache is also ruled out — it reintroduces the
+   DECISIONS §28 stale-shell failure (hashed assets that no longer exist) on a rebuild
+   under a running server. Viable: an mtime-checked
+   cache, an async read, or a navigation-exempt limit on the handler. Lowest priority here
+   because it is a resource wart on an unauthenticated cheap path, not an access-control or
+   data-exposure defect. (DECISIONS §49)
 
-Items 1–3 are in `server/`, which is owned by another workstream; they are recorded
+Items 1–3 and 5 are in `server/`, which is owned by another workstream; they are recorded
 here so the next person to touch that code inherits the list rather than rediscovering it.
 
 ## Reporting a vulnerability
