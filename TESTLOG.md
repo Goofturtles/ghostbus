@@ -917,3 +917,1580 @@ suite passes at **324/324** (`node --import tsx --test "server/src/**/*.test.ts"
 | — | T1/T2 standing adjudication, runtime-neutrality of the diff | Confirmed, not re-run |
 
 **No RED items. No gaps. This pass supersedes `.data/testlog-drafts/T3-delay-pipeline.md` in full.**
+
+# T1 (Functional) — Reliability + Search + Plan (features A/B/C) — DRAFT (not yet appended to TESTLOG.md)
+
+Agent: T1 Functional tester (independent test agent; builder was the reliability/features
+agent, commits `c95f681` "Close the holes the dedupe and the backoff opened, and pin the
+copy in tests" and `49f160a` "Re-shoot the flow evidence against the post-review build" —
+differs, per VERIFICATION.md)
+Build under test: HEAD `4b0d12f6152291aa47b8efb5b9e002319f98c2ab` at test time (the one
+commit ahead of `49f160a`/`c95f681` is `e55033a`→…→`4b0d12f`, all documentation/TESTLOG
+changes to the unrelated delay-pipeline feature — confirmed via `git show --stat` that none
+of it touches `web/src/**`, `server/src/api.ts`, `server/src/poller.ts`, or `server/src/demo.ts`,
+so this build is current for A/B/C). Production web build: `npx vite build` (succeeded,
+102 modules, `dist/`). Server run via the project's real production entrypoint
+(`node --import tsx server/src/server.ts`; there is no separate compiled server — `npm run
+build` only runs `tsc --noEmit` for the server side — so this matches how `npm start` runs
+in production and is the same lens the delay-pipeline T1 entry used).
+
+## Setup (own throwaway everything — never touched :8799 or any other agent's dir)
+
+```
+npx vite build
+# -> dist/ built, 102 modules
+
+DATABASE_URL= PGLITE_DIR=C:/Users/arjun/Music/Documents/Desktop/Website/ghostbus/.data/pglite-ft1 \
+  GHOSTBUS_SEED_SKIP_DOWNLOAD=1 node --import tsx server/src/seed_toronto.ts
+# -> .data/ft1-artifacts/seed.log (68.9s, driver=pglite, 233 routes, 9,361 stops,
+#    132,570 trips, 4,175,275 stop_times, board 20260726..20260905 -- complete board)
+```
+
+All server instances run on **my own port 9301** (never 8799), via my own disposable
+in-process-SIGINT wrapper `.data/ft1-artifacts/run_server.mjs` (same pattern the
+delay-pipeline T1 entry documented: Windows does not deliver a real external signal to a
+console-less background Node process here, so the wrapper dynamically `import()`s the real,
+unmodified `server/src/server.ts` and calls `process.emit('SIGINT')` in-process when a
+sentinel file appears, so `server.ts`'s own real shutdown handler runs). Every stop in this
+session used this wrapper — no hard kill anywhere, and every stop was integrity-checked
+before the next server touched the directory:
+
+```
+node --import tsx .data/ft1-artifacts/run_server.mjs server/src/server.ts .data/ft1-artifacts/STOP_FT1
+```
+
+`run_server.mjs` also optionally (`FT1_BLOCK_TTC=1`) monkeypatches `globalThis.fetch`
+**before** importing `server.ts` so requests to `bustime.ttc.ca` fail while everything else
+passes through unchanged — this exercises the real `poller.ts` `fetchFeed()` code path for a
+genuine feed outage without touching any OS-level network/DNS/firewall setting and without
+touching any other process (verified: only this process's own `globalThis.fetch` is patched).
+
+Browser: real Chrome via Playwright (`npx`-cached `playwright` package, resolved through
+`NODE_PATH` since it isn't a project dependency; `chromium.launch({ channel: 'chrome' })` —
+the cached bundled chromium build was a headless-shell-only mismatch, confirmed by a failed
+launch first, so system Chrome (`C:\Program Files\Google\Chrome\Application\chrome.exe`) is
+used throughout, per the assignment). Geolocation spoofed via `context.setGeolocation`:
+Toronto `{43.6511, -79.3832}` for all located flows, Mississauga `{43.5890, -79.6441}` for
+the out-of-coverage check. Every script asserts `document.body.innerText.length > 200`
+before trusting any other probe (VERIFICATION.md's "assert the app rendered" rule) — this
+caught nothing red on its own, but it did catch a **methodology mistake of my own** (see the
+"Instrument trap I hit and fixed" note under Feature A) that would otherwise have produced a
+false PASS.
+
+My disposable driver scripts (gitignored under `.data/`, not app code): `ft1_search_plan.cjs`
+(Search + Plan), `ft1_attribution.cjs` (429 storm/recovery/locale, feed-down, demo),
+`ft1_unreachable.cjs` (server-goes-away-under-an-open-tab). Each was independently reviewed
+by a code-reviewer subagent before use (not the builder) and every finding it raised was
+either fixed (see below) or was a latent-risk note that did not actually affect the runs
+performed.
+
+---
+
+## FEATURE B — Search — GREEN
+
+Real `<input>`, `⌘K`/`/` shortcuts, debounced live results with distance + next-departure
+chips, keyboard nav, selection navigates (stop changes + map focuses), recents persist.
+
+### Assertions checked (all against a rendered, asserted DOM — `ft1_search_plan.cjs search`)
+
+1. **`/` opens** the sheet from neutral focus (clicked body first, so it isn't just reusing
+   focus already inside a field) — `searchOpen: true`. **`Escape` closes it** —
+   `searchOpen: false`. **`Control+K` opens it** again — `searchOpen: true`.
+2. **Real debounced results, live from `/api/stops`.** Typing "union" produced 12 real rows
+   (`s02-search-results.png`), sorted by real distance from the spoofed Toronto fix — `630 m
+   away` .. `710 m away` for the six actual Union Station-area platforms, then a hard jump to
+   `9.8 km` / `24.4-24.5 km` for unrelated "Union"-named stops across the city (Port Union
+   Rd) — proving the distances are genuinely measured, not decorative.
+3. **Next-departure chip, debounced, on the highlighted row only.** First measured wait
+   (1800ms) showed `chipCount: 0` — investigated rather than assumed broken: a standalone
+   timing probe found the chip's own `/arrivals?windowMin=1440` query took ~2.2s against the
+   full seeded board (`node -e` timing check, printed `elapsed ms 2272`), so 1800ms was
+   short. Re-run at 4000ms: `chipCount: 1`, chip text `"1 1:28 PM"` — a real route badge +
+   real clock time for the highlighted stop's actual next departure.
+4. **Keyboard nav.** `ArrowDown, ArrowDown, ArrowUp` on the 12-row list moved the active
+   index `0 -> 1 -> 2 -> 1` exactly.
+5. **Enter selects, closes the sheet, and genuinely navigates.** Chosen row: "Union Station -
+   Northbound Platform Towards Finch". After Enter: `searchOpen: false`, stop header updated
+   to that exact name, tab reads "Nearby". **Map visibly re-focused**: `s01-loaded.png` (before)
+   shows Richmond St West/York St with the 501 streetcar; `s03-after-selection.png` (after)
+   shows a completely different part of the city (Victoria St / Berczy Park area), a fresh
+   beaded walk path from "You" to the new stop marker, and the real Line 1 loop geometry —
+   this is the map's own `frameCamera()` effect keyed on `boarding?.id`
+   (`web/src/map/MapCard.tsx:1202-1206`), confirmed both in source and visually.
+6. **Recents persist**, immediately (reopening the sheet showed "Union Station - Northbound
+   Platform Towards Finch" as the top row, `s04-recents-open.png`) and **across a full page
+   reload** (`localStorage['gb.recents']` inspected directly, then the page was reloaded and
+   the sheet reopened: same row, same order, `s05-recents-after-reload.png`).
+
+### Artifacts
+`s01-loaded.png`, `s02-search-results.png`, `s02b-chip-check.png` (chip-timing recheck),
+`s03-after-selection.png`, `s04-recents-open.png`, `s05-recents-after-reload.png`,
+`search-results.json`.
+
+**Verdict: GREEN.** Every listed Search behaviour was observed working with a stored
+artifact, including the one I initially mis-measured (chip debounce) — re-verified rather
+than reported as broken once the real cause (a slow query, not a missing feature) was found.
+
+---
+
+## FEATURE C — Plan — GREEN
+
+Single-ride planner: reachable trip -> real legs with honest ETAs; unreachable -> the
+transfer message with NO route-like geometry on the map; recents persist.
+
+### Assertions checked (`ft1_search_plan.cjs plan`, same rendered/asserted session)
+
+Destination rows are chosen by row **index 0** deliberately (a code-reviewer subagent
+caught that my first draft pressed an unnecessary extra `ArrowDown` before `Enter`, since
+`SearchSheetOpen` already defaults `active` to `0` on every query change
+(`SearchSheet.tsx:93,198,200`) — re-run with the fix and the exact chosen destination name
+logged both times, below).
+
+1. **Reachable: real legs, honest ETA.** Destination "Union Station - Northbound Platform
+   Towards Vaughan Metropolitan Centre" (Stop 13815, real coordinates, independently
+   confirmed via `/api/plan` returning `outcome:'ride', candidates:14` for this exact
+   from/to pair before the browser test ever ran). Result: **3 legs** (walk / ride / walk),
+   `plan-total`: "About 9 min door to door", `plan-arrive`: "Arrive around 1:53 PM" — real
+   clock arithmetic, not placeholders. Evidence line: `grade= "—"` /
+   `evidence= "schedule only — not enough live history yet"` — matches `eta.untrackedMark`
+   / `eta.scheduleOnly` verbatim (`web/src/i18n/en.ts:103,109`): an **honest** ETA (this
+   route/stop hasn't cleared the coverage gate yet, so the app says so rather than
+   fabricating a grade) — not a bug, exactly the behaviour the spec asks for.
+   `walkNodes(map)=1` — the map drew a real beaded walk path + walker marker
+   (`s06-plan-ride.png`: "You" -> purple dotted line -> "Osgoode Station" board pin).
+2. **Plan recents populate on clear.** Clearing the destination showed "Union Station -
+   Northbound Platform Towards Vaughan Metropolitan Centre" under Recent Trips
+   (`s07-plan-idle-recents.png`).
+3. **Unreachable: honest transfer message, and independently confirmed via source that this
+   ISN'T route-like geometry.** Destination "Aberfoyle Cres at Islington Ave (Islington
+   Station)", 11.3 km away — independently confirmed via direct `/api/plan` call beforehand
+   that this exact coordinate returns `outcome:'transfer', candidates:0`. Result:
+   `stateTitle: "This trip needs a transfer"` (matches `plan.transferTitle` verbatim),
+   `planMaps: true` (the "Open in a maps app" destination-only deep link is present).
+   **`walkNodes(map)=0`** — same map view as the ride case (same "You" position, same
+   Osgoode Station label still visible in the frame) but the purple beaded path and walker
+   marker are both **gone** (`s08-plan-transfer.png` vs `s06-plan-ride.png`, side by side) —
+   this is the exact regression `PlanView.tsx:127-143` documents fixing ("the flow harness
+   caught `walkNodes = 1` on the transfer screen"); I independently reproduced the
+   before/after contrast rather than trusting that comment.
+4. **Recents persist across reload, and correctly cap/order.** After the reload, Plan Recent
+   Trips showed **both** trips, most-recent-first: "Aberfoyle Cres at Islington Ave
+   (Islington Station)", "Union Station - Northbound Platform Towards Vaughan Metropolitan
+   Centre" (`s09-plan-recents-after-reload.png`).
+
+### Artifacts
+`s06-plan-ride.png`, `s07-plan-idle-recents.png`, `s08-plan-transfer.png`,
+`s09-plan-recents-after-reload.png`, `plan-results.json`.
+
+**Verdict: GREEN.** Every listed Plan behaviour observed working with a stored artifact,
+including a genuine before/after visual contrast for the "no route-like geometry" claim
+(not just a DOM-count number).
+
+---
+
+## FEATURE A — Honest error attribution — RED (see the demo-mode finding; the three named
+copy states are individually GREEN)
+
+Three states: **ours** (429/5xx/unreachable -> "catching up", never blames TTC), **theirs**
+(health.feeds-driven feed-down copy), **demo** (amber badge off health.mode). Plus the
+out-of-range-location honesty check named in the assignment's METHOD section.
+
+### (a) OURS — 429 storm, unreachable, self-recovery, all 3 locales — GREEN
+
+`ft1_attribution.cjs storm` against my own instance:
+
+1. **Real 429, forced.** A same-origin `fetch` burst from inside the page (not a
+   cross-process flood) hit the real limiter: **570 requests sent, first 429 at request
+   #569**, body `{"statusCode":429,"kind":"rateLimited",...,"retryAfterSec":51,"limit":600}` —
+   confirms the documented `GLOBAL_MAX_PER_MIN=600` from `server/src/api.ts:538` for real,
+   not from reading the comment.
+2. **English**: pill "Catching up", banner "GhostBus is catching up — retrying
+   automatically" (`a02-throttled-en.png`). **Never mentions TTC.**
+3. **Locale switching, done through the real Settings UI** (`.profile-btn` ->
+   `.segmented button:has-text(...)`), **not a page reload** — see the instrument-trap note
+   below for why. **fr-CA**: "Rattrapage en cours / GhostBus rattrape son retard — nouvelle
+   tentative automatique" (`a03-throttled-frCA.png`). **es**: "Poniéndose al día / GhostBus
+   se está poniendo al día — reintentando automáticamente" (`a04-throttled-es.png`). Neither
+   locale's string matches an agency-blame pattern in any of the three languages' actual
+   dictionary strings for `TTC`/`Flux`/`Fuente`.
+4. **Self-recovery, no reload, no click.** Switched back to English via the same UI, then
+   waited ~65s untouched: pill read **"Live"** again on its own (`a05-recovered.png`) —
+   confirms the shared backoff (`web/src/hooks/useLive.ts`, capped 60s + jitter) genuinely
+   clears itself.
+5. **Unreachable (server fully gone, not just throttled), under an already-open tab.**
+   Separate script (`ft1_unreachable.cjs`): loaded the app with the server up
+   (`a12-before-unreachable.png`, pill "Live"), then wrote the sentinel file myself so
+   `run_server.mjs` fired a genuine in-process `SIGINT` — a graceful stop, not a hard kill,
+   used deliberately here too even though the assignment allows a hard kill for this state,
+   because a graceful stop produces the identical client-visible symptom (connection
+   refused) with zero risk to the PGlite directory. Waited 20s with the SAME tab, no
+   reload: "Catching up / GhostBus is catching up — retrying automatically"
+   (`a13-unreachable.png`) — same honest family as the throttled case, still never naming
+   the agency.
+6. **Static i18n audit, all 3 locales** (`grep` across `web/src/i18n/{en,frCA,es}.ts`):
+   `status.catchingUp` / `catchingUpDetail` / `empty.apiDownTitle` / `apiDownBody` /
+   `apiDownThrottled` never contain the agency's name or an agency-blaming phrase in any of
+   the three files. (`apiDownThrottled`'s English string is in fact the strongest possible
+   converse proof: *"...It will resume by itself in a moment — the TTC feed is fine."* — it
+   explicitly absolves the agency.)
+
+**Instrument trap I hit, and fixed, rather than reporting a false result around it:** my
+first draft flipped locale via `localStorage.setItem('gb.lang', ...) + page.reload()` while
+still inside the closed rate-limit window. That reload came back with **every DOM probe
+empty** — which, per VERIFICATION.md's own warning ("a 429 page scores a perfect zero"), is
+exactly the trap: I verified directly (`node -e` raw fetch) that **`GET /` (the static app
+shell) is covered by the same global 600/min limiter** — `@fastify/rate-limit` is registered
+globally with no per-route exemption for `@fastify/static`, so a hard reload during a closed
+window gets a bare `{"statusCode":429,...}` JSON body instead of the app shell. This is a
+**real, reproducible, separate finding** and worth naming to the builder even though it
+isn't literally one of the three assigned attribution states — a rider who force-reloads (not
+just leaves the tab open, which is what "catching up" is designed for and does correctly)
+during a throttle window would see a raw unstyled JSON error, not the in-app copy. I did not
+let this stand as a "PASS" on a broken probe: I re-ran the locale checks via the in-app
+Settings UI instead (no reload needed, matches how a rider would actually switch languages),
+which produced the real evidence above. Repro: `node -e` script hitting `/api/health` 601x
+then `GET /` -> `429 application/json`, output not separately saved as a file but reproduced
+live and is trivially re-creatable from the command in this paragraph.
+
+### (b) THEIRS — feed-down, real poller code path, all 3 locales — GREEN
+
+Own instance restarted with `FT1_BLOCK_TTC=1` (my harness monkeypatches `globalThis.fetch`
+for `bustime.ttc.ca` only, before importing the real unmodified `server.ts` — verified in
+`server-feeddown.log`: `[poller][cycle 1] vehicles error: FT1-INJECTED: simulated TTC feed
+unreachable...`, repeating identically for `trips`/`alerts` every cycle). Waited for **3
+full sustained cycles** (9 injected failures) of real wall-clock time before trusting the
+probe — confirmed via `/api/health`: `ok:false`, all three feeds `status:"down"`,
+`mode:"live"` (not demo), `lastPollAtMs:null` — this is the genuine server-side condition,
+not a guess.
+
+`ft1_attribution.cjs feeddown`:
+- **en**: pill "Scheduled", banner **"TTC feed unreachable — showing scheduled times."**
+  (`a06-feeddown-en.png`) — correctly names the agency, because this is the one state
+  permitted to.
+- **fr-CA**: "À l'horaire / Flux TTC injoignable — affichage des horaires prévus."
+  (`a07-feeddown-frCA.png`).
+- **es**: "Programado / Fuente de TTC inaccesible — mostrando horarios programados."
+  (`a08-feeddown-es.png`).
+
+Instance stopped via the same graceful sentinel-file wrapper; integrity re-verified after
+(`stops: 9361`, unchanged) before the next instance touched the directory.
+
+**Verdict: GREEN** — real sustained server-side outage, real honest copy, correct in all 3
+locales, agency named exactly where it is supposed to be and nowhere else.
+
+### (c) DEMO — amber badge + health.mode — narrowly GREEN, but see the RED below
+
+Instance restarted with `GHOSTBUS_DEMO=1` against the real bundled fixture
+(`fixtures/ttc-demo-20260726-1040.json.gz`, real captured TTC data, 9.8 min window, 8x
+replay). `/api/health` -> `mode:"demo", ok:true` (all 3 feeds genuinely `ok` under replay,
+per DECISIONS §44's documented fix). Pill: **"DEMO"** / **"DÉMO"** in en/fr-CA, **"DEMO"** in
+es (the badge text itself, `status.demoBadge`, is `'DEMO'` in all three dictionaries —
+correctly untranslated, it's a mode marker not a sentence).
+
+**But: this is where I found a real, confirmed, previously-undocumented bug, and it is
+severe enough that I am NOT calling Feature A green overall.**
+
+Loading the demo instance at the exact same Toronto coordinate that showed a full board with
+50 real nearby stops on every other instance in this session produced: **"No TTC stops
+within 800 m of you"** (`a09-demo-en.png`/`a10-demo-frCA.png`/`a11-demo-es.png`) — the
+out-of-coverage card, with the DEMO badge correctly amber above it, but the claim underneath
+it is **false**. I did not stop at the screenshot; I traced it:
+
+```
+GET /api/stops/nearby?lat=43.6511&lon=-79.3832&radius=800   -> 0 stops   (50 stops on the live instance)
+GET /api/stops?q=Bay                                        -> 0 stops
+GET /api/routes/504/shape                                   -> {"error":"no shape for route"}
+GET /api/plan?fromLat=...&toLat=...(Union Station, same pair that returned `ride,candidates:14` live)
+                                                              -> outcome: "noStopsNearYou", candidates: []
+```
+(saved verbatim: `demo-agency-bug-repro.json`)
+
+**Root cause, found in source, not guessed:** `server/src/api.ts:376` binds
+`const AGENCY = poller.getMode().agency;` and reuses that ONE constant for every query in
+`buildApi()`, including the STATIC schedule tables (`stops`, `routes`, `calendar`, `trips`,
+`shapes` — lines 393, 398, 401, 658, 679, 717, 767, 1134, 1139, 1149, 1157 etc.). In demo
+mode `poller.getMode().agency` is `'ttc-demo'`. But `server/src/seed_toronto.ts:60` hardcodes
+`const AGENCY = 'ttc'` and **only ever writes static tables under `'ttc'`** — there is no
+`'ttc-demo'` seed path, confirmed by reading the seed script. So every demo-mode query
+against a static table returns zero rows. This directly contradicts the documented contract
+in `DECISIONS.md §44` ("**The static board is read under `ttc` in both modes**... a schedule
+is not an observation, there is one published board, and a recording is a recording *of*
+it.") and in `server/src/demo.ts`'s own module header ("shares the static GTFS board... under
+`'ttc'`"). The intent is written down correctly; `api.ts`'s single dynamic `AGENCY` binding
+just doesn't implement it for the HTTP-facing routes (the poller's own internal static
+context load is unaffected — it uses `STATIC_AGENCY` correctly, which is why
+`boardCoverage` in `/api/health` still reports the real span even while `/api/stops` returns
+nothing).
+
+**Why this belongs in Feature A's verdict rather than a separate ticket:** the entire
+premise of "honest error attribution" is that the app never shows a rider something that
+isn't true. A demo instance — the mode whose whole purpose is a reliable, presentable
+fallback — telling a rider standing in the fixture's own recorded footprint "No TTC stops
+within 800 m of you" is a **new instance of exactly the dishonesty this feature exists to
+prevent**, just produced by a namespace bug instead of a copy bug. Search and Plan are also
+completely non-functional in demo mode as a direct consequence (confirmed above), which
+means Demo Mode does not currently deliver the "identical pipeline" STATUS.md row 6 claims.
+
+**Verdict for (c): the narrow assignment ("amber badge off health.mode") is GREEN** — badge
+color, badge text, and `health.mode` are all correct and independently verified. **But
+Feature A's overall verdict is RED** because of this confirmed, reproducible, in-source-code
+bug discovered while testing it. Named exactly, per VERIFICATION.md ("anything red is named,
+never claimed around"), not folded quietly into a passing summary.
+
+Independently fact-checked by a second, code-reviewer subagent working only from source
+(not from my conclusions) before this draft was finalized: confirmed correct at every cited
+file:line, confirmed no mitigating seed/migration path exists, and surfaced one more
+corroborating data point on its own — `server/src/api.test.ts:578` has a test literally
+named *"every query is scoped to the POLLER's agency, not the literal 'ttc'"*, but it only
+exercises `/api/alerts` (an observation table); no test in the suite exercises
+`/api/stops`, `/api/stops/nearby`, `/api/routes/:id/shape`, or `/api/plan` under a demo-mode
+poller against a `'ttc'`-only seeded DB. That gap in coverage is consistent with this being a
+genuine, previously-uncaught bug rather than a known/accepted limitation, and points at
+exactly where a regression test should go once it's fixed.
+
+Instance stopped via the same graceful wrapper; integrity verified after (`stops: 9361`,
+`trip_delay_obs: 5216`).
+
+### Out-of-range location (named in the assignment's METHOD section) — GREEN
+
+`ft1_search_plan.cjs coverage`, geolocation spoofed to Mississauga `{43.5890, -79.6441}`
+(MiWay territory, no TTC stop within the 800 m nearby radius): **`title: "No TTC stops
+within 800 m of you"`, `body: "The nearest stop GhostBus covers is Markland Dr (West) at
+Bloor St West North Side, about 6.8 km away."`** (`s10-out-of-coverage.png`) — this is the
+**honest, correct** use of that exact card (contrast with the demo-mode false positive
+above, at a real in-coverage location): it names a real nearest stop with a real measured
+distance rather than silently substituting a default board. Matches the builder's own
+re-shoot note in `49f160a` ("nearest TTC stop named at 6.8 km") — independently reproduced,
+not just trusted.
+
+### Artifacts (all under `.data/ft1-artifacts/`)
+`a01`–`a05` (storm/recovery/locale), `a06`–`a08` (feed-down/locale), `a09`–`a11`
+(demo/locale, the false-coverage screenshots), `a12`–`a13` (unreachable), `s10-out-of-
+coverage.png`, `attr-storm-results.json`, `attr-feeddown-results.json`,
+`attr-demo-results.json`, `attr-unreachable-live-results.json`, `coverage-results.json`,
+`demo-agency-bug-repro.json`, `server-live.log`, `server-feeddown.log`, `server-demo.log`,
+`server-live2.log`, `seed.log`.
+
+---
+
+## Server-directory integrity (checked after every stop, before every next start)
+
+| point | stops | trip_delay_obs |
+|---|---:|---:|
+| after seed | 9,361 | 0 |
+| after live instance #1 stopped | 9,361 | 2,925 |
+| after feed-down instance stopped | 9,361 | (unchanged) |
+| after demo instance stopped | 9,361 | 5,216 |
+| after live instance #2 (unreachable test) stopped, final check | 9,361 | 5,216 (unchanged -- the ~25s instance lifetime ended before its next poll cycle would have added observations) |
+
+Every stop in this entire session was the graceful in-process-SIGINT wrapper — zero hard
+kills, unlike the delay-pipeline T1 entry's one flagged exception. `stops` count never
+drifted from the seeded 9,361 at any point. Port 9301 used throughout, confirmed free before
+first use and after final shutdown; `:8799` (the user's live instance, PID unchanged
+throughout) was never queried, reloaded, or touched.
+
+## Verdict summary
+
+| Feature | Verdict | Notes |
+|---|---|---|
+| B — Search | **GREEN** | Every listed behaviour observed with artifacts. |
+| C — Plan | **GREEN** | Every listed behaviour observed with artifacts, incl. a visual before/after for "no route-like geometry". |
+| A — Honest error attribution | **RED** | Ours/theirs/badge individually GREEN with strong evidence across all 3 locales, self-recovery confirmed. Overall RED because of a confirmed, reproducible, in-source-located bug: demo mode's static-schedule queries (`server/src/api.ts:376`'s per-mode `AGENCY` binding) return zero rows against `stops`/`routes`/`calendar`/`shapes`, because `seed_toronto.ts` only ever seeds those tables under `'ttc'`, never `'ttc-demo'`. Effect: demo mode falsely tells riders they have no nearby TTC coverage, and Search/Plan/route-shape are non-functional in demo mode. Fix: the static-table queries in `api.ts` need to bind the fixed `'ttc'` literal (matching `poller.ts`'s own `STATIC_AGENCY` split), not the per-mode `AGENCY`, while the genuinely-per-mode observation tables (`trip_delay_obs`, `ghosts`, bindings) keep the dynamic binding. |
+
+Secondary finding (not one of the three assigned states, named for completeness): `GET /`
+(the static app shell) is covered by the same global rate limiter as the API, so a hard
+reload during a closed throttle window returns a bare JSON 429 instead of the app shell —
+worth the builder's attention, but does not affect the "ours" verdict above since a rider
+who leaves an already-open tab alone (the documented, tested behaviour) never hits it.
+
+# T2 (Adversarial) — Reliability + Search + Plan features — DRAFT (not yet appended to TESTLOG.md)
+
+Build under test: `5fb2fd41438432ef1b2d4e5720e4dc3421a6008b` ("TESTLOG: adjudicate the T1 entry —
+one unsupported comparison stricken, GREEN stands") — `npx vite build` run fresh against this
+commit (`.data/ft2_build.log`, 3.43s, dist/ timestamped after the commit). HEAD has since
+advanced to `4b0d12f` (delay-pipeline docs/engine landing); `git diff --stat 5fb2fd4..4b0d12f`
+touches only `DECISIONS.md`, `METHODS.md`, `STATUS.md`, `TESTLOG.md`, `server/src/engine.ts`,
+`server/src/engine.test.ts`, `server/src/gates.ts`, `web/src/i18n/frCA.ts` (4 lines) — nothing
+in search/plan/reliability surface area — so these findings still hold against current HEAD.
+
+Tester: T2 Adversarial (independent of builder; wrote no application code, only the disposable
+harness at `.data/ft2_ratelimit_boundary.mjs`, itself put through an adversarial code-reviewer
+pass before being trusted).
+
+**Overall verdict: 3 GREEN, 1 RED.** Search abuse and Plan abuse (zero-distance/off-network/
+rapid-replan) are fully GREEN. Kill-and-resume is GREEN. Attribution-under-chaos is RED: a
+confirmed, reproducible regression where stale route/walk-path geometry from a prior successful
+plan survives a plan-fetch *network/server* failure, because `PlanView.tsx`'s `planUnresolved`
+flag only fires for `phase.kind === 'done'` (a bad-but-answered outcome), never for
+`phase.kind === 'error'` (server unreachable) — the exact class of failure a mid-session server
+death produces. Rate-limit boundary is GREEN.
+
+## Setup
+
+Own throwaway PGlite dir, never shared with any other holder — confirmed absent before seeding:
+```
+DATABASE_URL="" PGLITE_DIR=<repo>/.data/pglite-ft2 GHOSTBUS_SEED_SKIP_DOWNLOAD=1 \
+  npx tsx server/src/seed_toronto.ts
+# -> .data/ft2_seed.log (67.7s warm cache, 233 routes, 9,361 stops, 132,570 trips,
+#    4,175,275 stop_times, board 20260726..20260905)
+```
+Own port, production build, production entrypoint, real live TTC feed (not demo):
+```
+npx vite build                                                  # .data/ft2_build.log
+DATABASE_URL="" PGLITE_DIR=<repo>/.data/pglite-ft2 PORT=8951 HOST=127.0.0.1 \
+  node --import tsx server/src/server.ts                        # .data/ft2_server.log
+```
+Confirmed `DATABASE_URL=""` actually wins over `.env`'s real Neon URL (server logs
+`driver=pglite`, `GET /api/health` returns `"dbDriver":"pglite"`). Real browser: Playwright
+MCP against `http://127.0.0.1:8951/`, render-assert via snapshot + screenshot before every
+probe (caught one of my own false alarms this way — see §2). Port 8951 was free before use,
+confirmed via `netstat`; never touched the user's `:8799` or any other agent's `.data/pglite*`
+dir. Server processes killed by exact PID bound to the port (`netstat -ano` -> `taskkill /F
+/PID`), confirmed dead before restart; `.data/pglite-ft2` integrity checked via successful
+warm-start restore (7,512 crosswalk entries) after the hard kill in §3.
+
+---
+
+## 1. Search abuse — GREEN
+
+Artifacts: `.data/ft2-artifacts/search_bloor_full.png` (screenshot proving a false alarm was a
+tooling artifact, see below), network/console logs captured live via Playwright.
+
+| Probe | Result |
+|---|---|
+| 5,000-char paste (`'a'.repeat(5000)`) | Server enforces `Q_MAX_LEN=64` -> `400 badRequest`. Client shows the honest, neutral note **"Couldn't reach the stop search just now."** — never blames TTC, never fabricates a result. No crash. |
+| Emoji + RTL (`🚌🚏😀 محطة اختبار عربي`) | Renders correctly in the query echo, `encodeURIComponent`'d on the wire (confirmed via `browser_network_requests`), server returns `200` with 0 real matches, UI shows **"Nothing matches "🚌🚏😀 محطة اختبار عربي"."** + the honest coverage note ("nearest stop it can see is..."). No crash, no mis-encoding. |
+| SQL-ish (`' OR 1=1 --`) | Server uses parameterized `pg`/PGlite queries (`server/src/api.ts:657-659`, four bound placeholders `$1`-`$4`, `q`'s `%...%` wildcard built in JS and passed as a bound value, never spliced into the SQL text) — confirmed no injection is even structurally possible. Treated as a literal string, honest "Nothing matches" response. DB verified intact after (`/api/stops?q=King` still returns real rows). |
+| Rapid type→clear→type (King→(clear)→Yonge→(clear)→Bloor, all synchronously dispatched, faster than the 220ms debounce) | React 18 batches the synchronous input events into one state update; **only one request went out, for the final query "Bloor"** (confirmed via `browser_network_requests` — a single `GET /api/stops?q=Bloor`, not 3). Rendered results matched "Bloor" exactly, correctly distance-sorted. No stale-result flash. |
+| Zero-result queries | Say so honestly every time (see emoji/RTL/SQL-ish rows above) — never "no results" masquerading as a real empty state; always paired with the coverage note. |
+| Keyboard nav on an empty list | `ArrowDown`/`ArrowUp`/`Enter` on the empty-query state (`flat.length === 0`) — no crash, no console error. `SearchSheet.tsx`'s own guard (`if (flat.length === 0) return;`) held. |
+| Esc during in-flight fetch | Typed a fresh query, pressed `Escape` immediately (within the debounce window). Sheet closed instantly, focus returned to the search trigger button, no stale UI, no new console errors/warnings (no "setState on unmounted component" — production build, and the component fully remounts per-open anyway). |
+
+**One false alarm caught and dismissed, methodology note for future testers:** the first
+"Bloor" search's accessibility-tree snapshot showed absurd distances ("962.6 km", "155182.7 km",
+"111163.1 km" for stops 2-4 km from downtown Toronto). Investigation found these were
+**stopId digits concatenated with the real distance** purely in Playwright's flattened
+accessible-name text (e.g. stop `96` + real `2.6 km` -> "962.6 km" in the a11y tree) —
+**not a real bug**. A full-page screenshot (`search_bloor_full.png`) confirms the actual
+rendered UI reads "Stop 96 · 2.6 km away" correctly, with the middot separator intact and every
+distance independently verified correct against a hand-computed haversine from
+`DEFAULT_LOCATION` against the real `/api/stops?q=Bloor` coordinates. Recorded per
+VERIFICATION.md's "assert the app rendered before trusting any probe" — an a11y-tree read is a
+probe too.
+
+---
+
+## 2. Plan abuse — GREEN
+
+### 2.1 Zero-distance plan (destination = current location)
+
+`curl "/api/plan?fromLat=43.64354&fromLon=-79.39699&toLat=43.64354&toLon=-79.39699"` ->
+`{"outcome":"ride","candidates":24 items}` — e.g. a real 1-stop, 60-second hop from "King St
+West at Portland St" to "King St West at Bathurst St", both genuinely within the default
+500 m endpoint radius of the query point. **This is honest, not a bug**: the planner does not
+special-case "you are already there" with an invented placeholder; it runs the real self-join
+and the real answer happens to be a genuine short hop that exists in the schedule between two
+stops near the same point. Board and alight stops are confirmed distinct (`a.stop_sequence >
+b.stop_sequence` guard), ride duration a believable 60s, nothing fabricated.
+
+### 2.2 Destination off the TTC network
+
+`curl` with `to=(43.6,-79.45)` (west of Toronto, no coverage) and `to=(43.4,-79.3)` (Lake
+Ontario) both return `"outcome":"noStopsNearDestination","candidates":[]}` — server-side,
+honest, zero-fabrication.
+
+Reached through the **real UI** too, adversarially: since the search sheet only offers real
+stops/routes with real coordinates (there is no map-pin/custom-location picker), the realistic
+attack vector is a **poisoned `localStorage` recent-trip entry** — `gb.trips` is rider-writable
+and the client explicitly documents it as untrusted (`store.ts`'s own comments: "localStorage is
+writable by anything... these rows are rendered — and, for a trip, fed straight into the
+planner as coordinates"). Injected `{"stopId":"FAKE-OFFNETWORK","name":"Suspicious Lake
+Destination","lat":43.4,"lon":-79.3,...}` into `gb.trips`, reloaded, selected it from "Recent
+trips": UI honestly rendered **"No stop near that destination — GhostBus found no TTC stop
+within 500 m of it, so there is nowhere to start or finish the ride."** No crash, no fabricated
+distance/route.
+
+### 2.3 Rapid re-planning while a previous plan is in flight
+
+Selected the off-network "Suspicious Lake" recent trip, then — in the **same synchronous JS
+tick**, before React could unmount either button — clicked the real "Bay St at Front St West...
+Union Station" recent trip (`document.querySelectorAll('.saved-open')`, both `.click()`'d
+back-to-back; the second click did not throw, confirming genuine overlap, not a sequential
+fallback). `browser_network_requests` confirms both `/api/plan` calls fired (`toLat=43.4` then
+`toLat=43.645484`), and **the final rendered state matched only the LAST request** — a correct,
+complete "Bay St... Union Station" ride card, zero trace of the superseded off-network error.
+The `seqRef` monotonic-guard in `PlanView.tsx` (`if (seq !== seqRef.current) return;`) plus the
+`AbortController` on the superseded request did their job. No console errors.
+
+### 2.4 Regression check: successful plan THEN an impossible one (store.planUnresolved)
+
+Made a real successful plan (Bay St -> Union Station, 510 streetcar, beaded walk path visibly
+drawn on the map — `.data/ft2-artifacts/plan_success_map.png` / `plan_success_map2.png`), then
+switched to the off-network "Suspicious Lake" destination. Screenshot
+(`.data/ft2-artifacts/plan_failed_offnetwork_map.png`) confirms: **the beaded walk path is
+completely gone**, the "You" marker shows no walk-distance label, and the panel honestly reads
+"No stop near that destination" — no stale route-like geometry survives beside the failure
+message. This is the exact regression DECISIONS §45 / `store.ts`'s `planUnresolved` comment
+describes, and for THIS failure mode (`phase.kind === 'done'` with a bad outcome) **it is fixed
+and verified working.**
+
+**However — see §3 below — this same regression reappears, unfixed, for a *different* failure
+mode: a plan fetch that fails because the server is unreachable (`phase.kind === 'error'`)
+rather than one that gets an honest bad-outcome answer (`phase.kind === 'done'`).** That is a
+RED finding, filed under Attack 1 since it was discovered via the server-death scenario, but it
+is really the completion of this exact regression check — see the cross-reference there.
+
+---
+
+## 3. Attribution under chaos (mid-session server death) — RED
+
+Artifacts: `.data/ft2-artifacts/attack1_serverdown_plan_error.png`,
+`attack1_serverdown_plan_error_confirm.png` (2s later, same state, proving persistence not a
+render-lag flicker), `.data/ft2_server.log` (killed instance), `.data/ft2_server2.log`
+(restarted instance, warm-start).
+
+### Repro
+
+1. Established a real successful plan (Bay St -> Union Station) with the beaded walk path
+   drawn on the map, boarding stop = "Spadina Ave at Front St West" (real map screenshot,
+   §2.4 above).
+2. Opened the destination search sheet (modal, `role="dialog"` — satisfies "search sheet open").
+3. **Hard-killed the server** while the sheet was open: `netstat -ano | grep :8951` ->
+   `taskkill //F //PID 43696` (my own disposable process/dir; not the user's `:8799`,
+   integrity verified via successful warm-start restore afterward — 7,512 crosswalk entries
+   restored on restart, matching the pre-kill state).
+4. With the server dead, selected a different destination from the still-open sheet — this
+   fires a real `/api/plan` request against the dead server (satisfies "plan loading" — it
+   transitions through `phase.kind:'loading'` before failing).
+5. Observed, measured, and screenshotted the result.
+
+### What degraded honestly (no red here)
+
+- **Top bar badge**: flips to **"Catching up — GhostBus is catching up — retrying
+  automatically"** within one poll tick of the kill, entirely on its own (the background
+  health/arrivals/alerts/ghosts loop caught it before I did anything else) — never blames TTC.
+- **Plan view**: shows **"Can't reach the planner — The trip planner is unreachable right now.
+  Nothing here is cached, because a replayed plan looks exactly like a live one."** — an
+  explicitly-reasoned refusal to fake a cached answer, not a spinner, not a crash.
+- **Search sheet**: typed a query ("Queen") against the dead server -> honest **"Couldn't reach
+  the stop search just now."** (Routes section still showed one real, previously-cached route
+  match built from boards already held — a legitimate, non-fabricated use of already-known
+  data, not a live guess.)
+- **Rapid tab-switching during the outage**: clicked Nearby -> Saved -> Alerts -> Plan -> Nearby
+  in quick succession while the server was down. No crash on any transition; Nearby correctly
+  showed the last-known board plus the honest "GhostBus is catching up" status line (not stale
+  data presented as fresh).
+- **Self-recovery, no reload**: restarted the server on the same port/dir. The running browser
+  session (never reloaded/navigated since before the kill) self-healed on its own next poll —
+  badge back to "Live — Updated Ns ago", fresh real ETAs flowing, all confirmed via snapshot
+  with zero `browser_navigate` calls in between.
+- **Backoff genuinely grows** (measured client-side via an instrumented `window.fetch` wrapper,
+  since the server was dead and could log nothing of its own during the outage — the only
+  place this evidence *can* live is the client). Consecutive poll-round intervals after the
+  kill: **25.0s -> 35.0s -> 45.0s -> 55.0s -> 50.0s -> 45.0s -> 60.0s (cap) -> 55.0s -> 55.0s
+  (success)** — full sequence with epoch-ms timestamps in the transcript. This matches the
+  documented curve exactly: `BACKOFF_BASE_MS=2000` doubling per failed round with `[0.5,1.0)`
+  jitter, invisible below the 5s poll-tick granularity for the first few failures, then clearly
+  widening once the computed wait exceeds one tick, capping at `BACKOFF_MAX_MS=60000`. **Not**
+  a thundering herd: zero sub-5s-tick retry bursts anywhere in the log.
+
+### RED — the one thing that did NOT degrade honestly
+
+**Stale beaded walk-path geometry survives a plan-fetch failure caused by server/network
+unreachability**, right beside a message saying the planner cannot be reached at all.
+Screenshot `attack1_serverdown_plan_error.png` (and the 2-seconds-later
+`attack1_serverdown_plan_error_confirm.png`, proving this is not a transient render frame)
+shows the full dotted purple walk line from "You" to the "Spadina Ave at Front St West" pin —
+copied verbatim from the PRIOR successful plan — still drawn while the panel reads "Can't reach
+the planner."
+
+**Root cause, exact code**: `web/src/components/PlanView.tsx:140-143`:
+```js
+const unresolved = phase.kind === 'done' && (phase.res.outcome !== 'ride' || best == null);
+useEffect(() => {
+  useStore.getState().setPlanUnresolved(unresolved);
+}, [unresolved]);
+```
+`unresolved` can only become `true` when `phase.kind === 'done'` — i.e., the server answered,
+just with a bad outcome (`transfer`/`noService`/`noStopsNear...`/an unreachable `ride`). The
+`Phase` union (`PlanView.tsx:41-45`) makes `'error'` a distinct variant with no `res` payload,
+so `phase.kind === 'done'` is false by construction whenever `phase.kind === 'error'` — the
+effect always computes `unresolved = false` for a network failure, never `true`. The clearest
+proof this is a genuine gap rather than a timing quirk: `store.ts:198`'s `setPlanTarget`
+resets `planUnresolved` to `false` the INSTANT a new destination is picked, before its fetch
+even starts — so from the moment a re-plan begins, the ONLY writer that can ever flip it back
+to `true` is this one `done`-gated effect. If the new fetch errors out instead of resolving,
+nothing in the codebase ever sets it `true` again, and `web/src/map/MapCard.tsx:203`'s
+`walkable = ... && !planUnresolved` (confirmed the sole gate on the beaded walk-path draw,
+independent of the disconnected dev-only `voxelLab.ts` harness) stays open, still drawing the
+PRIOR plan's geometry. Compounding this: the `boardStop` effect (`PlanView.tsx:121-125`) reads
+```js
+useEffect(() => {
+  if (!boardStop) return;
+  if (useStore.getState().selectedStopId === boardStop.stopId) return;
+  useLive.getState().openStop(boardStop);
+}, [boardStop]);
+```
+— it only acts on the truthy case. When a new fetch fails, `best` (and therefore `boardStop`)
+becomes `null`, but there is no `else` branch to un-select the stale boarding stop, so
+`selectedStopId` (and the map's boarding annotation) also stays pinned to the old,
+no-longer-valid stop.
+
+**Why this matters exactly per the app's own stated law**: `store.ts`'s own comment on
+`planUnresolved` says a beaded walk path "is a claim ('you can walk this')... beside the words
+'this trip needs a transfer' any route-like line reads as the answer the app just said it does
+not have" — this is precisely DECISIONS §45's regression, just triggered by a different failure
+branch (`error` instead of `done`-with-bad-outcome) than the one the existing fix covers.
+
+**Confirmed NOT a rendering flicker**: re-screenshotted 2 seconds later, identical stale
+geometry still present. **Confirmed it resolves itself given ANY fresh `done`-phase response**
+(even another bad-outcome one): after the server came back and the Plan tab was remounted (tab
+away and back), a fresh fetch for the *same* off-network destination correctly returned
+`noStopsNearDestination` and the map correctly cleared the walk path that time — proving the
+`done`-path fix genuinely works, and pinning the gap precisely to the `error` path never having
+been wired to the same guard.
+
+**Repro** (exact, minimal): 1) make any successful plan; 2) kill the server (or disconnect
+network / force a 5xx) while that plan is showing; 3) pick a different destination — the fetch
+will land in `phase.kind: 'error'`; 4) observe the map still drawing the FIRST plan's walk path
+beside "Can't reach the planner." Fix suggestion (not applied — testers do not fix): extend the
+`unresolved` condition (or add a sibling effect) to also cover `phase.kind === 'error'`, and give
+the `boardStop`-selection effect an `else` branch that clears/reverts the selection when a new
+fetch fails outright, mirroring what already happens for a `done`-but-bad-outcome answer.
+
+---
+
+## 4. Kill-and-resume — GREEN
+
+(Combined with §3's repro — same kill/restart pair covers both attacks; this section reports
+the kill-and-resume-specific assertions.)
+
+- **Mid-plan**: a plan fetch in flight when the server died resolved to the honest `error`
+  state (§3) rather than hanging forever; after restart, tabbing away from and back to Plan
+  triggered a fresh fetch that got a genuine, correct answer (`noStopsNearDestination` for the
+  still-off-network destination) — no stuck "loading" state survived the restart.
+- **Mid-search**: the search sheet's in-flight query against the dead server resolved to the
+  honest "Couldn't reach the stop search just now." — no hang.
+- **Coherent resume, no stale ride screens**: Nearby view resumed showing the correct current
+  stop and fresh live departures (`Next 9 min`, real countdown) after restart, not a frozen
+  pre-kill board. Live badge correctly returned to "Live."
+- **Recents intact from localStorage**: read `localStorage['gb.trips']` directly after the
+  kill-and-resume cycle — both the real "Bay St at Front St West... Union Station" entry and
+  the injected "Suspicious Lake Destination" poison entry survived byte-for-byte (`stopId`,
+  `name`, `lat`, `lon`, `ts` all unchanged), confirming personal/local state genuinely lives in
+  the browser and is entirely unaffected by the server's death — exactly as the architecture
+  promises ("Everything personal lives here and in localStorage — never on the server," per
+  `store.ts`'s header comment).
+- No hard-kill of anything I do not exclusively own: `.data/pglite-ft2` was created by me this
+  session and held only by my own server process throughout.
+
+---
+
+## 5. Rate-limit boundary — GREEN
+
+Artifacts: `.data/ft2_ratelimit_boundary.mjs` + `.data/ft2_ratelimit_boundary.log` (per-route
+precision test), `.data/ft2_ratelimit_global_burst.mjs` + `.data/ft2_ratelimit_global_burst.log`
+(global-budget exhaustion test). Both throwaway scripts put through an adversarial
+code-reviewer pass before being trusted (verdicts: "trustworthy for the measurement described" /
+"safe to run as-is" — both confirmed read-only, no side effects, correct math).
+
+### 5.1 Exact per-route threshold (`/api/plan`, `PLAN_MAX_PER_MIN=60`)
+
+66 **sequential** (`await`'d one at a time — no pipelining/race) requests against the real
+running server, same valid lat/lon each time:
+
+| request # | status | `x-ratelimit-remaining` | notes |
+|---|---|---|---|
+| 59 | 200 | 1 | |
+| 60 | 200 | **0** | last request the budget allows |
+| 61 | 429 | 0 | **first throttled request, exactly at the boundary** |
+| 62-66 | 429 | 0 | stays throttled, `retryAfterSec:21` every time |
+
+**Exactly 60 requests succeeded, request 61 onward throttled — bit-for-bit matches
+`PLAN_MAX_PER_MIN=60`.** Every 429 body carries `kind:"rateLimited"` and a real
+`retryAfterSec` (21s, consistent with the window genuinely resetting), never a claim about
+the TTC. Total elapsed 39.4s — comfortably inside one rate-limit window, so this is an
+unconfounded measurement of a single boundary crossing, not an artifact of a window reset
+mid-run.
+
+### 5.2 Global budget (`GLOBAL_MAX_PER_MIN=600`) exhausted while the REAL APP was polling concurrently
+
+Rather than only hammering from an external script, I exhausted the shared global bucket
+(650 requests to `/api/health` in concurrent batches of 40, 199ms total) **while the actual
+browser app was still running its normal background poll loop against the same server/IP**,
+then read back the app's own instrumented `window.fetch` log (a monkey-patched wrapper
+recording `{t, url, status}` per real request the app itself made — not my script's requests)
+to see how the production client reacted to a genuine 429, not just a connection-refused.
+
+Only one of the app's own requests landed inside the narrow contended window (health at
+`t=407944`, `status:429` — corroborated independently by the browser's native console log
+showing `429 (Too Many Requests) @ .../api/health`). What happened next is the actual
+evidence:
+
+| t (ms) | endpoint | status | gap since previous |
+|---|---|---|---|
+| 403075 | vehicles | 200 | (normal 5s cadence) |
+| 407944 | health | **429** | 4869ms (normal tick) |
+| 418087 | vehicles | 200 | **10143ms — a skipped tick** |
+| 422936 | arrivals | 200 | 4849ms |
+| 423073 | vehicles | 200 | |
+| 428081 | vehicles | 200 | 5008ms (back to normal cadence) |
+| 432933 | health+alerts+ghosts | 200 | full round, backoff fully cleared |
+
+**No thundering herd**: after the single 429, the very next scheduled 5s tick (~413s) was
+**silently skipped** — the shared backoff (`isBackedOff()` gating `pollDue`) suppressed it
+rather than retrying immediately or repeatedly slamming the throttled endpoint. The next real
+request came 10.1s after the 429, not 5s, and normal cadence resumed cleanly once the window
+passed. This is the same `noteFailure`/backoff machinery already verified growing correctly
+under the connection-refused case in §3 — here confirmed against a genuine, server-issued 429
+specifically, closing the gap between "the code says it honours `retryAfterSec`" and "observed,
+on the wire, it actually does."
+
+**Access-log check (the attack's own phrasing):** neither my script's request log nor the
+app's own fetch log show any immediate re-fire after a 429 — every retry observed was at or
+beyond the normal poll cadence, never faster.
+
+---
+
+## Teardown
+
+Server process stopped by exact PID bound to port 8951 (`netstat -ano` -> `taskkill /F /PID`),
+confirmed the port was released afterward. `.data/pglite-ft2` left on disk as evidence (never
+touched by any other agent's process during this session, consistent with `pglite-t1`/`-t2`/
+`-t3`/etc. left by prior testers). No user-facing `:8799` instance was ever touched — confirmed
+zero `browser_navigate` calls to that port throughout, and `browser_tabs list` at end of session
+showed exactly one tab, on my own `:8951` instance. (Pre-existing `:8799`
+`net::ERR_CONNECTION_REFUSED` console lines appeared only under `browser_console_messages
+{all:true}`, which pulls the shared Playwright browser context's full history predating this
+session — not anything this session caused.)
+
+
+# T3 (SPEC-FIDELITY) — Reliability + Search + Plan
+
+Original pass: HEAD `5fb2fd4` ("TESTLOG: adjudicate the T1 entry - one unsupported comparison
+stricken, GREEN stands"), with unrelated uncommitted edits to `DECISIONS.md`/`METHODS.md`/
+`server/src/engine.test.ts` in the working tree at that time (a different tester's in-flight fix
+to a prior T3 RED item, `.data/testlog-drafts/T3-delay-pipeline.md` §2.3) — noted for the record,
+never touching any file this pass examined.
+
+**Correction pass: HEAD `b5b4fb4`.** Between the original pass and this correction, an
+independent citation review of this draft ran, found the issues logged inline below, and one of
+them — the frCA accent-stripping this draft had silently masked — was fixed upstream at commit
+`6803c2c`. Every citation and test run below was re-verified against the current HEAD, not
+re-quoted from memory.
+
+Tester: T3, independent of the builder. No file under test was modified by this pass.
+
+## VERDICT: GREEN across all six checks. No doc-vs-code mismatch found. Every claim below is cited to a file:line and, where a test exists, the test was actually run (not just read).
+
+---
+
+## 1. Attribution contract (DECISIONS §45 vs `web/src/lib/api.ts`) — GREEN
+
+**Claim under test:** no member of `ApiErrorKind`/`ApiFailure` can produce the feed-down copy; that
+copy is reachable ONLY from `health.feeds` data; the i18n-key-mapping tests pin this in all three
+locales; 429 copy names ourselves, never the agency, in en/frCA/es.
+
+- **The failure union.** `shared/types.ts:24` — `ApiErrorKind = 'rateLimited' | 'badRequest' |
+  'serverError'` (wire). `web/src/lib/api.ts:37` — `ApiFailureKind = 'throttled' | 'serverDown' |
+  'unreachable' | 'badRequest' | 'aborted'` (client). Neither union contains a value that means
+  "the TTC feed is down" — confirmed by reading every member's definition (`api.ts:24-37`) and by
+  the test `failureKind never guesses "the feed is down" for an unrecognised throw`
+  (`web/src/lib/api.test.ts:99-106`), which asserts the fallback for an unrecognised throw is never
+  `'feedDown'`.
+- **The one conditional that can produce feed-down copy.** `web/src/hooks/useLive.ts:225-230`:
+  ```ts
+  export function attributionOf(s: Pick<LiveState, 'health' | 'apiFailure'>): LiveAttribution {
+    if (s.health?.mode === 'demo') return 'demo';
+    if (s.apiFailure != null) return 'ourFault';
+    if (s.health != null && !s.health.ok) return 'feedDown';
+    return 'ok';
+  }
+  ```
+  (verbatim, no lines omitted or added — the annotation below is mine, not the file's). Line 228
+  is the only `return` in this function that can yield `'feedDown'`, and it is gated on
+  `s.health.ok`, a field of `HealthResponse` derived server-side from
+  `health.feeds` (`server/src/api.ts:605-608`, `poller.getFeedHealth()`), and is checked strictly
+  AFTER `apiFailure != null` (line 227) — so any failure of ours short-circuits before this line is
+  ever reached, exactly matching DECISIONS §45's stated order ("demo first, then ours, and only
+  then theirs").
+- **The i18n-key-mapping tests — run, not just read.** `node --import tsx --test
+  web/src/lib/api.test.ts` → **17/17 pass**. The relevant ones:
+  - `NO failure of ours can reach an agency-blaming key, in any locale` (`api.test.ts:160-172`) —
+    iterates all four "ours" kinds crossed with `health.ok` true/false/null and asserts neither
+    `status.feedDown` nor `status.feedDownGeneric` is ever selected.
+  - `the copy every failure of ours reaches never mentions the agency, in any locale`
+    (`api.test.ts:174-191`) — reads the REAL dictionaries (`DICTS` array, `api.test.ts:142-146`,
+    built from `en.ts`/`frCA.ts`/`es.ts` directly, not mocks) and regex-asserts none of the
+    strings a failure-of-ours can reach match an agency-blaming pattern.
+  - `state (b) copy DOES name the agency` (`api.test.ts:193-201`) — the mirror assertion, confirms
+    `status.feedDownGeneric` still names TTC in all three locales (this is the one place it must).
+  - `demo mode outranks everything` (`api.test.ts:203-208`).
+- **429 copy in all three locales — read directly, not just via the test.** `empty.apiDownThrottled`:
+  - en (`en.ts:197`): "GhostBus asked its own server for too much at once and is waiting its turn.
+    It will resume by itself in a moment — **the TTC feed is fine**."
+  - frCA (`frCA.ts:182`): "...Il reprendra de lui-même dans un instant — **le flux de la TTC
+    fonctionne**."
+  - es (`es.ts:182`): "...Se reanudará solo en un momento — **la fuente de la TTC funciona bien**."
+  All three *deny* an agency problem (a denial is the point — the app is actively reassuring the
+  rider the TTC is fine) and none *accuse* the agency of anything; the test's own regex
+  (`api.test.ts:183-186`) is careful to permit exactly this "not the TTC" denial shape while
+  still catching an accusation.
+
+  **Correction, filed honestly.** The frCA quote above is accurate AS THE FILE NOW STANDS, but it
+  was not accurate at the moment this draft first quoted it. The file this tester read at that
+  time had `apiDownThrottled` and `apiDownBody` shipped as accent-stripped ASCII — "de lui-meme",
+  "occupe", "redemarre", "reessaie", "a afficher" — and this draft silently rendered the quote
+  WITH the accents restored ("lui-même"), which is exactly the failure mode a verbatim-quote rule
+  exists to catch: a citation that quietly fixes its own source hides the defect instead of
+  reporting it. An independent citation review caught the mismatch. The underlying bug was real —
+  most of the French dictionary is proper UTF-8, but these two lines shipped as ASCII — and has
+  since been fixed at commit `6803c2c` ("French attribution strings get their accents back"),
+  which restored both lines to `occupé`/`redémarre`/`réessaie`/`à afficher`/`lui-même`. Re-verified
+  against the file as it stands now (`frCA.ts:181-182`): the accented quote above is correct as of
+  this revision. Sequence for the record: **draft misquoted (silently corrected) → review caught
+  it → bug fixed in the source.**
+- **Server side agrees.** `server/src/api.ts:577-599`, the one error handler: 429 → `kind:
+  'rateLimited'`; else `kind: 'badRequest' | 'serverError'`. No branch emits anything naming the
+  agency.
+
+---
+
+## 2. Verbatim wording rules (spec + DESIGN-TARGET §E) — GREEN
+
+- **"Updated Xs ago" wherever freshness is shown.** `status.updatedAgo` — en.ts:43 `'Updated
+  {{secs}} sec ago'`, frCA.ts:45 `'Mis à jour il y a {{secs}} s'`, es.ts:45 `'Actualizado hace
+  {{secs}} s'`. Used at the status pill (`Primitives.tsx:89`, secs<90 → `status.updatedAgo`, else
+  `status.updatedMinAgo`) and at the vehicle fix age (`CatchView.tsx:256-257`, same `status.*`
+  pair, same 90 s threshold) — these two genuinely share one pattern.
+  **Correction:** `AlertsPanel.tsx:224-228` is NOT the same pattern, and the draft's original
+  claim that it was is wrong. It reads:
+  ```ts
+  const updated = (() => {
+    const ms = alerts?.feedUpdatedMs ?? null;
+    if (ms == null) return t('alert.updatedUnknown');
+    const mins = Math.floor((liveNow() - ms) / 60_000);
+    return mins < 1 ? t('alert.updatedJustNow') : t('alert.updatedAgo', { mins });
+  })();
+  ```
+  This is a *different* namespace (`alert.*`, not `status.*`) with a *structurally different*
+  pair: a fixed, non-interpolated `alert.updatedJustNow` ("Updated just now") for `mins < 1`,
+  falling back to `alert.updatedAgo` — which, unlike `status.updatedAgo`, takes `{{mins}}` only
+  and has no seconds-granularity sibling at all. There is no `alert.updatedSecAgo` and no 90 s
+  threshold here; the two "updatedAgo"-named keys in `status.*` and `alert.*` happen to share a
+  leaf name but are not the same mechanism, and AlertsPanel does not use the `status.*` pair the
+  other two sites use.
+- **No promissory copy.** DESIGN-TARGET §E lines 182-186 (the "illustrative data" / "never
+  fabricate a departure, countdown or alert" bullet — narrowed from this draft's original,
+  looser "174-186" citation, which also swept in §E's separate Track/Catch labelling note at
+  176-181 that is unrelated to promissory copy) explicitly forbids inventing
+  departures/times to match the reference and requires the honest empty state to ship instead.
+  Confirmed nothing in `SearchSheet.tsx`, `PlanView.tsx`, or `OfflineCard.tsx` fabricates a value —
+  every distance/chip/departure is conditionally rendered only when the underlying data exists
+  (e.g. `SearchSheet.tsx:493-495` distance only `if (distanceM != null)`; `plan.ts:168-171` deep
+  link only offered on the `transfer` outcome, never presented as a real plan).
+- **Ghost copy rules unaffected by the new strings.** `ghostCopy.ts` and its test file are
+  untouched by §45's attribution work (different module, different data path). Ran
+  `node --import tsx --test server/src/ghost_copy.test.ts` directly → **5/5 pass**, including
+  `no locale describes a detected ghost as cancelled, or a cancellation as a no-show` across all
+  three shipped dictionaries — confirms the two changesets (attribution vs. ghost/cancellation
+  copy) did not cross-contaminate.
+- **DEMO badge honesty.** `status.demoNote`, en.ts:53: `'Replaying a recorded slice of real
+  {{agency}} data. Nothing here is live.'` — the exact phrasing named in the brief. frCA.ts:52 and
+  es.ts:52 are faithful equivalents ("Rejoue une tranche enregistrée..." / "Reproduciendo un tramo
+  grabado..."), both ending on the same "nothing here is live" claim. Test `demo mode outranks
+  everything` (`api.test.ts:203-208`, run above) confirms this badge is chosen ahead of every other
+  state, including a live throttle.
+
+---
+
+## 3. Search spec (v4): Recents · Stops · Routes — GREEN
+
+All claims verified directly against `web/src/components/SearchSheet.tsx` and
+`web/src/lib/search.ts` (unit-tested: `node --import tsx --test web/src/lib/search.test.ts` →
+**19/19 pass**, run in isolation as part of this pass).
+
+**Correction:** an earlier version of this draft reported "37/37 pass" for this file specifically.
+37 is the COMBINED count from a single command run against both `search.test.ts` AND
+`plan.test.ts` together (`node --import tsx --test web/src/lib/search.test.ts
+web/src/lib/plan.test.ts`); it was never the per-file count for either. Run separately:
+`search.test.ts` alone is **19/19**, `plan.test.ts` alone is **18/18** (see §4 below) —
+19 + 18 = 37, so the combined number itself was correct, but attributing all 37 to each
+file individually was not, and is corrected here and in §4.
+
+- **Three sections, correctly labelled.** `search.recents`/`search.stops`/`search.routes`
+  (`en.ts:10-12`) built at `SearchSheet.tsx:166-193`: recents pushed whenever any exist (line
+  166-171), then either the `saved` section (empty query) or `stops`+`routes` sections (non-empty
+  query).
+- **Stop results carry distance + next-departure chip.** Distance: `StopRow`
+  (`SearchSheet.tsx:471-505`), rendered only `distanceM != null` (line 493-495) — never a guessed
+  number (`search.ts:105-107`: `distanceM` computed from the rider's real fix, `null` otherwise).
+  Next-departure chip: fetched ONLY for the highlighted row (`peekStopId`,
+  `SearchSheet.tsx:204-207`), debounced 300 ms (`PEEK_DEBOUNCE_MS`, line 41) and cached in `peek`
+  state (line 203) so re-highlighting a row already seen costs no second request — matches the
+  file's own stated reasoning, `SearchSheet.tsx:18-21` verbatim: "The next-departure chip is
+  fetched for the HIGHLIGHTED row only, debounced and cached. Fetching one per visible result
+  would be four to twelve requests per keystroke against a 120 req/min budget — and a
+  rate-limited search that silently showed nothing would be the same class of lie the field
+  started out as."
+- **Empty query = Recents + Saved.** `SearchSheet.tsx:166-178`: the `recents` block is unconditional
+  (any non-empty recents list is shown regardless of query); the `saved` block is gated on
+  `q.trim() === ''` specifically (line 172). Confirmed by unit test
+  `recents come back newest first, and filter on name or code` and
+  `a place already shown as a recent is not repeated in the stop results`
+  (`search.test.ts`, both passing).
+- **Zero results honest.** `noResults` block (`SearchSheet.tsx:436-443`) renders
+  `search.noResults` (`en.ts:25`, verbatim: `'Nothing matches “{{q}}”.'` — curly quotes in the
+  source, not straight) plus a genuine coverage note keyed off the
+  nearest REAL stop the app actually knows (`nearestKnown = nearby[0]?.name ?? null`, line 339) —
+  never a fabricated "try again" platitude.
+- **Keyboard map, every claimed key traced to a real handler:**
+  - `/` and `⌘K`/`Ctrl+K` open the sheet: `App.tsx:53-60` (`useSearchShortcuts`), guarded so a `/`
+    typed inside a text field is not stolen (`typing(e.target)` check, line 55) and so the
+    shortcut is a no-op while the sheet is already open (line 58).
+  - `↑`/`↓` move the highlight: `SearchSheet.tsx:318-319` (`onInputKey`, wraps around via modulo).
+  - `Enter` opens the highlighted row: `SearchSheet.tsx:320`.
+  - `Esc` closes: `SearchSheet.tsx:285`.
+  - The visible hint row (`SearchSheet.tsx:461-465`) matches all four: `↑↓ move`, `↵ open`,
+    `esc close`.
+
+---
+
+## 4. Plan spec — GREEN
+
+- **Multi-leg explicitly out of scope, with a maps-app deep link.** Stated in code comments AND on
+  screen: `web/src/lib/api.ts:166-167` ("Multi-leg journeys are out of scope by design — the
+  response says `outcome: 'transfer'` rather than inventing a leg"); `PlanView.tsx:7-11` (same
+  scope, in the component that renders it); on-screen copy `plan.sub` (`en.ts:425`, verbatim in
+  full: `'One ride, end to end. GhostBus plans trips you can make without changing vehicles.'`)
+  and the `transfer` outcome branch (`PlanView.tsx:281-301`) rendering
+  `plan.transferTitle`/`plan.transferBody` plus the `openInMaps` link.
+- **"Will not invent a connection it cannot see" (or equivalent) in all three locales:**
+  - en (`en.ts:437`): "...Full trip planning is coming — **GhostBus will not invent a connection
+    it cannot see**."
+  - frCA (`frCA.ts:409`): "...— **GhostBus n'inventera pas une correspondance qu'il ne voit pas**."
+  - es (`es.ts:409`): "...— **GhostBus no inventará una conexión que no puede ver**."
+  All three are faithful, same-claim translations, not paraphrase drift.
+- **Deep link carries destination only — verified in the URL construction, not just the copy.**
+  `web/src/lib/plan.ts:161-171`:
+  ```ts
+  export function transitDirectionsUrl(to: { lat: number; lon: number }): string {
+    const dest = `${to.lat.toFixed(6)},${to.lon.toFixed(6)}`;
+    return `https://www.google.com/maps/dir/?api=1&travelmode=transit&destination=${encodeURIComponent(dest)}`;
+  }
+  ```
+  The function signature accepts only a destination point — there is no `from`/rider-position
+  parameter to smuggle in, and the returned URL has exactly one coordinate parameter
+  (`destination=`), no `origin=`/`saddr=`. Call site: `PlanView.tsx:292`,
+  `href={transitDirectionsUrl(res.to)}` — `res.to` is the plan's destination, never the rider's
+  `geo`. Ran the dedicated test: `node --import tsx --test web/src/lib/plan.test.ts` in isolation
+  → **18/18 pass** (see the §3 correction above: this draft previously misreported this as
+  "37/37", the combined search+plan count, not this file's own), including
+  `the maps deep link carries the destination and NOTHING about the rider`
+  (`plan.test.ts:219-227`), which asserts the URL shape, the exact encoded destination, and
+  explicitly `!url.includes('origin')` / `!url.includes('saddr')`. The UI's own fine-print
+  (`plan.transferFine`, `en.ts:438`, verbatim in full: `'The link below opens your maps app with
+  the destination only. Your own position never leaves this device.'`) matches what the code
+  actually does.
+
+---
+
+## 5. i18n parity — GREEN
+
+- **`Dict` type enforces parity.** `en.ts:471`, `export type Dict = typeof en;`. `frCA.ts:4`,
+  `const frCA: Dict = {...}`; `es.ts:4`, `const es: Dict = {...}` — both are structurally
+  typed against `en`'s shape, so a missing or misnamed key in either locale is a compile error,
+  not a silent runtime fallback. Ran `npx tsc --noEmit` → **zero errors**, confirming the three
+  dictionaries currently agree exactly on shape (this is also what DECISIONS §45 §3 means by "the
+  `Dict` type makes `tsc` prove it").
+- **Grep for hardcoded English in the new/touched components.** Swept `SearchSheet.tsx`,
+  `PlanView.tsx`, and the error-banner components (`OfflineCard.tsx`, `Primitives.tsx` — the
+  `StatusPill` that renders the attribution copy) for JSX text nodes and `aria-label`/`placeholder`
+  literals not routed through `t(...)`. Zero hits. Every user-facing string in these four files is
+  either `t('key', {...})` or built from real data (stop names, route numbers, clock times) — no
+  literal English sentence fragments found.
+
+---
+
+## 6. Rate-limit documentation — GREEN
+
+DECISIONS §45 §1 states three ceilings, all measured against `server/src/api.ts`:
+
+| DECISIONS §45 claim | `server/src/api.ts` | match |
+|---|---|---|
+| "The ceiling is now 600/min" (`DECISIONS.md:3789`) | `GLOBAL_MAX_PER_MIN = 600` (`api.ts:538`), registered `api.register(rateLimit, { max: GLOBAL_MAX_PER_MIN, ... })` (`api.ts:555`) | exact |
+| "`/api/plan` — 60/min" (`DECISIONS.md:3796`) | `PLAN_MAX_PER_MIN = 60` (`api.ts:552`), applied `app.get('/api/plan', { config: routeLimit(PLAN_MAX_PER_MIN) }, ...)` (`api.ts:877`) | exact |
+| "`/api/stops` — 120/min" (`DECISIONS.md:3798`) | `SEARCH_MAX_PER_MIN = 120` (`api.ts:553`), applied `app.get('/api/stops', { config: routeLimit(SEARCH_MAX_PER_MIN) }, ...)` (`api.ts:652`) | exact |
+
+No stale numbers found — the file's own inline comment (`api.ts:499`, "The old budget was `max:
+120`...") is explicitly historical/contrastive, not a live value, and does not contradict the
+current registration.
+
+---
+
+## Test runs performed this pass (all against the real, unmodified files; per-file counts, not combined)
+
+```
+node --import tsx --test web/src/lib/api.test.ts          → 17/17 pass
+node --import tsx --test web/src/lib/search.test.ts       → 19/19 pass
+node --import tsx --test web/src/lib/plan.test.ts         → 18/18 pass
+node --import tsx --test server/src/ghost_copy.test.ts    →   5/5 pass
+npm test  (full repo suite: server + web, current HEAD)   → 331/331 pass
+npx tsc --noEmit                                          → 0 errors
+```
+(19 + 18 = 37 — the "37" this draft originally reported for EACH of `search.test.ts` and
+`plan.test.ts` individually was the combined figure from running both files in one command;
+corrected above and in §3/§4.)
+
+## Final per-feature verdicts
+
+1. **Attribution contract** — **GREEN.** `ApiErrorKind`/`ApiFailureKind` contain no feed-down
+   value; `attributionOf` (`useLive.ts:225-230`) is the sole path to `'feedDown'`, gated on
+   `health.ok`; the i18n-key-mapping tests (`api.test.ts`) pin this in en/frCA/es and pass
+   17/17; 429 copy names ourselves, never the agency, in all three locales (one citation in
+   this section was found misquoted by an independent review and is corrected above, with the
+   underlying source bug now fixed at `6803c2c` — the verdict itself is unaffected).
+2. **Verbatim wording rules** — **GREEN**, with one claim corrected. "Updated Xs ago" holds for
+   the status pill and the vehicle-fix age (`status.*`, shared secs/mins pattern); it does
+   **not** hold for `AlertsPanel.tsx`, which uses a structurally different `alert.*`
+   just-now/mins pair — the draft's original "all three sites share the same pattern" claim was
+   wrong and is corrected above. No promissory copy (DESIGN-TARGET §E:182-186), ghost-copy
+   isolation (5/5), and the DEMO badge phrasing all hold as originally filed.
+3. **Search spec (v4)** — **GREEN.** Recents · Stops · Routes, distance + next-departure chip,
+   empty-query = Recents+Saved, honest zero-results, and the full keyboard map (`/`, `⌘K`, `↑↓`,
+   `Enter`, `Esc`) all confirmed against real handlers, `search.test.ts` 19/19.
+4. **Plan spec** — **GREEN.** Multi-leg out of scope on screen and in code; "will not invent a
+   connection it cannot see" (or equivalent) in all three locales; the maps deep link's own URL
+   construction (`plan.ts:168-171`) carries destination only, verified by both static reading and
+   `plan.test.ts`'s dedicated test, 18/18.
+5. **i18n parity** — **GREEN.** `Dict` type enforces structural parity (`tsc --noEmit` clean);
+   no hardcoded English found in `SearchSheet.tsx`, `PlanView.tsx`, `OfflineCard.tsx`,
+   `Primitives.tsx`.
+6. **Rate-limit documentation** — **GREEN.** DECISIONS §45's 600/60/120 per-minute figures match
+   `GLOBAL_MAX_PER_MIN`/`PLAN_MAX_PER_MIN`/`SEARCH_MAX_PER_MIN` in `server/src/api.ts` exactly,
+   registered at the routes the doc names.
+
+## Summary of RED items
+
+**None, against this draft's own six assigned checks.** Every claim checked against DECISIONS
+§45, DESIGN-TARGET §E, the search/plan specs as described in the T3 brief, and the i18n
+dictionaries came back consistent with the shipped code, with the tests that pin each rule
+actually run (not just read) and passing. Two things surfaced during the correction pass that
+are NOT part of this verdict and are flagged here only so they land in the right place:
+
+- The **French-accent citation bug** above is a defect this DRAFT introduced (a silently
+  self-correcting quote), not a defect in the app under test beyond the two ASCII-fallback
+  lines it was quoting — both now fixed at `6803c2c`.
+- The coordinator's forwarding note referenced **"your RED on the demo static-agency bug"**
+  attributed to this tester. This draft never filed that verdict — its six assigned checks were
+  attribution contract, verbatim wording, search spec, plan spec, i18n parity, and rate-limit
+  docs, none of which cover the `staticAgency`/`modeAgency` split. While finalizing this pass a
+  comment describing that exact bug (a demo instance reading static GTFS tables under
+  `'ttc-demo'`, "caught by testers," fixed by splitting `staticAgency`/`modeAgency` so the two
+  names "cannot be typo'd into each other") was visible in `server/src/api.ts` — **but NOT as
+  part of pinned HEAD `b5b4fb4`.** The repo is under active concurrent editing by another
+  session: at the moment this note was drafted, `server/src/api.ts` (along with `api.test.ts`,
+  `poller.ts`, `PlanView.tsx`, `Primitives.tsx`, `SearchSheet.tsx`) carried fresh, uncommitted
+  changes not present at `b5b4fb4`, and a re-check moments later found the working tree had
+  already moved again — so no stable `file:line` citation is possible for this fix without
+  pinning to whatever commit eventually lands it. That finding and its RED verdict belong to
+  whichever tester actually exercised the static/demo data path (T1, per the comment's own
+  account) — not to this T3-features draft, and not cited here by line number precisely because
+  it is not yet at a fixed commit. Flagging the misattribution and the moving target rather than
+  either absorbing an unearned finding or inventing a pinned citation for uncommitted work.
+
+## Everything above: GREEN, with file:line citations inline.
+
+# DESIGN CRITIC — the feature surfaces
+### search sheet · Plan (ride + transfer refusal) · the three attribution banners/pills · DEMO badge · out-of-coverage
+
+Role per `VERIFICATION.md` §3. Authority: `ghostbus-design-reference.png`. Acceptance criteria:
+`DESIGN-TARGET.md` §D (zero-overlap law), §F (the probe), plus the Apple/Transit rules (4pt
+spacing scale, one accent per state, ≤2 type sizes per card, 44px touch targets) and
+`DECISIONS.md` §45 (the attribution colour contract).
+
+**Artifacts:** `screenshots/critic/` — 68 full screenshots + `screenshots/critic/crops/` (235
+element crops at **3× device pixels**). Harness: `.data/critic_dc.cjs` (throwaway, gitignored).
+Logs: `.data/dc_{main,coverage,storm3,down,demo}.log`.
+
+---
+
+## METHOD — what was actually run
+
+| item | value |
+|---|---|
+| build | production `dist/` at HEAD `5fb2fd4`; verified no file under `web/src` or `shared` is newer than `dist/index.html` |
+| server | `node --import tsx server/src/server.ts` on **port 8811** — never 8799 (a live server owned by another session runs there and holds `.data/pglite3`) |
+| database | `DATABASE_URL=` forced empty in the process env (the repo `.env` holds a quota-blocked Neon URL) → PGlite on a **throwaway seeded dir `.data/pglite-dc`**, copied from the idle `.data/pglite-t2`. `dbDriver: pglite`, 132 570 trips, 9 361 stops, board `20260726..20260905` |
+| browser | real Chrome via Playwright, headless, **`deviceScaleFactor: 3`** — every crop below is a true 3× pixel crop |
+| render assert | every context asserted `bodyTextLen > 200` **and** a real `.stop-name` / `.state-title` before any probe ran (a 429 page scores a perfect zero — `VERIFICATION.md` instrument trap) |
+| combinations | 8 per surface: {1280×800, 390×844} × {light, dark} × {en, fr-CA} |
+| 429 storm | **real**: 108 540 requests to `/api/health`, **107 385 answered 429**, `retryAfterSec: 43`. All 8 contexts captured **while still in the state** |
+| server-down | server genuinely stopped (port 8811 unreachable, `curl` code 000) before the shots |
+| DEMO | server rebooted with `GHOSTBUS_DEMO=1`, bundled fixture `ttc-demo-20260726-1040.json.gz`, `health.mode: "demo"` |
+
+### Instrument corrections made DURING this pass — stated, not hidden
+
+1. **`MEASURE_PROBE` silently measured nothing.** `page.evaluate('<string arrow fn>', arg)`
+   evaluates the expression but never calls it — Playwright only applies `arg` when the first
+   parameter is a real function. Every px value was `undefined` and `JSON.stringify` dropped the
+   key. Fixed by passing a real function. **Every measurement in this report is from after that fix.**
+2. **The descender probe's first version produced 13 false positives**, all of them search rows
+   scrolled below the visible edge of `.search-results` — the exact false-positive class §F
+   documents for the overlap probe. Corrected: a *scrollable* ancestor (`scrollHeight >
+   clientHeight`) is a scroll edge, not a clip; and the line must be partly visible
+   (`rect.top < clipBottom`) to count. `.sr-only` excluded outright.
+3. **`tightLineHeight` is reported here as NOISE, not as a finding.** It maps `line-height: normal`
+   to 1.2 (so every default-leading element scores "tight") and it reads *source* text rather than
+   rendered text (so `.eyebrow`, which is `text-transform: uppercase` and has no descenders at all,
+   was flagged). Every hit in every run was one of those two artefacts. **No finding below rests on
+   it** — the descender verdicts rest on the 3× crops.
+
+### Caveats that limit what these numbers prove
+
+* **§F is a pairwise probe and skips ancestor/descendant pairs** (`a.contains(b)`). It therefore
+  cannot see a child overflowing its own parent — which is exactly **RED-2**. `trueOverlaps: 0` is
+  not "nothing is out of its box".
+* **`querySelector('.status-pill')` on a phone returns the HIDDEN desktop copy.** `TopBar`
+  (`.only-desktop`) and `MobileTopStrip` (`.only-mobile`) both mount a `StatusPill`; the desktop one
+  is first in the DOM and `display: none` at 390px. Mobile pill rows therefore read `[0,0]` in the
+  measurement table and their `innerText` is the desktop string. Mobile pill numbers below come from
+  the tap-target probe (which filters `display:none`) and from the screenshots.
+* **The probe is meaningful with the sheet open, checked rather than assumed.** §F has no
+  stacking/hit-test gate, so a translucent modal over live content could in principle score false
+  overlaps. It does not here: on desktop the sheet occupies x≈360-918 CSS while the sidebar ends at
+  320 (no intersection), and at 390px `:root[data-modal]` sets `visibility: hidden` on `.mobile-top`,
+  `.pane-side` and `.tabbar` (`app.css:1745-1747`) so there is nothing behind it to collide with.
+* `planTo()` presses ArrowDown once before Enter, but `SearchSheet` already highlights row 0
+  (`useState(0)` + `setActive(0)` per query), so the plans were built against the **second** match.
+  The resulting states are still a genuine ride plan and a genuine transfer refusal — what is being
+  judged — so the artefacts stand.
+* **The server was stopped with a process kill, not a clean SIGTERM.** `taskkill` without `/F` does
+  not reach a Windows console process with no window, and the server's `SIGINT`/`SIGTERM` handlers
+  are unreachable from another process on Windows. The dir killed was my own throwaway, and it
+  **rebooted clean** immediately afterwards in DEMO mode (migrations ran, 6 774 crosswalk entries
+  restored), so nothing was corrupted. Recorded because `VERIFICATION.md` names hard-killing a PGlite
+  holder as a trap.
+
+---
+
+## §F OVERLAP PROBE + CLIPPING AUDIT — all 40 measured states
+
+| surface | combinations | `trueOverlaps` | `hScroll` | §D5 `clipHits` | measured clipped descenders |
+|---|---|---|---|---|---|
+| nearby (baseline) | 8 | **0** | false | 0 | 0 |
+| search sheet, real results | 8 | **0** | false | 0 | 0 |
+| plan — ride | 8 | **0** | false | 0 | 0 |
+| plan — transfer refusal | 8 | **0** | false | 0 | 0 |
+| catching up (real 429 storm) | 8 | **0** | false | 0 | 0 |
+| server-down | 8 | **0** | false | 0 | 0 |
+| out-of-coverage | 8 | **0** | false | 0 | 0 |
+| DEMO | 8 | **0** | false | 0 | 0 |
+
+**The DOM layer is clean and no glyph is amputated anywhere.** Confirmed by eye on the 3× crops:
+`Rattrapage en cours` (g, p), `GhostBus rattrape son retard` (p, y), `Environ 41 min de porte à
+porte` (p), `automatique` (q), `naviguer` (g), `440 m away` (y), `DÉMO` (É accent) — every tail and
+accent fully rendered. **No surface fails on the zero-overlap law or on descender clipping.**
+
+The two REDs below are therefore *not* probe hits. RED-2 is invisible to §F by construction
+(child-overflows-parent); RED-1 is a semantic defect, not a geometric one.
+
+---
+
+# VERDICTS
+
+| surface | verdict |
+|---|---|
+| **Search sheet** | **RED** ×3 |
+| **Plan — ride** | matches reference language, 3 MINOR |
+| **Plan — transfer refusal** | **RED** ×1, 1 MINOR |
+| **Attribution: catching up / server-down** | **RED** ×3, 3 MINOR |
+| **Out-of-coverage** | matches reference language, 4 MINOR |
+| **DEMO badge** | **BLOCKED — the banner and badge cannot be rendered.** The pill alone is the best-behaved state in the app. |
+
+---
+
+## RED-1 — the search field grows a dead ✕ where its magnifier was
+**Surface:** search sheet. **All 8 combinations.**
+**Crops:** `crops/search-desktop-dark-en-bar.png`, `crops/search-mobile-dark-frCA-bar.png`
+
+`SearchSheet.tsx:352-357` cross-fades the leading magnifier into a `CloseIcon` as soon as the field
+has text:
+
+```jsx
+<span className="search-glyphs" aria-hidden>
+  <span className={`search-glyph ${q ? 'glyph-off' : 'glyph-on'}`}><SearchIcon .../></span>
+  <span className={`search-glyph ${q ? 'glyph-on' : 'glyph-off'}`}><CloseIcon .../></span>
+</span>
+```
+
+`.search-glyphs` is a `<span aria-hidden>` with no handler. **Clicking that ✕ does nothing** — and a
+✕ inside a search field is universally read as "clear". The real control is the separate `Clear`
+text button 300px away at the other end of the bar, so the sheet ships two clear affordances and the
+prominent one is dead.
+
+This is the same defect class the file's own header comment says it exists to remove: *"a `<div
+aria-hidden="true">` with a placeholder painted inside it: it looked exactly like a search field and
+did nothing at all… a false affordance in the top bar was the worst possible bug."*
+
+**Diff:** either make `.search-glyphs` a real `<button>` that calls the existing
+`setQ(''); inputRef.current?.focus()` (and then drop the redundant `Clear` text button), or keep the
+magnifier at all times and delete the `CloseIcon` branch. Do not ship a ✕ that is not a control.
+
+---
+
+## RED-2 — on a phone the next-departure chip escapes its own row
+**Surface:** search sheet. **All 4 mobile combinations (light+dark, en+fr-CA).**
+**Crops:** `crops/search-mobile-dark-frCA-chip.png`, `crops/search-mobile-light-en-chip.png`
+(the chip's grey pill visibly continues past the row's rounded right edge onto the sheet background)
+
+Measured, identical in all four:
+
+| element | width |
+|---|---|
+| `.search-row` border box | **358 px** (content box 334 px after `padding: 8px 12px`) |
+| `.search-chip` | **334 px**, plus `margin-left: 46px` |
+
+`app.css:1754` (the `@media` phone block):
+
+```css
+.search-chip {
+  flex: 1 0 100%;                          /* basis resolves to the row's 334px content box */
+  max-width: none;
+  justify-content: flex-start;
+  margin-left: calc(34px + var(--s3));     /* +46px, and flex-shrink is 0 */
+}
+```
+
+`flex-basis: 100%` resolves against the flex container's content box, and the 46px margin is added
+*on top* of it, so the chip's outer size is 380px on a 334px line with `flex-shrink: 0`. It overhangs
+the row's right border by **34px** and is only stopped from scrolling the page by
+`.scroll { overflow-x: hidden }` on `.search-results` — which is why `hScroll` still reads `false`.
+
+Two defects in one rule: the chip leaves its parent's surface, **and** the 334px bar it draws is
+about two-thirds empty (content is ~120px, left-aligned).
+
+**Diff:** `flex: 0 0 auto;` (drop `justify-content`, keep `margin-left`) so the chip hugs its content
+and stays a pill, exactly as it does on desktop where it measures 162.6px (en) / 147.2px (fr).
+If a full-width bar is genuinely wanted instead, the basis must be
+`calc(100% - 34px - var(--s3))`.
+
+---
+
+## RED-3 — in dark mode the search sheet's glass is too thin and the map reads through the list
+**Surface:** search sheet, dark theme, desktop. **2 of 8 combinations** (desktop-dark-en, desktop-dark-frCA).
+**Evidence:** `search-desktop-dark-frCA.png` (the red route stroke crosses rows 4-5; the map's stop
+card, its purple tile and the `504` badge are all legible behind the list) and the 3× crop
+`crops/search-desktop-dark-frCA-row-2.png`, where the map's marker card is clearly readable *behind*
+"Bathurst St at King St West".
+
+```css
+:root[data-theme="dark"] { --glass: rgba(31, 34, 48, 0.7); }   /* tokens.css:92  */
+.glass { backdrop-filter: blur(24px) saturate(160%); }         /* global.css:91  */
+```
+
+A 24px blur at 0.70 alpha does not suppress `--route-red: #ff4d4d`, the most saturated stroke in the
+app. The light theme does not have the problem (0.78 alpha over a pale map).
+
+This re-introduces exactly what `tokens.css:63-73` records as the cause of the previously-wrong
+elevation ladder: *"the cause of the halved steps was the ALPHA… composited over a darker base…
+These surfaces are opaque now, so every elevation step is explicit."* The reference's dark surfaces
+are opaque `#1f2230`.
+
+**Diff:** raise the dark token to `--glass: rgba(31, 34, 48, 0.88)` (the codebase already defines
+`--glass-strong: rgba(31, 34, 48, 0.86)` for the no-backdrop-filter fallback — use that value and the
+two paths agree), or paint a solid `--surface` layer under `.search-sheet` and keep the blur purely
+for the rim. The sheet must read as a pane, not as a tint.
+
+---
+
+## RED-4 — the transfer refusal says "the link below" about a button that is above it
+**Surface:** Plan → transfer refusal. **All 8 combinations.**
+**Crops:** `crops/plantransfer-desktop-dark-en-card.png`, `crops/plantransfer-mobile-dark-frCA-card.png`
+
+Rendered order is: warning glyph → title → body → **`Open in a maps app` button** → fine print
+reading *"**The link below** opens your maps app with the destination only."*
+French: *"**Le lien ci-dessous** ouvre votre application de cartes…"*
+
+`PlanView.tsx:281-301` passes both the `<a>` and the `<p className="plan-fineprint">` as `children`,
+and `PlanState` renders `children` after the body — so the fine print always lands *below* the link
+it calls "below".
+
+In an app whose entire argument is that it does not print statements that are not true, a caption
+that mis-states where its own control is should not ship.
+
+**Diff:** move `<p className="plan-fineprint">` before the `<a className="plan-maps">` in
+`PlanView.tsx:281-301` (fine print then reads correctly), or change the string to "The link above…"
+in `en.ts` / `frCA.ts` / `es.ts`. Moving the element is better — the disclosure belongs before the
+action it qualifies.
+
+---
+
+## RED-5 — "catching up" is the only status state whose fill and text come from two different colour families
+**Surface:** attribution — catching up AND server-down. **All 8 combinations of both.**
+**Crops:** `crops/catchingup-desktop-dark-frCA-pill.png`, `crops/catchingup-desktop-light-en-banner.png`,
+`crops/catchingup-mobile-dark-frCA-banner.png`
+
+Measured `background` / `color`:
+
+| state | fill | text | one family? |
+|---|---|---|---|
+| Live | green tint | green | ✅ |
+| DEMO | `rgba(255,176,32,0.20)` amber | `#ffb020` / `#8a5a00` amber | ✅ |
+| **Catching up (pill)** | `rgba(52,120,246,0.16)` **blue** | `#b168e0` / `#7b2f9e` **purple** | ❌ |
+| **Catching up (banner)** | `rgba(52,120,246,0.14)` **blue** | `#b168e0` / `#7b2f9e` **purple** | ❌ |
+
+```css
+.sp-catchup      { background: rgba(52, 120, 246, 0.16); color: var(--accent); }  /* app.css:145 */
+.feed-banner-ours{ background: rgba(52, 120, 246, 0.14); color: var(--accent); }  /* app.css:477 */
+```
+
+The comment above `.sp-catchup` reads *"the app's accent blue"* — but `--accent` is **not** blue, it
+is the brand purple (`#b168e0` dark / `#7b2f9e` light). So the rule pairs a blue tint with purple
+text, and the blue it borrows is the `--you` beacon family, which `tokens.css:21` declares
+meaning-locked: *"Brand + status — meaning-locked, one job per color."* Two locked colours are being
+spent on a third meaning.
+
+The practical cost is visible in `catchingup-mobile-light-en.png`: on that one screen the purple of
+"GhostBus is catching up" is the same purple as the wordmark, `Westbound`, the save-star ring, the
+walk-path beads, the walker node and the active tab. The one message that is supposed to say
+"something is different right now" is painted in the app's most ordinary colour.
+
+**Diff:** give the state a single family. Add a text-safe blue token beside the existing status
+text tokens in `tokens.css` (dark `#6aa2ff`, light `#1f5fd0` — both clear AA on the 0.14–0.16 tints)
+and use it for `color` in `.sp-catchup` and `.feed-banner-ours`, including the `WarningIcon`.
+Do **not** switch the fill to purple: blue is right per `DECISIONS.md` §45, and the amber/red
+families are correctly reserved.
+
+**What §45 gets right, and this pass confirms under real conditions:** nothing in either state is
+red, and the agency is never named — verified across 8 combinations of a real 107 385-response 429
+storm and 8 combinations of a genuinely dead server. That contract holds.
+
+---
+
+## RED-6 — the status pill balloons to 30% of the top bar and truncates mid-word
+**Surface:** attribution — catching up AND server-down. **4 desktop combinations of each.**
+**Crops:** `crops/catchingup-desktop-dark-frCA-pill.png`
+
+Measured `.status-pill` width at 1280×800:
+
+| state | en | fr-CA |
+|---|---|---|
+| Live | 64.2 px | 89.3 px |
+| DEMO | 85.4 px | 85.4 px |
+| **Catching up** | **366.4 px** | **384.0 px** |
+
+384px is **30% of the 1280px window** and **4.3×** the same pill one state earlier. And it still does
+not fit: the fr-CA inline detail renders as `nouvelle te…` — **truncated mid-word**, which
+`DESIGN-TARGET.md` §F "what still needs fixing" item 2 already logs as a defect to remove
+(*"Never truncate mid-word in a short metadata line — reserve the width or drop a whole field"*).
+
+The reference's status pill is a compact chip (`● Live`); nothing in the reference's chrome
+re-proportions itself on a state change.
+
+Compounding it: the identical sentence is printed **twice on the same screen** — in full inside the
+sidebar banner, and again truncated inside the pill.
+
+```jsx
+const inlineDetail = (kind === 'stale' || kind === 'catchingUp') && !compact;   // Primitives.tsx:104
+```
+
+**Diff:** drop `catchingUp` from `inlineDetail` in `Primitives.tsx:104`. The pill then reads
+`Catching up` / `Rattrapage en cours` at ~110-150px, the sentence lives once in the banner that
+already carries it in full, and the detail stays reachable through the existing `open` tap state.
+`stale` can keep its inline detail — it is the state whose *age* is the message and it has no banner.
+
+---
+
+## RED-7 — reload during a throttle window and the rider gets raw JSON, not the "catching up" screen
+**Surface:** attribution — catching up. **All 4 combinations attempted; all 4 identical.**
+**Evidence:** `screenshots/critic/reload-during-throttle-{desktop-dark-en, desktop-light-frCA,
+mobile-dark-en, mobile-light-frCA}.png`
+
+Navigating to `http://127.0.0.1:8811/` while the limiter is engaged returns, as the **document**:
+
+```json
+{"statusCode":429,"kind":"rateLimited","error":"Too many requests to the GhostBus API from this address.","retryAfterSec":19,"limit":600}
+```
+
+Chrome renders it as a bare JSON viewer — no app, no wordmark, no honest copy. `.data/dc_storm3.log`
+records `title=null` for all four.
+
+Cause, and it is one line of scope: `api.ts:555` registers the limiter at the **root** scope —
+
+```ts
+await app.register(rateLimit, { max: GLOBAL_MAX_PER_MIN, timeWindow: '1 minute' });
+```
+
+— and `fastifyStatic` (`api.ts:1354`) plus the SPA `setNotFoundHandler` (`api.ts:1355`) are
+registered on that same instance afterwards. So the SPA shell, the JS bundle, the CSS and the
+favicon all draw from, and are refused by, the same 600/min budget as the JSON API. The refusal then
+goes through the shared error handler, whose copy says "the GhostBus **API**".
+
+**This is the §45 contract's blind spot.** Everything §45 built — the typed `kind`, the blue
+"catching up" state, the promise never to blame the agency — is reachable only by a tab that was
+**already loaded**. Reloading is the first thing a rider does when an app looks stuck, and on that
+path they get a developer error page. It is also exactly the instrument trap `VERIFICATION.md`
+names ("a 429 page scores a perfect zero"), appearing here as a product defect rather than a
+testing artefact.
+
+**Diff:** scope the limiter to the API rather than the whole server. Either register it inside the
+`/api` plugin scope, or keep it global and add
+`allowList: (req) => !req.url.startsWith('/api')` to the options at `api.ts:555`. Serving the shell
+is a static file read; it is not what the ceiling exists to protect. With the shell always
+reachable, a reload during a throttle lands on the "GhostBus is catching up" state that was
+written for it.
+
+---
+
+## MINOR — search sheet
+* **M1 · Four adjacent rows carry the same title.** "Bathurst St at King St West" appears 4× in the
+  top 5 results (stops 15364 / 161 / 162 / 15365, 440-480 m). Only a stop code and a 40 m delta
+  separate them. The app knows the direction (it prints `Westbound` in the stop header) but
+  `StopRow`'s `.search-sub` shows only `Stop {code} · {dist}` (`SearchSheet.tsx:491-496`). Adding the
+  direction — where `/api/stops` can supply it — would make the list readable. **Flagged with the
+  caveat that the fix depends on the endpoint carrying direction; if it cannot, the honest list is
+  what ships.**
+* **M2 · The sheet's two buttons are the only controls in the app that opt out of the 44px floor.**
+  `.search-clear, .search-close { min-height: 36px; padding: 7px 13px }` (`app.css:1227-1239`),
+  measured 64.4×**36** on the phone. `.btn` correctly sets `min-height: 44px`. Also `7px 13px`
+  matches neither `.pill` (`6px 12px`) nor `.btn` (`10px 16px`). Diff: `min-height: 44px;
+  padding: 10px 16px`.
+* **M3 · Scroll edge with no fade.** At 390px the last row is guillotined mid-glyph by the opaque
+  hints bar (`search-mobile-dark-frCA.png`, bottom). The Plan tab *does* have a bottom scrim
+  (`plan-ride-mobile-light-en.png`), so the two scrollers disagree. §F "what still needs fixing"
+  item 1 asks for the scrim. Diff: apply the Plan tab's mask/fade to `.search-results`.
+* **M4 · Off-grid rhythm.** `.search-rows { gap: 2px }` and `.search-text { gap: 2px }` against a
+  declared 4pt scale (`--s1: 4px`). 2px reads as "no gap" rather than as a step.
+
+## MINOR — Plan (ride)
+* **M5 · The grade chip is stranded on its own line above its own caption.** `.evidence-chip`
+  (`app.css:655`) is `flex: 1 1 auto`, so its flex *basis* is its content width; flex line-breaking
+  uses the hypothetical size, so the sentence wraps the whole item onto line 2 and leaves the 26px
+  `—` chip alone above it. Hits the 320px desktop sidebar in **both** locales and the 390px phone in
+  **fr-CA** (`crops/planride-mobile-dark-frCA-evidence.png`: "horaire seulement — pas assez de
+  données en direct"). Diff: `flex: 1 1 0;` — the chip stays on line 1 and the sentence wraps under
+  itself. (Shared with `DepartureRow`, which uses the same pair.)
+* **M6 · Three text sizes in one card.** The ride leg runs `.plan-leg-line` 14.5px,
+  `.plan-leg-sub` 12.5px, `.evidence-chip` 11.5px. 12.5 vs 11.5 is a 1px difference — not readable as
+  hierarchy, only as inconsistency. Rule is ≤2 per card. Diff: collapse `.evidence-chip` to 12.5px.
+* **M7 · A clock is split from its meridiem.** In the 320px sidebar `.plan-leg-sub` renders
+  `Board 1:32 PM · 24 stops · get off 2:08` / `PM` — the interpolated string has no atomic-fact
+  protection, unlike `.search-fact` / `.stop-fact` which are `white-space: nowrap` with their own
+  separators. Diff: give `plan.rideDetail`'s fields the same atomic treatment, or a non-breaking
+  space between time and meridiem.
+
+## MINOR — Plan (transfer refusal)
+* **M8 · A warning triangle painted in the brand accent.** `PlanState` renders
+  `<WarningIcon>` inside a default `.state-glyph` — `background: var(--brand-soft); color:
+  var(--brand)` (`app.css:749`). So the refusal wears the same purple tile as the *idle* "choose a
+  destination" route glyph, and as the app's selection accent. `state-down` (amber) exists and is
+  used correctly by the out-of-coverage card. Either the colour or the glyph is wrong here — the
+  pair is not a pair. Diff: if a transfer refusal is a normal answer (it is), use a route/info glyph
+  rather than a warning triangle; if it is a caution, add `state-down`. The same `PlanState` also
+  serves `plan.errorTitle`, where a brand-purple triangle understates a genuine error.
+
+## MINOR — out-of-coverage
+* **M9 · A ragged two-button stack.** Measured: `.btn-primary` 232.3px, `.btn-quiet` 175px (en);
+  248px / 206.3px (fr) — two centred pills of different widths, 8px apart. Every other card action in
+  the app and in the reference (`Track ›`, `View alternatives`) is full-width. Diff: make both
+  `width: 100%` inside `.state-card`, or demote the secondary to a text link.
+* **M10 · Uniform 8px = no grouping.** `.state-card { gap: var(--s2) }` spaces glyph, title, body,
+  button, button and fine print *identically*, so the card reads as six equal items. Diff: 16px
+  between the body and the action pair, 8px within the pair, 12px before the fine print.
+* **M11 · Three text sizes** — `.state-title` 17px, `.state-body` 14px, `.state-fine` 12.5px (plus
+  14px buttons). Same rule as M6.
+* **M12 · The visual weight is on the action that gives up.** The filled purple primary is
+  "Browse downtown Toronto instead" (which relabels the view as a default location); the action that
+  would actually help — "Check my location again" — is the quiet one. Raised as a hierarchy question,
+  not asserted as a defect: it may be a deliberate product call.
+
+## MINOR — attribution
+* **M13 · The banner's glyph is centred against a two-line message**, so it floats opposite the gap
+  between lines (`crops/catchingup-mobile-dark-frCA-banner.png`). `.forecast-chip svg` already solves
+  this with `align-items: flex-start; margin-top: 2px`. Diff: same treatment on
+  `.loc-note, .feed-banner`.
+* **M14 · `.feed-banner { padding: 9px var(--s4) }`** — 9px is off the declared 4pt scale
+  (`app.css:442-448`); the family is 8 or 12.
+* **M15 · `.status-pill { padding: 6px 13px }` vs `.pill { padding: 6px 12px }`** — two pill
+  definitions in one codebase that differ by one pixel (`app.css:119`, `global.css:108`).
+
+---
+
+## BLOCKED — the DEMO badge and its banner cannot be rendered at all
+
+**This verdict is blocked, not passed and not failed. I could not photograph the surface I was
+asked to critique, and I will not describe pixels I did not see.**
+
+With `GHOSTBUS_DEMO=1` and the bundled fixture (`health.mode: "demo"` confirmed on the wire), all
+8 combinations render the **out-of-coverage card**, not a board. `.demo-badge` and
+`.feed-banner-demo` are `null` in every one. See `screenshots/critic/demo-*.png` and
+`.data/dc_demo.log`.
+
+Measured cause, on the demo server:
+
+```
+GET /api/stops/nearby?lat=43.64354&lon=-79.39699&radiusM=800  ->  {"stops":[],"count":0,"searchedRadiusM":600}
+GET /api/stops?q=king                                          ->  {"stops":[],"count":0}
+```
+
+`server/src/api.ts:376` sets `const AGENCY = poller.getMode().agency;` — `'ttc-demo'` in a demo
+process — and then uses that same constant for the **static schedule** queries: `stops` search
+(`:659`), `stops/nearby` (`:680`, `:722`), `stops/:id` (`:767`), the board (`:794`), `routes`
+(`:393`), `calendar` (`:398`), `plan` (`:923`, `:1005`). But `demo.ts:31-33` states the opposite
+contract: *"The static schedule is read under `'ttc'` because a schedule is not an observation and
+there is only one published board."* The static tables hold no `ttc-demo` rows, so every static
+lookup returns empty.
+
+Three consequences, in ascending order of seriousness:
+
+1. **Design (mine):** the DEMO badge surface and its amber banner are unreachable, so no verdict.
+2. **Honesty:** `DECISIONS.md` §45(c) requires the provenance line *"Replaying a recorded slice of
+   real TTC data. Nothing here is live."* to be **stated first**, "because a recording's feeds are
+   honestly `ok` and the badge is the only thing that stops that from reading as live." That sentence
+   never appears. The sole disclosure in Demo Mode is an 85px pill in the top bar.
+3. **Honesty:** Demo Mode prints a false statement to a rider standing at King & Spadina —
+   *"No TTC stops within 800 m of you / GhostBus only covers the TTC, in Toronto"* — and offers a
+   "Browse downtown Toronto instead" button to somebody already downtown.
+
+**This is a functional defect (T1/T2's domain), reported here because it blocks a Critic verdict.**
+
+### What CAN be judged — the DEMO pill, and it is the best-behaved state in the app
+**Crops:** `crops/demo-desktop-dark-frCA-pill.png`, `crops/demo-mobile-light-en-pill.png`
+
+85.4px in both locales (vs 384px for catching up). Fill `rgba(255,176,32,0.20)`, text `#ffb020`
+(dark) / `#8a5a00` (light) — **one amber family, fill and text agreeing**, which is precisely what
+RED-5 asks of `.sp-catchup`. The French `DÉMO` renders its É accent in full at
+`line-height: 1.25`; nothing is clipped. Amber is correctly reserved for demo/warn and appears
+nowhere else in these surfaces. **The DEMO pill matches the reference language.** The only nit: the
+signal glyph at 13px in amber-on-amber is near-invisible in dark mode.
+
+---
+
+## Out of scope, observed anyway (not this builder's surfaces — for the orchestrator to route)
+
+* **`.dep-due` is unconditionally green.** `app.css:618` sets `color: var(--live-text)` with no
+  live-ness condition, so a *scheduled* row renders `Imminent` in the live green while its own pill
+  says `À l'horaire` and its evidence says "schedule only — not enough live history yet"
+  (`serverdown-desktop-light-frCA.png`, sidebar). `tokens.css:25` locks green to *"the small live dot
+  and the word 'Live' only"*.
+* **fr-CA accents are missing from three new strings.** `frCA.ts:181-182`: `occupe`, `redemarre`,
+  `recent a afficher`, `reessaie`, `a demande`, `lui-meme` — the rest of the file is fully accented.
+  These render only in the `state-card` variant (cold load while our own server is unreachable),
+  which **this pass did not capture**, so this is a source read, not a screenshot. For T3.
+* Pre-existing and unchanged by this work: the mobile map is full-bleed with square corners rather
+  than the reference's rounded ~16px inset card (`nearby-mobile-light-en.png`); the map attribution
+  box sits over map content (§F "what still needs fixing" item 3).
+
+---
+
+## What the next Critic loop must re-shoot
+
+1. RED-1 … RED-6, all 8 combinations each.
+2. The **DEMO banner + badge**, once the `AGENCY` static-lookup defect is fixed — currently
+   unrenderable, verdict outstanding.
+3. The **`empty.apiDown*` state card**, which this pass could not capture **because of RED-7** — a
+   cold load during a throttle never reaches the app at all. It is also the only place the
+   unaccented French strings render. Re-shoot after RED-7 is fixed; that fix is what makes the
+   card reachable.
+
