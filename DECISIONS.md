@@ -2462,3 +2462,284 @@ each emitted box an actual cube.
   ground so cube sizes compare directly — the single most useful artefact of this whole effort),
   `ZOOM-ref-5x-a.png` and `ZOOM-ours-BEFORE-5x.png` / `ZOOM-ours-c24-5x.png` at 5x, and
   `final-{desktop,mobile}-{dark,light}.png`.
+
+## §40 — The two open measurements, closed: one sampler was broken, one mask was throwing away our own lit faces
+
+§39 left two things unresolved and said so. This section closes both, and the shape of both
+answers is the same: **the instrument was wrong, not the render.** One of the two still ends in a
+change, because once the instrument was fixed it found a real and large gap that every previous
+reading had hidden.
+
+Nothing about the projection, the cube-cluster structure, the derived height step, the markers,
+the King & Spadina framing or the 230 m / 4 min walk moves here. The only shipped file is
+`voxelTrees.ts`.
+
+---
+
+### 1. FACE SEPARATION — the shader was right; §38's sampler could not survive a cube cluster
+
+§39 reported our walls at **0.663 : 0.682** against the reference's **0.504 : 0.422** and
+suspected the measurement. It was right to. §38's `corners.py` — "a run of >=14 consecutive rows
+at one column where the horizontal colour step exceeds 16; sample the left wall at x-6..x-2, the
+right wall at x+3..x+7, the roof 4..11 px above" — rests on three assumptions, and the
+cube-cluster renderer broke all three.
+
+1. **It locks the edge to one column.** The reference is an orthographic illustration, so every
+   vertical world line is exactly vertical on screen. Our camera is a perspective one whose
+   vertical vanishing point sits ~2,370 px above the pane centre (FOV 16 gives a camera-to-centre
+   distance of 0.5 * 740 / tan 8 deg = 2,632 px; pitch 48 puts the vanishing point at
+   2,632 / tan 48 deg). An edge 480 px off-centre therefore leans ~0.2 px per row: a 19-row corner
+   shatters into 5-row fragments, and every surviving sample is biased toward the middle column of
+   the frame.
+2. **It assumes every detected edge is a convex outer corner.** On one extruded prism per building
+   that is true. A cluster is mostly INTERNAL edges — a cube's wall abutting a neighbour's ROOF, a
+   seam between coplanar cubes at different heights, a silhouette against the street — where "left
+   wall | right wall | roof above" samples a roof or the road as a wall. That is what put a face at
+   0.98 of its own roof and dragged the pair together.
+3. **It assumes the corner is one pixel wide.** Measured on the reference itself, its corners blend
+   over 6-8 px, so the same corner is detected at several columns, none of them the true one, and a
+   patch 3 px from the detected column is partly ON the blend.
+
+**The discriminator** (scratchpad `sampler42.py`) is geometric and needs no depth, normals or plan
+angle. At a convex outer corner both visible walls recede from the viewer, so the corner's top
+endpoint is the LOWEST point of the roofline: the wall/roof boundary rises AWAY from the corner on
+BOTH sides. At a concave corner it falls away on both sides; at a wall-meets-neighbour's-roof step
+there is no wall/roof boundary on the roof side at all. So walk up the image from the middle of the
+wall a short way either side of the corner, find the first strong horizontal boundary, and require
+both strictly above the apex. The same walk enforces "nothing occluding either face" for free —
+anything in front of the wall puts an edge below the roofline.
+
+Two mechanical rejections come with it, both symmetric, both stated as loose bounds rather than as
+targets: a "wall" within summed-RGB 26 of the image's own modal dark tone is the ROAD (that tone is
+one sharp mode in both panels — 17.3% of our frame, 8.0% of the reference's); and a "wall" brighter
+than **0.90** of its own roof is another ROOF, since a wall lit from above cannot be. Both images'
+true corners sit at 0.43-0.70; the pairs this removes sat at 0.95-1.00.
+
+**Validated against the reference first, as it had to be.** Across a 3x3 sweep of the two
+thresholds that could plausibly bias the answer — minimum corner height 8 / 11 / 14 px, face
+uniformity 7 / 10 / 14:
+
+| | reference | ours |
+|---|---|---|
+| LEFT / TOP, range over the sweep | 0.610 – 0.642 | 0.668 – 0.686 |
+| RIGHT / TOP, range over the sweep | 0.463 – 0.507 | 0.507 – 0.520 |
+| median over the sweep | **1.000 : 0.611 : 0.491** | **1.000 : 0.674 : 0.507** |
+| `leftBrighterPct` | 75 – 100% | 92 – 100% |
+
+The reference recovers **§38's own published 1.000 : 0.641 : 0.491** — to within 0.03 on the lit
+wall and exactly on the shaded one. That is the gate, and it passes.
+
+**So the answer on our render is that nothing is wrong with it.** Our walls are 0.674 : 0.507 —
+**0.167 apart, against the reference's 0.120.** They are not bunched; if anything they are slightly
+more separated than the reference's. And `leftBrighterPct` goes from §39's coin-flip **48% to
+100%**: with a lamp anchored to the viewport at 225 deg the screen-left wall is always the lit one,
+so 100% is what a sampler that is actually finding corners must report, and 48% was the signature
+of the contamination.
+
+Hand-checked at 8x before any of it was believed, on the corner at (169, 179-202) of the
+0.950 m/px render: TOP 59.4, LEFT 41.2, RIGHT 31.7, i.e. **0.694 : 0.533** against the shader's
+configured 0.641 : 0.491 plus its own +/-5% across-face gradient (`uGrad` 0.10) — which is the
+whole of the residual. `TONES` is unchanged.
+
+**The AO question, answered.** §39's brief asked whether the crevice occlusion was stacking on top
+of the wall shading and compressing the faces toward each other. Measured as each wall's tone
+relative to its own middle band:
+
+| | top third | middle | bottom third | ramp |
+|---|---|---|---|---|
+| reference | 1.027 | 1.000 | 0.935 | 0.092 |
+| ours | 1.027 | 1.000 | 0.980 | **0.047** |
+
+**Our vertical wall contouring is half the reference's.** The crevice fires only where `iNbr > 0`
+and only over the 8 m above a shorter neighbour's roofline; the ground AO reaches
+`min(9 m, 0.30 * height)`. Neither is a whole-face multiplier, and the measurement agrees. It
+shapes the seams. Nothing changed.
+
+### The related question — "make it lighter, like the reference" — measured, and it says no
+
+Same two images, same 0.950 m/px, everything but the city masked out:
+
+| surface class | reference | ours | |
+|---|---|---|---|
+| ground band (lum < 24) | 22.6% of frame at **19.5** | 23.0% at **20.6** | ours lighter |
+| street / shaded-wall band (24-48) | **49.4%** at 34.3 | **38.5%** at 38.0 | ours lighter, 11 pts less of it |
+| lit-wall band (48-70) | 17.0% at 58.2 | 24.5% at 58.9 | ours lighter, more of it |
+| roof band (> 70) | 11.0% at 78.5 | 14.0% at 79.5 | ours lighter, more of it |
+| whole frame, mean luminance | **39.9** | **44.9** | ours 1.13x |
+| modal roof colour | `#484870` (74.9) | `#404880` (74.3) | matched to 1% |
+| luminance p90 / p95 | 71.3 / 77.6 | 73.8 / 79.7 | ours lighter |
+| five-class luminance ladder | 21.0 / 32.4 / 45.5 / 62.7 / 79.1 | 21.8 / 37.4 / 49.7 / 65.8 / 83.3 | ours lighter at every class |
+
+**Every surface class already sits at or above the reference's absolute level, and the frame mean
+is 13% above it.** A global lift would move away from the reference on every one of these numbers;
+matching its band profile exactly would mean going *darker*, not lighter.
+
+What differs is the **share**, not the level: the reference gives 49.4% of its frame to the 24-48
+band and we give 38.5%, redistributed into more lit wall and more roof. That is §39 item 11 — the
+granularity gap — arriving in the histogram. One big lavender mass reads as "light"; the same tones
+cut into a fine mosaic of small roofs, walls and gaps read as "busy", and the eye calls busy dark.
+The lever for that is block size, and §39 measured it to exhaustion and closed it.
+
+Recorded so the next pass does not re-open it: **making the render lighter than it is would be a
+preference and a deliberate departure from the reference, not a step toward it.** It is one
+constant either way; what it is not is a match.
+
+---
+
+### 2. TREES — settled once, and the method written down
+
+`voxelTrees.ts` had been tuned three times against three readings of the same quantity, which
+cannot all be true. They disagreed because each measured something different:
+
+- **§31** used a narrow green-hue filter that kept only the reference's LIT TOPS and discarded its
+  dark olive SIDE faces.
+- **§37** scanned horizontal runs of olive pixels and compared them **in CSS pixels across two panes
+  of different scale** — the reference's covers 673 m of ground, ours 731 m — then compared an
+  "olive share of the map region", which counts pixels, not canopies. It concluded "the right size,
+  five times too many" and cut the count.
+- **§38** used `(G > R+6) && (G > B+6)`. **Our lit cap is `#5c6248` = (92, 98, 72): G is exactly
+  R+6, and the test is strict.** Every lit top face we draw was thrown away. It therefore compared
+  our side faces against the reference's sides AND tops, read our coverage as a third of the
+  reference's and our trees as darker — and **§39 lifted the palette 1.09x on that basis**, which
+  pushed us further from the reference, not closer.
+
+**THE METHOD** (scratchpad `trees40.py`), one code path over both images:
+
+- **Scale.** Both panels resampled to **0.950 m/px** (§32's reference scale) with a box filter, so
+  one pixel is the same patch of ground in both. Ground area is corrected for the oblique view: a
+  W x H px pane covers `W*mpp` by `H*mpp / sin(e)` metres, e being camera elevation above the
+  horizon — 42.5 deg for the reference (§38's gradient-orientation derivation), 42.0 deg for ours
+  (pitch 48 from nadir). The two cameras agree to within half a degree.
+- **Segmentation.** A canopy pixel is one whose green channel leads both others by a margin
+  **relative to the pixel's own brightness**: `G - max(R,B) > 0.03 * (R+G+B)/3`. That threshold is
+  calibrated, not guessed — every authored tree colour in either theme scores +0.062 to +0.173 (our
+  dark wall `#3a4438` +0.165, our lit cap `#5c6248` +0.069, light `#8ba482` +0.173 / `#b2c69d`
+  +0.118) and every non-tree surface scores **negative** (our teal top `#2f4b52` -0.103, our ground
+  `#0e142b` -0.896, the reference's indigo `#21294b` -0.685, its lavender `#484a72` -0.462). 0.03
+  sits in a gap two orders wide, and it is exactly what §38 got wrong.
+- **Objects, not pixels.** A 3x3 closing so a cluster of cubes counts as ONE canopy, then connected
+  components. Blobs over 1,600 px are greenspace polygons and are reported separately rather than
+  folded into either statistic.
+- **Size** is the **area-weighted median on-screen width** — the width of the canopy covering the
+  median canopy pixel. Both images split into a full population plus a tail of slivers (a tree
+  half-hidden behind a block), and a plain median is dominated by the slivers. Same statistic §39
+  used for block spans.
+- **Density** is canopies per km2 of ground, counting only canopies >= 10 px (9.5 m) wide, so the
+  number cannot be moved by how many slivers the mask happens to catch.
+- **Colour** is HSV over canopy pixels only, split into its two tone modes (shaded sides, lit tops)
+  so a change of geometry — which changes how much of each face is visible — cannot be mistaken for
+  a change of palette.
+- **Checked by eye at 4x** on a contact sheet of every segmented canopy in both images before any
+  number from it was used. That is what showed the actual gap.
+
+**THE MEASUREMENT**, and it agrees with none of the three earlier readings:
+
+| | reference | ours, before | ours, after |
+|---|---|---|---|
+| canopy width, area-weighted median | **31.0 px = 29.4 m** | 17.0 px = 16.1 m (**0.55x**) | **29.0 px = 27.5 m (0.94x)** |
+| canopies >= 10 px, per km2 | 29.9 | 27.6 (0.92x) | 34.1 (1.14x) |
+| canopy pixels, share of the pane | 1.51% | 0.94% | 1.98% |
+| canopy mean RGB / luminance | 62 / 74 / 62, **70.2** | 78 / 85 / 67, **82.0** | 65 / 76 / 62, **72.4** |
+| hue / saturation | 121.1 deg / 0.235 | 91.0 deg / 0.213 | 114.1 deg / 0.213 |
+| shaded sides | `#323f38` lum 59.6 hue 142 | `#3b4235` lum 63.2 hue 101 | `#303a33` lum 55.6 hue 133 |
+| lit tops | `#4b5644` lum 82.3 hue 98 | `#6e7459` lum **112.9** hue 75 | `#515d49` lum 88.8 hue 97 |
+
+**The count was already right. The size was 0.55x. The colour was 1.17x too BRIGHT and 30 deg too
+YELLOW** — the exact opposite of what §38 measured and §39 acted on.
+
+**And the size gap is structural, not a constant** — the same answer §39 reached about the
+buildings, one level down. The reference's canopy is a CLUSTER of four to six green cubes, each
+about 15-18 px across. Ours was a single cube of 17 px. **Per cube we were already the right size;
+we were drawing one of theirs.** Scaling the single box to 31 px would have produced a 29 m
+monolith taller than a one-course building, which §31's own "never focal" rule forbids.
+
+**THE ONE CHANGE SET**
+
+- **`canopyCubes()`** — each tree centre now emits a centre cube at the old full size plus four
+  satellites at 0.42 canopy offset and 0.92 canopy side, at 0.60-0.84 of the centre's height, dealt
+  by the coordinate hash so a given verge always grows the same tree and no two neighbours match.
+  Overall span 1.76 canopies against the single box's 1.00. The centre cube is exactly what the
+  module drew before, so a cluster can never be shorter or narrower than the box it replaces.
+
+  **The first version of that deal was dead, and only review caught it.** It read
+  `hashCoord(lon, lat)` — the same hash `KEEP` already uses to decide whether a tree exists at
+  all. Every centre that survives the gate therefore has a hash in `[0, KEEP]` = `[0, 0.20]`,
+  `floor(h * 4)` is always 0, and every canopy in the city came out as the same stamp in the same
+  corner order. Nothing in a screenshot says so at a glance. The deal now reads
+  `hashCoord(lat, lon)` — the two coordinates go into different multiplies inside that function,
+  so swapping them decorrelates it from the gate while staying exactly as deterministic — and
+  `web/src/map/voxelTrees.test.ts` now asserts that a sample of >50 actually-planted centres
+  produces more than one height profile. **The general lesson: a hash used as a survival gate must
+  never also be used to shape the survivors.**
+- **`DARK_TREES` retuned per face, in two passes** — because the cluster changes the mix (a single
+  box shows 62% side / 38% lit top; a cluster of five shows 46% / 54%), so a correction fitted to
+  the canopy MEAN would have been wrong the moment the geometry changed. Pass 1 scaled by the mean
+  ratio and re-rendered; pass 2 read each face off that render and scaled again. `#3a4438` /
+  `#5c6248` becomes **`#2c3b37` / `#3b4535`**, which **reverses §39's 1.09x lift** and then some.
+
+Also checked, because a cluster can do things a single box cannot: at zoom 15.0, inside
+`OPACITY_RAMP`'s 14.8-15.3 fade, the overlapping satellites blend to a soft green wash rather than
+the mottled dark seams a stack of semi-transparent faces can produce. Captured and looked at; no
+artefact, and the app only passes through that band while zooming.
+
+**Deliberately not changed.** `CANOPY_PX` (right per cube — a third pass leaving it alone, now for
+a measured reason), `SPACING_PX`, `KEEP`, `MAX_TREES`, and `LIGHT_TREES`. On density: at n ~= 20
+canopies the Poisson standard error is +/-22%, so 0.92x before and 1.14x after are both
+indistinguishable from 1.0, and moving `KEEP` again would be fitting noise. On the light theme: the
+reference's only daylight panel is a 280x166 phone card whose trees are 4-6 px across, which cannot
+support a size or colour measurement — so the geometry change applies to both themes and the
+palette change only to the one that was measured.
+
+**Still not matched, and recorded rather than fixed:** the reference's canopy sits on a visible
+brown trunk (~4 px wide at 0.950 m/px) and ours has none. §31 item 6 called a trunk "sub-pixel at
+every framing", which is not true at this framing. It is neither size, density nor colour, so it
+stayed out of this change set.
+
+---
+
+### Verification (production build `npx vite build`, real Chrome, PGlite-backed API)
+
+- `npm test`: **214 passing, 0 failing** — the 208 as before, plus six new guards in
+  `web/src/map/voxelTrees.test.ts` (the first tests this module has ever had), one of which is the
+  one that would have caught the dead hash deal above.
+- All four combinations — 1280x800 and 390x844, dark and light: **`trueOverlaps` 0, `hScroll`
+  false, map-marker collisions 0, marker spill 0, attribution visible, clipping audit 0 hits, 0
+  console and page errors.**
+- Camera unchanged and measured: **zoom 16.182, pitch 48, FOV 16** on desktop; 15.4 / 48 / 16 on
+  mobile. **King St West at Spadina and "230 m / 4 min walk" present in all four.**
+- Face ratios on the shipped build, same sampler: **1.000 : 0.668 : 0.507**, `topBrightest` 100%,
+  `leftBrighterPct` 100%.
+- Tree cubes in frame: **227 desktop, 46 mobile** (45 and 9 canopies).
+- Frame timings, foregrounded, 4.5 s of `requestAnimationFrame` with `triggerRepaint`:
+  **p50 4.2 / p95 5.8 / worst 23.2 ms**, and 4.1 / 5.0 / 17.4 on a second run (§39: 4.2 / 6.2 /
+  18.1). Flat, which is what one GeoJSON source over 227 small quads costs.
+- Six-band luminance deviation from the reference: **26.5**, against 26.1 measured on the
+  pre-change build in the same session with the same instrument. (Worth recording, as §39 did for
+  §38's figure: **§39's "21.1" is not reproducible here.** Two captures of the unchanged build give
+  26.1 and 26.5. Band edges and masking are the same; the difference is that this pass measures a
+  2x capture box-filtered down to 0.950 m/px rather than a 1x capture, which is the more faithful
+  comparison to an antialiased illustration. The figure to compare against in future is this
+  instrument's, not §39's.)
+- Bundle: the MapCard chunk goes 1,510.06 -> **1,510.49 kB raw and 397.47 -> 397.65 kB gzipped,
+  +0.19 kB** for the cluster.
+- Evidence in `screenshots/reference-match/final5/` (written, not committed):
+  `SCALE-MATCHED-620m-ref-before-after.png` and the 190 m version — three panels resampled to the
+  same metres across so canopy and cube sizes compare directly; `tree_sheet_REF.png` /
+  `tree_sheet_FINAL.png`, every segmented canopy at 4x; `corners_REFERENCE.png`, every accepted
+  convex corner.
+
+**Two operational notes, both of which cost time here.**
+
+1. **A 429 scores a perfect zero on the overlap probe.** The first pass of the gate ran four full
+   page loads inside one minute, tripped `@fastify/rate-limit` (`max: 120, timeWindow: '1 minute'`),
+   and mobile/light came back with `trueOverlaps: 0`, `clip: 0` and a blank map — because the app
+   had rendered an error state with almost nothing in it to overlap. The probe now asserts that the
+   app rendered — stop name, walk text, all three voxel layers present, no 429 in the page — before
+   any of its numbers are believed, and the re-run after the rate-limit window is what is reported
+   above. Each of the four combinations was finally run in its own rate-limit window.
+2. **`.data/pglite2` is corrupt too**, with the same `PANIC: could not locate a valid checkpoint
+   record` that killed `.data/pglite`. PGlite ships no `pg_resetwal`, so it is not recoverable.
+   **`.data/pglite3` was reseeded from the already-downloaded GTFS extract** (9,361 stops, 68,401
+   trips, 2,151,105 stop_times) and is the good directory now. The lesson is the one §38 already
+   wrote down and this pass re-learned the hard way: shut PGlite down cleanly, and never touch
+   `postmaster.pid` under a live server.

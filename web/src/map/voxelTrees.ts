@@ -79,6 +79,15 @@ const ROAD_LAYERS = ['road-minor', 'road-med', 'road-major'];
  * 7.5 here is ~15 real CSS pixels, which is what the table above measured. Left
  * alone deliberately: the numbers are tuned against the current behaviour, and
  * "fixing" the constant would silently double every tree in the app.
+ *
+ * SETTLED in DECISIONS §40, and the table above is CORRECTED there. §37 compared
+ * canopy widths in CSS pixels across two panes of different scale (the reference's
+ * covers 673 m of ground, ours 731 m), and compared an "olive share of the region"
+ * that counts pixels rather than canopies. Re-measured at one matched scale with
+ * canopies counted as objects, the COUNT was already right (0.92x the reference's
+ * per km2) and the SIZE was 0.55x — but per CUBE it was right, and the gap was that
+ * the reference builds a canopy from four to six of them. So this constant is
+ * unchanged for a third time, and `canopyCubes` below is what moved.
  */
 const CANOPY_PX = 7.5;
 /** Target gap between trees along a street, in CSS pixels — keeps the density of
@@ -102,8 +111,12 @@ const HEIGHT_RATIO = 1.35;
 const CAP_RATIO = 0.32;
 /** How far off the centreline a tree sits, as a multiple of the canopy width. */
 const VERGE_RATIO = 1.4;
-/** Hard cap on trees in frame. Two cheap extrusion layers over a few hundred tiny
- *  quads costs almost nothing; ten thousand would not. */
+/** Hard cap on TREE CENTRES in frame — not on quads. Since `canopyCubes` each centre
+ *  now emits five boxes, so this is a ceiling of 2,600 quads across the two extrusion
+ *  layers, rebuilt on `idle` only. Measured at the shipped default framing: 227 quads
+ *  on desktop and 46 on mobile, and frame timings are p50 4.1 / p95 5.0 ms against
+ *  4.2 / 6.2 before the cluster — i.e. unchanged. Left at 520 because it is the tree
+ *  COUNT that the density measurement pins (DECISIONS §40), and the count is right. */
 const MAX_TREES = 520;
 /** Fraction of candidate slots that actually get a tree (hash-gated, not random),
  *  so the spacing never reads as a metronome. */
@@ -139,11 +152,35 @@ interface TreePalette {
 // hue 81, saturation 0.14. Ours were a fresher, greener green over more than
 // twice the frame area (1.17% vs 0.53%). These values are the sampled sides/tops
 // this comment already records, which is where they should have been.
-// LIFTED 1.09x. �38 item 13 measured the reference's tree pixels at mean RGB
-// (65, 77, 63) against ours at (60, 69, 57) � same hue family, ours consistently
-// darker, which at 5x reads as olive specks where the reference reads as green.
-// Value only; the hue and the count are left where their own measurements put them.
-const DARK_TREES: TreePalette = { wall: '#3a4438', cap: '#5c6248' };
+// RETUNED, and the 1.09x lift that stood here is REVERSED — see DECISIONS §40.
+//
+// §38 item 13 measured the reference's tree pixels at mean RGB (65, 77, 63) against
+// ours at (60, 69, 57) and concluded ours were too dark, so §39 lifted these values
+// 1.09x. That measurement used `(G > R+6) && (G > B+6)`, and our LIT CAP #5c6248 is
+// (92, 98, 72): G is EXACTLY R+6, and the test is strict, so every lit top face we
+// draw was thrown away. It compared our side faces against the reference's sides AND
+// tops, which is why ours came out darker — and the lift pushed us further off.
+//
+// Measured again with one mask over both images (green must lead by 3% of the pixel's
+// own mean level, which every tree colour in either theme clears and every non-tree
+// surface fails by a wide margin), canopy surface only:
+//
+//                    canopy mean RGB   lum   hue   sat   sides / lit tops
+//   reference          62 / 74 / 62   70.2   121  0.235   #323f38 / #4b5644
+//   ours, lifted       78 / 85 / 67   82.0    91  0.213   #3b4235 / #6e7459
+//
+// Ours were 1.17x too BRIGHT and 30 deg too YELLOW, not too dark.
+//
+// Solved per FACE, in two passes, because the cluster changes the mix: a single box
+// showed 62% side / 38% lit top, a cluster of five shows 46% / 54%, so a correction
+// fitted to the canopy MEAN would have been wrong the moment the geometry changed.
+// Pass 1 scaled by the mean ratio and re-rendered; pass 2 read each face off that
+// render and scaled again. The values below are AUTHORED; what they RENDER as, once
+// MapLibre's per-face directional multiply has been applied, is sides #303a33
+// (lum 55.6, hue 133) against the reference's #323f38 (lum 59.6, hue 142) and lit
+// tops #515d49 (lum 88.8, hue 97) against its #4b5644 (lum 82.3, hue 98) — every
+// face within 8% of luminance and 9 deg of hue.
+const DARK_TREES: TreePalette = { wall: '#2c3b37', cap: '#3b4535' };
 /** In daylight the trees carry nearly all the chroma in the frame — the blocks
  *  are near-white — so this is the one place the light map is allowed real colour. */
 const LIGHT_TREES: TreePalette = { wall: '#8ba482', cap: '#b2c79c' };
@@ -251,6 +288,80 @@ export function treesAlongLine(
   }
 }
 
+/**
+ * THE CANOPY IS A CLUSTER OF CUBES, NOT ONE BOX — and that, not `CANOPY_PX`, is
+ * what the size measurement was really about. See DECISIONS §40.
+ *
+ * Measured on both images at one matched scale (0.950 m/px, §32's reference scale),
+ * counting canopies as OBJECTS rather than pixels, with the area-weighted median
+ * on-screen width — the width of the canopy covering the median canopy pixel:
+ *
+ *                        canopy width        canopies/km2      canopy colour
+ *   reference          31.0 px = 29.4 m          29.9        hue 121, RGB 62/74/62
+ *   ours, one box      17.0 px = 16.1 m          27.6        hue  91, RGB 78/85/67
+ *
+ * The COUNT was already right (0.92x). What was 0.55x is the size — and the reason
+ * is structural, exactly as it was for the buildings in §39: the reference's tree is
+ * a CLUSTER of four to six green cubes, each one about 15-18 px across, and ours was
+ * a single cube of 17 px. Our cube was already the right size; we were drawing one
+ * of theirs. So `CANOPY_PX` stays where §31 and §37 put it, and the cluster is what
+ * changes — one centre cube at full height plus four lower satellites, giving an
+ * overall span of 1.76 canopies against the single box's 1.0.
+ */
+const CLUSTER_OFFSET = 0.42;   // satellite centre offset, as a fraction of the canopy
+const CLUSTER_SIDE = 0.92;     // satellite side, as a fraction of the canopy
+/** Satellite heights as a fraction of the centre cube's, dealt by the coordinate hash
+ *  so a given verge always grows the same tree and no two neighbours match.
+ *
+ *  The deal MUST come from a hash the survival gate did not already use. `KEEP` only
+ *  lets a centre through when `hashCoord(lon, lat) <= 0.20`, so every tree that
+ *  exists has a hash in [0, 0.20] — `floor(h * 4)` is then always 0 and every canopy
+ *  in the city is the same stamp. Swapping the arguments decorrelates it: the two
+ *  coordinates go into different multiplies inside `hashCoord`, so `hashCoord(lat,
+ *  lon)` is unconstrained by the gate while staying just as deterministic. */
+const CLUSTER_H = [0.60, 0.72, 0.84, 0.66];
+
+export interface CanopyCube {
+  lon: number;
+  lat: number;
+  side: number;
+  top: number;
+  capBase: number;
+}
+
+/**
+ * The cubes of one canopy. Pure; unit-testable. The centre cube is exactly what this
+ * module drew before, so a cluster can never be SHORTER or narrower than the single
+ * box it replaces.
+ */
+export function canopyCubes(
+  lon: number,
+  lat: number,
+  m: { canopy: number; top: number; capBase: number },
+): CanopyCube[] {
+  const out: CanopyCube[] = [
+    { lon, lat, side: m.canopy, top: m.top, capBase: m.capBase },
+  ];
+  const off = m.canopy * CLUSTER_OFFSET;
+  const dLat = off / M_PER_DEG_LAT;
+  const dLon = off / Math.max(1, mPerDegLon(lat));
+  const corners: [number, number][] = [[-1, -1], [1, -1], [-1, 1], [1, 1]];
+  const h = hashCoord(lat, lon); // NOT (lon, lat) — see the note on CLUSTER_H
+  for (let i = 0; i < corners.length; i++) {
+    const [sx, sy] = corners[i] as [number, number];
+    // rotate the height deal by the tree's own hash so clusters differ from each other
+    const k = CLUSTER_H[(i + Math.floor(h * CLUSTER_H.length)) % CLUSTER_H.length] as number;
+    out.push({
+      lon: lon + sx * dLon,
+      lat: lat + sy * dLat,
+      side: m.canopy * CLUSTER_SIDE,
+      top: m.top * k,
+      capBase: m.capBase * k,
+    });
+  }
+  return out;
+}
+
 /** Build the tree FeatureCollection for whatever roads are on screen right now. */
 function collectTrees(map: MlMap): GeoJSON.FeatureCollection {
   const layers = ROAD_LAYERS.filter((id) => map.getLayer(id));
@@ -269,17 +380,20 @@ function collectTrees(map: MlMap): GeoJSON.FeatureCollection {
     if (g.type === 'LineString') treesAlongLine(g.coordinates, pts, MAX_TREES, m.spacing, m.verge);
     else if (g.type === 'MultiLineString') for (const l of g.coordinates) treesAlongLine(l, pts, MAX_TREES, m.spacing, m.verge);
   }
-  return {
-    type: 'FeatureCollection',
-    // `h` / `cb` ride on the feature so the two extrusion layers can read them with
+  const features: GeoJSON.Feature[] = [];
+  for (const [lon, lat] of pts.values()) {
+    // `h` / `cb` ride on each cube so the two extrusion layers can read them with
     // `['get', …]`: fill-extrusion-height is data-driven, and that is what lets one
-    // pair of layers render a tree whose size tracks the camera.
-    features: [...pts.values()].map(([lon, lat]) => ({
-      type: 'Feature' as const,
-      properties: { h: +m.top.toFixed(2), cb: +m.capBase.toFixed(2) },
-      geometry: { type: 'Polygon' as const, coordinates: squareAt(lon, lat, m.canopy) },
-    })),
-  };
+    // pair of layers render a canopy whose size tracks the camera.
+    for (const c of canopyCubes(lon, lat, m)) {
+      features.push({
+        type: 'Feature' as const,
+        properties: { h: +c.top.toFixed(2), cb: +c.capBase.toFixed(2) },
+        geometry: { type: 'Polygon' as const, coordinates: squareAt(c.lon, c.lat, c.side) },
+      });
+    }
+  }
+  return { type: 'FeatureCollection', features };
 }
 
 // ---------------------------------------------------------------- install
