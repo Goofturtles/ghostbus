@@ -6,7 +6,8 @@ import { PinIcon, ChevronIcon, WarningIcon } from './icons';
 import { useTick } from '@/hooks/useTick';
 import { liveNow } from '@/hooks/useLive';
 import { useStore, paceMps } from '@/store';
-import { fmtClock, walkSeconds } from '@/lib/format';
+import { fmtClock } from '@/lib/format';
+import { walkFor } from '@/lib/walk';
 import { parseHeadsign } from '@/lib/headsign';
 
 interface Props {
@@ -15,6 +16,9 @@ interface Props {
   nextMin?: number | null;
   /** Walking distance from the rider to this stop, for the leave-by chip. */
   distanceM?: number;
+  /** The stop this row's board belongs to — how the leave-by knows whether the walk
+   *  the map has drawn is the walk to HERE. Absent means "no walk to state". */
+  stopId?: string;
   onCatch?: (d: DepartureDto) => void;
   onOpen?: (d: DepartureDto) => void;
 }
@@ -56,7 +60,7 @@ export function splitClock(s: string): [string, string | null] {
  * scheduled row nothing is being tracked, so it stays "View route" — offering to
  * track a vehicle that no feed can see is the one thing this app refuses to do.
  */
-export function DepartureRow({ dep, nextMin, distanceM, onCatch, onOpen }: Props) {
+export function DepartureRow({ dep, nextMin, distanceM, stopId, onCatch, onOpen }: Props) {
   const { t } = useTranslation();
   useTick(1000);
   const pace = useStore((s) => s.pace);
@@ -78,8 +82,11 @@ export function DepartureRow({ dep, nextMin, distanceM, onCatch, onOpen }: Props
   const grade = dep.grade ?? null;
   const risk = dep.ghostRisk ?? null;
 
-  // Leave-by only makes sense for a near-term departure with a known walk distance.
-  const walkSec = distanceM != null ? walkSeconds(distanceM, paceMps(pace)) : 0;
+  // Leave-by only makes sense for a near-term departure with a known walk distance —
+  // and it is the walk the map has drawn whenever this row's stop is the one it was
+  // drawn to, so the chip and the line agree about when to set off.
+  const walkLeg = useStore((s) => s.walkLeg);
+  const walkSec = stopId == null ? 0 : (walkFor(walkLeg, stopId, distanceM, paceMps(pace))?.seconds ?? 0);
   const leaveByMs = arrivalMs - walkSec * 1000;
   const showLeaveBy = countdown && walkSec > 0 && leaveByMs > now - 60_000;
 

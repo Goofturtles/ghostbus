@@ -3,7 +3,7 @@ import { useLive, liveNow } from '@/hooks/useLive';
 import { useTick } from '@/hooks/useTick';
 import { useStore, paceMps } from '@/store';
 import { PinIcon, StarIcon, BookmarkIcon } from './icons';
-import { walkSeconds } from '@/lib/format';
+import { walkLegSeconds, walkMinutes } from '@/lib/walk';
 
 /**
  * The reference's SAVED PLACES rows, built only from stops the rider has actually
@@ -36,7 +36,9 @@ function useSavedRows() {
       const min = Math.max(0, Math.round((eta - liveNow()) / 60_000));
       sub = t('saved.liveContext', { route: d.shortName ?? d.routeId ?? '—', min });
     } else if (near?.distanceM != null) {
-      sub = t('stop.walk', { min: Math.max(1, Math.round(walkSeconds(near.distanceM, paceMps(pace)) / 60)) });
+      // Saved places are never the walk the map has drawn, so this is always the
+      // straight-line estimate and always wears the mark that says so.
+      sub = t('stop.walkEst', { min: walkMinutes(walkLegSeconds('direct', near.distanceM, paceMps(pace))) });
     }
 
     return { stopId, title: name ?? t('stop.code', { code: stopId }), sub };

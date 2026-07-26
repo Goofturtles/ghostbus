@@ -9,7 +9,7 @@
 // from a fix that may no longer be true. There is no state in which this function
 // keeps counting down from data it cannot vouch for.
 
-import { walkSeconds } from './walk';
+import { walkSeconds, type MeasuredWalk } from './walk';
 
 /** Below this the rider is standing at the stop. A consumer GPS fix is not
  *  precise enough to claim otherwise, and someone already at the stop cannot
@@ -54,6 +54,22 @@ export interface CatchInput {
   arrivalMs: number | null;
   /** the freshest position seen for a vehicle on this route, however old. */
   vehicle: VehicleFix | null;
+  /**
+   * The walk to this stop as the map has actually MEASURED it, when it has.
+   *
+   * Optional, and null-safe by design: with no measured walk this function does
+   * exactly what it always did — haversine at the profile pace with the 1.25 route
+   * factor. With one, the verdict is timed along the line the rider can see, so
+   * "you'll make it" and the path on the map can never be answers to different
+   * questions. The caller is responsible for only passing a walk that ends at THIS
+   * stop (see `walkFor`).
+   *
+   * It replaces the walk's TIME and DISTANCE, never the at-the-stop test: whether
+   * someone is standing at their stop is a question about where they are, and a
+   * rider 20 m away across a six-lane road is still 20 m away even though the route
+   * to the far kerb is 180 m.
+   */
+  walk?: MeasuredWalk | null;
   /** true when the vehicle feed itself is not healthy (or we cannot reach our own
    *  API). The newest fix we hold cannot be refreshed, so it is not trustworthy
    *  however recently it arrived — this trips the same degradation as staleness,
@@ -63,10 +79,13 @@ export interface CatchInput {
 
 export interface CatchVerdict {
   kind: VerdictKind;
-  /** straight-line metres from the rider to the stop. */
+  /** metres to the stop: along the routed walk when there is one, else straight-line. */
   distanceM: number | null;
-  /** seconds of walking at the profile pace, route factor included. */
+  /** seconds of walking — measured along the route, or the profile pace with the
+   *  1.25 route factor when the walk was never routed. */
   walkSec: number | null;
+  /** how `distanceM` and `walkSec` were arrived at, so the UI can mark an estimate. */
+  walkKind: 'routed' | 'direct';
   /** seconds to spare after walking. Negative means the walk is too long. */
   bufferSec: number | null;
   /** age of the vehicle fix in seconds; null when there has never been one. */
@@ -111,7 +130,8 @@ export function computeVerdict(i: CatchInput): CatchVerdict {
   // anything about the RIDER — so it survives 'noGeo' and 'gone', and disappears
   // only when the fix itself is the thing we distrust.
   const vehicleDistM = fixUsable && i.vehicle != null && i.stop != null ? haversineM(i.vehicle, i.stop) : null;
-  const base = { distanceM: null, walkSec: null, bufferSec: null, fixAgeSec, vehicleDistM, leaveByMs: null };
+  const walkKind = i.walk?.kind === 'routed' ? 'routed' as const : 'direct' as const;
+  const base = { distanceM: null, walkSec: null, walkKind, bufferSec: null, fixAgeSec, vehicleDistM, leaveByMs: null };
 
   // Without two real endpoints there is no walk to time — and a walk timed from a
   // fallback location would be a fabricated position, which is the one thing this
@@ -123,8 +143,12 @@ export function computeVerdict(i: CatchInput): CatchVerdict {
     return { ...base, kind: 'noGeo' };
   }
 
-  const distanceM = haversineM(i.rider, i.stop);
-  const walkSec = walkSeconds(distanceM, i.paceMps);
+  // The proximity question and the walk question are answered separately, and only
+  // the second one is routed. See the note on `walk` above.
+  const straightM = haversineM(i.rider, i.stop);
+  const measured = i.walk?.kind === 'routed' ? i.walk : null;
+  const distanceM = measured ? measured.distanceM : straightM;
+  const walkSec = measured ? measured.seconds : walkSeconds(straightM, i.paceMps);
   const arrivalMs = finite(i.arrivalMs) ? (i.arrivalMs as number) : null;
   const leaveByMs = arrivalMs == null ? null : arrivalMs - walkSec * 1000;
   const withWalk = { ...base, distanceM, walkSec, leaveByMs };
@@ -139,7 +163,7 @@ export function computeVerdict(i: CatchInput): CatchVerdict {
   if (!fixUsable) return { ...withWalk, kind: 'unseen' };
 
   const secsToArrival = Math.round((arrivalMs - i.nowMs) / 1000);
-  if (distanceM <= AT_STOP_M) return { ...withWalk, kind: 'atStop', bufferSec: secsToArrival };
+  if (straightM <= AT_STOP_M) return { ...withWalk, kind: 'atStop', bufferSec: secsToArrival };
 
   const bufferSec = secsToArrival - walkSec;
   const kind: VerdictKind = bufferSec < 0 ? 'missed' : bufferSec < COMFORTABLE_SEC ? 'tight' : 'comfortable';

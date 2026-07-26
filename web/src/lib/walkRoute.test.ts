@@ -146,6 +146,24 @@ test('a rider and a stop on the same block still get a route', () => {
   }
 });
 
+test("the app's own opening view routes — 225 m, and it used to fall back", () => {
+  // REGRESSION, and the one that mattered most: this is GhostBus's DEFAULT_LOCATION
+  // (Front & Spadina) walking to the stop the board opens on (King St W at Spadina
+  // Ave West Side). It is the first thing a rider sees. With the heal tolerance at
+  // 3 m one unjoined 7 m gap sent the route 1152 m round the block — over the detour
+  // ceiling — so the opening screen drew the straight line it is this wave's whole
+  // job to remove. Verified identically against lines captured out of the running
+  // app's own tile cache.
+  const from = { lat: 43.64354, lon: -79.39699 };
+  const to = { lat: 43.64537, lon: -79.395811 };
+  const r = routeWalk(WAYS, from, to);
+  assert.ok(r, 'the opening view must route');
+  const ratio = r.distanceM / haversineM(from, to);
+  assert.ok(ratio < 2.2, `routed ${r.distanceM} m for a ${haversineM(from, to).toFixed(0)} m walk (${ratio.toFixed(2)}x)`);
+  assert.equal(routeWalk(WAYS, from, to, { healM: 3 }), null,
+    'if 3 m now works, re-measure the tolerance rather than deleting this test');
+});
+
 test('the same query twice is the same answer', () => {
   // The graph is mutated while the two ends are attached to it, so a router that
   // cached and reused one would drift. It builds a fresh graph per query.

@@ -24,7 +24,7 @@ import { useLive, liveNow } from '@/hooks/useLive';
 import { useTick } from '@/hooks/useTick';
 import { useStore, paceMps } from '@/store';
 import { fmtClock, fmtDistance, fmtServiceDate } from '@/lib/format';
-import { pickBestRide, transitDirectionsUrl, type RidePlan } from '@/lib/plan';
+import { pickBestRide, buildRidePlan, transitDirectionsUrl, type RidePlan } from '@/lib/plan';
 import { parseHeadsign } from '@/lib/headsign';
 import { RouteBadge } from './Primitives';
 import {
@@ -106,6 +106,25 @@ export function PlanView() {
     // hop between options mid-read. useTick already re-renders the times below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, pace]);
+
+  /**
+   * THE SAME PLAN, RE-TIMED ON THE WALK THE MAP ACTUALLY DREW.
+   *
+   * `best` above is chosen on the straight-line estimate that every candidate shares,
+   * and it must stay that way — see `PlanOptions.boardWalk` for the oscillation that
+   * ranking on a measured walk would cause. This re-times the chosen one, and only the
+   * chosen one, so the leave-by printed under the first leg belongs to the path drawn
+   * beside it. When the map has measured nothing, `walkFor` finds no match and this is
+   * `best` with its estimate intact.
+   */
+  const walkLeg = useStore((s) => s.walkLeg);
+  const shown = useMemo<RidePlan | null>(() => {
+    if (!best) return null;
+    return buildRidePlan(best.candidate, { nowMs: now, paceMps: paceMps(pace), boardWalk: walkLeg });
+    // `now` excluded for the same reason it is excluded above: a plan that re-times
+    // itself every tick moves under the reader's eye.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [best, walkLeg, pace]);
 
   const clear = useCallback(() => setPlanTarget(null), [setPlanTarget]);
 
@@ -258,7 +277,7 @@ export function PlanView() {
         <PlanOutcomeView
           res={phase.res}
           widened={phase.widened}
-          best={best}
+          best={shown}
           imperial={imperial}
           now={now}
           destinationName={target.name}
@@ -449,7 +468,7 @@ function RidePlanCard({ plan, imperial, now, destinationName, widened }: {
           <span className="plan-leg-glyph" aria-hidden><WalkerIcon width={18} height={18} /></span>
           <div className="plan-leg-text">
             <p className="plan-leg-line">
-              {t('plan.walkTo', {
+              {t(plan.toStop.kind === 'routed' ? 'plan.walkTo' : 'plan.walkToEst', {
                 dist: fmtDistance(plan.toStop.distanceM, imperial),
                 min: min(plan.toStop.seconds),
                 stop: c.board.name ?? c.board.stopId,
@@ -516,7 +535,7 @@ function RidePlanCard({ plan, imperial, now, destinationName, widened }: {
           <span className="plan-leg-glyph" aria-hidden><FlagIcon width={18} height={18} /></span>
           <div className="plan-leg-text">
             <p className="plan-leg-line">
-              {t('plan.walkFrom', {
+              {t(plan.fromStop.kind === 'routed' ? 'plan.walkFrom' : 'plan.walkFromEst', {
                 dist: fmtDistance(plan.fromStop.distanceM, imperial),
                 min: min(plan.fromStop.seconds),
                 dest: destinationName,

@@ -134,6 +134,22 @@ const straightLeg = (from: WalkPoint, to: WalkPoint): WalkLeg => ({
  *
  * A 'direct' answer is not a route and the caller must not present it as one: it is
  * drawn in its own hairline style and labelled as an estimate.
+ *
+ * ===================== CALL FROM SETTLED EVENTS ONLY =====================
+ * A cache miss does real work on the main thread: `querySourceFeatures` walks every
+ * loaded tile, and a fresh graph is built, healed, indexed and searched — MEASURED at
+ * 10-30 ms for a downtown walk on a desktop, so several times that on a phone. It is
+ * synchronous by design (an async route is a route that can arrive after the walk it
+ * describes has changed, which is exactly the stale-geometry defect DECISIONS §45 §8
+ * exists to prevent), and the price of that is a caller that must not run it often.
+ *
+ *   YES: `load`, `idle`, `moveend`, and the effects that fire when the rider's fix or
+ *        the boarding stop actually changes.
+ *   NO:  `move`, `render`, `zoom`, or anything inside a requestAnimationFrame loop.
+ *
+ * A HIT is free, and after the first successful route for a pair every subsequent
+ * call is a hit — which is why re-drawing on a settled camera costs nothing.
+ * =========================================================================
  */
 export function resolveWalkLeg(
   map: MlMap | null,
@@ -152,17 +168,38 @@ export function resolveWalkLeg(
   if (last != null && now - last < RETRY_MS) return straightLeg(from, to);
 
   const lines = collectWalkLines(map, from, to);
-  const path = lines.length ? routeWalk(lines, from, to, { avoidSteps }) : null;
+  // NOTHING LOADED IS NOT A FAILURE, and recording it as one is a trap. The first
+  // attempt routinely happens the instant a fix arrives, before a single vector tile
+  // has landed — and if that counted as a failure it would start the retry window,
+  // which the map's own `idle` (firing moments later, as the tiles land) would then
+  // sit out. The one chance to route would be spent on an empty source, and the rider
+  // would keep the straight line for the rest of the session.
+  if (lines.length === 0) return straightLeg(from, to);
+  const path = routeWalk(lines, from, to, { avoidSteps });
   if (!path) {
     failedAt.set(key, now);
-    if (failedAt.size > MAX_CACHE) failedAt.clear();
+    evictOldest(failedAt);
     return straightLeg(from, to);
   }
   const leg: WalkLeg = { kind: 'routed', coordinates: path.coordinates, distanceM: path.distanceM };
-  // Bounded: a rider walking across town would otherwise accumulate one entry per
-  // GPS fix. The newest answer is the one worth keeping, so the oldest goes.
-  if (routed.size >= MAX_CACHE) routed.delete(routed.keys().next().value as string);
   routed.set(key, leg);
+  evictOldest(routed);
   failedAt.delete(key);
   return leg;
+}
+
+/**
+ * Drop the oldest entry, never the whole table.
+ *
+ * Clearing was a real defect: on the 61st distinct walk of a session EVERY rate limit
+ * vanished at once, so every failing pair on screen went back to retrying every two
+ * seconds — a 30 ms synchronous rebuild each, all on the same frame. A Map iterates in
+ * insertion order, so the first key is the least recently added.
+ */
+function evictOldest(m: Map<string, unknown>): void {
+  while (m.size > MAX_CACHE) {
+    const oldest = m.keys().next();
+    if (oldest.done) return;
+    m.delete(oldest.value);
+  }
 }

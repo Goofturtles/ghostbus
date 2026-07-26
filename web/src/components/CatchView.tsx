@@ -61,7 +61,16 @@ export function CatchView({ dep, onClose }: Props) {
    * and its own health says exactly that. See DECISIONS §45.
    */
   const ourFault = useLive((s) => s.apiFailure != null);
-  const agencyFeedDown = useLive((s) => s.apiFailure == null && s.health != null && s.health.feeds.vehicles.status !== 'ok');
+  /**
+   * `feeds.vehicles == null` means THE AGENCY PUBLISHES NO VEHICLE FEED — not that its feed
+   * is down. Reporting "the vehicle feed is down" for an agency that never had one would be
+   * the §45 attribution bug wearing a new costume: blaming an agency for an outage that is
+   * not happening. Such an agency simply has no live-vehicle promise to break, so the view
+   * falls back to scheduled times without accusing anybody. The TTC publishes all three
+   * feeds, so this reads exactly as it did before.
+   */
+  const agencyFeedDown = useLive((s) => s.apiFailure == null && s.health != null
+    && s.health.feeds.vehicles != null && s.health.feeds.vehicles.status !== 'ok');
   const staleFix = ourFault || agencyFeedDown;
   const pace = useStore((s) => s.pace);
   const imperial = useStore((s) => s.units) === 'imperial';
@@ -88,9 +97,14 @@ export function CatchView({ dep, onClose }: Props) {
   // would blink a "we can't see where you are" error at a rider whose location is
   // perfectly fine. This screen is anchored to the stop its departure was on.
   const [boarding, setBoarding] = useState<Point | null>(null);
+  // Latched WITH its id, on the same board and in the same breath: the id is how the
+  // walk the map drew is matched to this stop, and a position latched without one
+  // could be paired with any leg at all.
+  const [boardingId, setBoardingId] = useState<string | null>(null);
   useEffect(() => {
     if (boarding || !arrivals || arrivals.lat == null || arrivals.lon == null) return;
     setBoarding({ lat: arrivals.lat, lon: arrivals.lon });
+    setBoardingId(arrivals.stopId);
   }, [arrivals, boarding]);
 
   // ---------------- the live board row for THIS trip ----------------
@@ -152,7 +166,14 @@ export function CatchView({ dep, onClose }: Props) {
 
   // ---------------- the verdict ----------------
   const mps = paceMps(pace);
-  const v = computeVerdict({ nowMs: now, rider, stop: boarding, paceMps: mps, arrivalMs, vehicle: fix, feedDown: staleFix });
+  // The walk the map drew to THIS stop, when it drew one. `walkFor` refuses a leg
+  // measured to any other stop, so a verdict is never timed on somebody else's walk.
+  const walkLeg = useStore((s) => s.walkLeg);
+  const measuredWalk = boardingId != null && walkLeg?.stopId === boardingId ? walkLeg : null;
+  const v = computeVerdict({
+    nowMs: now, rider, stop: boarding, paceMps: mps, arrivalMs, vehicle: fix,
+    feedDown: staleFix, walk: measuredWalk,
+  });
   // 'noGeo' covers two different absences; only one of them is about the rider.
   const noStop = boarding == null && rider != null;
 
@@ -310,10 +331,15 @@ export function CatchView({ dep, onClose }: Props) {
               <div className="cev-text">
                 <p className="cev-line">
                   {v.distanceM != null && v.walkSec != null
-                    ? t('catch.evWalk', { dist: fmtDistance(v.distanceM, imperial), min: Math.max(1, Math.round(v.walkSec / 60)) })
+                    ? t(v.walkKind === 'routed' ? 'catch.evWalk' : 'catch.evWalkEst', {
+                      dist: fmtDistance(v.distanceM, imperial),
+                      min: Math.max(1, Math.round(v.walkSec / 60)),
+                    })
                     : t('catch.evWalkUnknown')}
                 </p>
-                <p className="cev-sub">{t('catch.evWalkBasis', { kmh })}</p>
+                <p className="cev-sub">
+                  {t(v.walkKind === 'routed' ? 'catch.evWalkBasisRouted' : 'catch.evWalkBasis', { kmh })}
+                </p>
               </div>
             </div>
 

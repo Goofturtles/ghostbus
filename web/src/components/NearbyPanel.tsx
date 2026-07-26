@@ -222,6 +222,7 @@ export function NearbyPanel({ onCatch, onOpen }: {
                 dep={first}
                 nextMin={next ? (next.scheduledMs - liveNow()) / 60000 : null}
                 distanceM={distanceM}
+                stopId={arr.stopId}
                 onCatch={onCatch}
                 onOpen={onOpen}
               />

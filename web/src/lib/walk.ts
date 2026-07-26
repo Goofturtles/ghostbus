@@ -47,3 +47,33 @@ export interface MeasuredWalk {
 export function walkLegSeconds(kind: WalkKind, metres: number, mps: number): number {
   return walkSeconds(metres, mps, kind === 'routed' ? 1 : 1.25);
 }
+
+/**
+ * The walk to quote for one stop — the measured one when the map has drawn it, the
+ * straight-line estimate otherwise.
+ *
+ * ONE FUNCTION, because the alternative is five surfaces each deciding for themselves
+ * whether the published leg is theirs, and four of them getting it right. The stop id
+ * is the whole test: a leg measured to King & Spadina says nothing about the walk to
+ * Queen & Bathurst, and quoting it there would be worse than the estimate it replaced.
+ *
+ * Returns null when there is no walk to state at all.
+ */
+export function walkFor(
+  leg: MeasuredWalk | null | undefined,
+  stopId: string,
+  straightM: number | null | undefined,
+  mps: number,
+): MeasuredWalk | null {
+  if (leg && leg.stopId === stopId) return leg;
+  if (straightM == null || !Number.isFinite(straightM)) return null;
+  return {
+    kind: 'direct',
+    distanceM: Math.round(straightM),
+    seconds: walkLegSeconds('direct', straightM, mps),
+    stopId,
+  };
+}
+
+/** Whole minutes, never zero — a walk that exists takes at least a minute to say. */
+export const walkMinutes = (seconds: number): number => Math.max(1, Math.round(seconds / 60));

@@ -21,11 +21,14 @@
 //      departure nobody can catch.
 
 import type { RideCandidateDto } from '@shared/types';
-import { walkSeconds } from './walk';
+import { walkLegSeconds, type MeasuredWalk, type WalkKind } from './walk';
 
 export interface WalkLeg {
   distanceM: number;
   seconds: number;
+  /** 'routed' when these numbers came from a walking route measured along real ways
+   *  — the line the map draws. 'direct' is the straight-line estimate. */
+  kind: WalkKind;
 }
 
 export interface RidePlan {
@@ -64,6 +67,19 @@ export interface PlanOptions {
   nowMs: number;
   /** the rider's walking speed, metres/second (store.paceMps). */
   paceMps: number;
+  /**
+   * The walk the map has MEASURED to the boarding stop, when it has one for THIS
+   * candidate's stop. It replaces the straight-line first leg, so the leave-by a
+   * rider is given is the leave-by for the path they can see.
+   *
+   * DELIBERATELY ABSENT FROM RANKING. `pickBestRide` never receives it, and must not.
+   * A measured walk arrives after the plan is chosen, so letting it change the choice
+   * would let the answer rewrite the question: option A is picked, the map routes to
+   * A's stop, the longer walk makes A unreachable, B is picked, the map routes to B,
+   * A becomes reachable again. The plan is chosen on the estimate every candidate
+   * shares, and the chosen one is then re-timed with what is actually known about it.
+   */
+  boardWalk?: MeasuredWalk | null;
 }
 
 /**
@@ -81,13 +97,24 @@ export function boardingInstant(c: RideCandidateDto): { ms: number; predicted: b
 /** Turn one server candidate into a full door-to-door plan at this rider's pace. */
 export function buildRidePlan(c: RideCandidateDto, opts: PlanOptions): RidePlan {
   const { nowMs, paceMps } = opts;
-  const toStop: WalkLeg = {
-    distanceM: c.board.distanceM,
-    seconds: walkSeconds(c.board.distanceM, paceMps),
-  };
+  const measured = opts.boardWalk?.kind === 'routed' && opts.boardWalk.stopId === c.board.stopId
+    ? opts.boardWalk
+    : null;
+  const toStop: WalkLeg = measured
+    ? { distanceM: measured.distanceM, seconds: measured.seconds, kind: 'routed' }
+    : {
+      distanceM: c.board.distanceM,
+      seconds: walkLegSeconds('direct', c.board.distanceM, paceMps),
+      kind: 'direct',
+    };
+  // The walk from the alighting stop is never routed: it happens at the far end of a
+  // ride, in tiles this device has no reason to have loaded. It stays the estimate it
+  // has always been, and is marked as one rather than quietly borrowing the other
+  // leg's credibility.
   const fromStop: WalkLeg = {
     distanceM: c.alight.distanceM,
-    seconds: walkSeconds(c.alight.distanceM, paceMps),
+    seconds: walkLegSeconds('direct', c.alight.distanceM, paceMps),
+    kind: 'direct',
   };
 
   const board = boardingInstant(c);

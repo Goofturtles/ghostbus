@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { setLocale, type LocaleId } from './i18n';
 import { pushRecent, type RecentPlace } from './lib/search';
+import type { MeasuredWalk } from './lib/walk';
 
 // Everything personal lives here and in localStorage — never on the server.
 export type Theme = 'system' | 'light' | 'dark';
@@ -101,6 +102,25 @@ interface State {
    * `planTarget` itself. See DECISIONS §45.
    */
   planUnresolved: boolean;
+  /**
+   * THE WALK THE MAP IS ACTUALLY DRAWING, so that every number describing it agrees
+   * with the line under it.
+   *
+   * The map routes the rider's walk to the boarding stop over the street geometry in
+   * its own tiles (see map/walkPath.ts) and publishes the result here. `stopId` is
+   * how a consumer knows the walk is theirs: a header, a departure row's leave-by and
+   * a plan's first leg all read it, and all ignore it unless it ends at the stop they
+   * are describing. Anything else keeps the straight-line estimate and says so.
+   *
+   * `kind: 'direct'` means the map could not find a walkable line and is drawing the
+   * straight one — still published, because a consumer must be able to tell an
+   * estimate from a measurement, and silence would look like a measurement.
+   *
+   * Null whenever no walk is drawn at all, which includes every state the plan-
+   * geometry machine calls unresolved. Session-only: a walk restored from storage
+   * would be a claim about a rider who has since moved.
+   */
+  walkLeg: MeasuredWalk | null;
   mapExpanded: boolean;
   locale: LocaleId;
 
@@ -124,13 +144,30 @@ interface State {
   rememberStop: (p: RecentPlace) => void;
   setPlanTarget: (p: RecentPlace | null) => void;
   setPlanUnresolved: (v: boolean) => void;
+  setWalkLeg: (v: MeasuredWalk | null) => void;
   setMapExpanded: (v: boolean) => void;
 }
 
 export const useStore = create<State>((set, get) => ({
   city: 'toronto',
   tab: 'nearby',
-  selectedStopId: '4197',
+  /**
+   * NO STOP IS SELECTED AT COLD START, and the empty string is the honest value.
+   *
+   * This seeded `'4197'` — the stop id in the design mockup (`voxelLab.ts`), which is
+   * not a TTC stop. Every cold boot therefore fired `GET /api/stops/4197/arrivals`,
+   * got a 404, and `useLive` classified that as `badRequest` and raised `apiFailure` —
+   * so the very first thing a rider saw, on every single load, was the panel claiming
+   * our server was in trouble. Out of coverage it fired twice and nothing ever
+   * displaced it. Confirmed on 11 of 11 cold loads by the R4 console sweep.
+   *
+   * The selection is made by `loadNearby`, which picks the nearest real stop the
+   * agency actually returned. Until that resolves there is genuinely no stop, and the
+   * app already handles that state: `refetchArrivals` returns early on a falsy id, so
+   * no request is made for a stop nobody chose, and `NearbyPanel` shows its loading
+   * state off `nearbyLoading` rather than off a board that was never requested.
+   */
+  selectedStopId: '',
   routeFocusId: null,
   theme: ls<Theme>('gb.theme', 'system'),
   quality: ls<Quality>('gb.quality', 'auto'),
@@ -155,6 +192,7 @@ export const useStore = create<State>((set, get) => ({
   searchMode: null,
   planTarget: null,
   planUnresolved: false,
+  walkLeg: null,
   mapExpanded: false,
   locale: (localStorage.getItem('gb.lang') as LocaleId) || 'en',
 
@@ -192,6 +230,15 @@ export const useStore = create<State>((set, get) => ({
     set({ recentStops: next });
   },
   setPlanUnresolved: (planUnresolved) => set({ planUnresolved }),
+  // Identity-stable: the map republishes on every camera settle, and a fresh object
+  // each time would re-render every leave-by chip on the board for no new fact.
+  setWalkLeg: (walkLeg) => {
+    const cur = get().walkLeg;
+    if (cur === walkLeg) return;
+    if (cur && walkLeg && cur.stopId === walkLeg.stopId && cur.kind === walkLeg.kind
+      && cur.distanceM === walkLeg.distanceM && cur.seconds === walkLeg.seconds) return;
+    set({ walkLeg });
+  },
   setPlanTarget: (planTarget) => {
     // A new destination is a new question: nothing is known about it yet, so the previous
     // answer's geometry must not linger on the map while this one is being worked out.

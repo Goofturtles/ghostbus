@@ -77,6 +77,11 @@ const en = {
     directionStop: '{{direction}} · Stop {{code}}',
     code: 'Stop {{code}}',
     walk: '{{min}} min walk',
+    // The '≈' is the app's mark for "estimated, not measured": this walk was NOT
+    // routed along real ways, so its distance is the straight line and its time
+    // carries the 1.25 route factor. Every surface that can show a routed walk uses
+    // one of this pair, and the difference is the whole point of the mark.
+    walkEst: '≈{{min}} min walk',
     walkRange: '{{a}}–{{b}} min walk',
     away: '{{dist}} away',
     showOnMap: 'Show on map',
@@ -245,8 +250,10 @@ const en = {
     bodyLabel: 'Verdict and evidence',
     // The receipts.
     evWalk: '{{dist}} to the stop · {{min}} min walk',
+    evWalkEst: '≈{{dist}} to the stop · {{min}} min walk',
     evWalkUnknown: 'Your walk is unknown without your position',
-    evWalkBasis: 'at {{kmh}} km/h with a 1.25 route factor',
+    evWalkBasis: 'at {{kmh}} km/h with a 1.25 route factor, straight line',
+    evWalkBasisRouted: 'at {{kmh}} km/h along the walking route on the map',
     evArrival: 'Live arrival {{time}}',
     evArrivalGone: 'No live arrival — this run left the board',
     evVehicle: 'Closest tracked {{route}} · {{dist}} from the stop',
@@ -450,12 +457,14 @@ const en = {
     doorToDoor: 'About {{min}} min door to door',
     arriveAt: 'Arrive around {{time}}',
     walkTo: 'Walk {{dist}} · {{min}} min to {{stop}}',
+    walkToEst: 'Walk ≈{{dist}} · {{min}} min to {{stop}}',
     leaveBy: 'Leave by {{time}}',
     rideDetail: 'Board {{board}} · {{count}} stop · get off {{alight}}',
     rideDetail_other: 'Board {{board}} · {{count}} stops · get off {{alight}}',
     alightAt: 'Get off at {{stop}}',
     walkFrom: 'Walk {{dist}} · {{min}} min to {{dest}}',
-    basisRide: 'Walking times use your pace profile with a 1.25 route factor.',
+    walkFromEst: 'Walk ≈{{dist}} · {{min}} min to {{dest}}',
+    basisRide: 'Walking times marked ≈ are straight lines at your pace, padded by a 1.25 route factor for the detours a straight line ignores. The rest are measured along a real walking route.',
     basisScheduled: 'The boarding time and the running time are both the agency’s published schedule.',
     basisPredicted: 'The boarding time is GhostBus’s live estimate; the running time after it is the agency’s published schedule, which assumes the trip keeps to it.',
     basisSingleRide: 'GhostBus plans one ride only — it never joins two together.',

@@ -2,7 +2,8 @@ import { useTranslation } from 'react-i18next';
 import type { ArrivalsResponse } from '@shared/types';
 import { PinIcon, HeartIcon, StarIcon } from './icons';
 import { useStore, paceMps } from '@/store';
-import { fmtDistance, walkSeconds } from '@/lib/format';
+import { fmtDistance } from '@/lib/format';
+import { walkFor, walkMinutes } from '@/lib/walk';
 import { stopDirection } from '@/lib/headsign';
 
 /**
@@ -33,7 +34,12 @@ export function StopHeader({ arr, distanceM, headsigns }: {
   const units = useStore((s) => s.units);
   const pace = useStore((s) => s.pace);
 
-  const walkMin = distanceM != null ? Math.max(1, Math.round(walkSeconds(distanceM, paceMps(pace)) / 60)) : null;
+  // The walk the MAP has drawn, when this is the stop it was drawn to. Its distance
+  // is the one along that line, so the two facts on this row cannot disagree with each
+  // other or with the picture beside them. Any other stop keeps the straight-line
+  // estimate, and the '≈' says which of the two a reader is looking at.
+  const walkLeg = useStore((s) => s.walkLeg);
+  const walk = walkFor(walkLeg, arr.stopId, distanceM, paceMps(pace));
   const dir = stopDirection(headsigns ?? arr.departures.map((d) => d.directionLabel));
 
   return (
@@ -57,11 +63,13 @@ export function StopHeader({ arr, distanceM, headsigns }: {
         <p className="stop-sub">
           {dir && <span className="stop-fact stop-dir">{t(`direction.${dir}`)}</span>}
           <span className={dir ? 'stop-fact' : 'stop-fact stop-dir'}>{t('stop.code', { code: arr.stopId })}</span>
-          {distanceM != null && (
-            <span className="stop-fact">{fmtDistance(distanceM, units === 'imperial')}</span>
+          {walk != null && (
+            <span className="stop-fact">{fmtDistance(walk.distanceM, units === 'imperial')}</span>
           )}
-          {walkMin != null && (
-            <span className="stop-fact">{t('stop.walk', { min: walkMin })}</span>
+          {walk != null && (
+            <span className="stop-fact">
+              {t(walk.kind === 'direct' ? 'stop.walkEst' : 'stop.walk', { min: walkMinutes(walk.seconds) })}
+            </span>
           )}
         </p>
       </div>

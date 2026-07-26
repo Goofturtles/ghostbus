@@ -66,7 +66,7 @@ export interface RouteOpts {
 
 const DEFAULTS: Required<RouteOpts> = {
   maxAttachM: 150,
-  healM: 3,
+  healM: 8,
   detourCeiling: 3,
   avoidSteps: false,
 };
@@ -293,12 +293,22 @@ function splitAt(g: Graph, ix: SegIndex, si: number, p: Projection): number {
  *
  * On the King & Spadina fixture, six realistic rider→stop walks routed at 6.5×,
  * 2.1×, 1.5×, 4.1× and 16.9× the straight-line distance, with the sixth finding no
- * path at all. Healing every DANGLING end (degree 1) onto a segment within 3 m fixed
- * all six: 1.26×–1.95×, which is what a downtown walk with crossings actually costs.
+ * path at all. Healing every DANGLING end (degree 1) onto a segment within a few
+ * metres fixed all six, at 1.26×–1.95× — what a downtown walk with crossings costs.
  *
- * Only degree-1 nodes are healed, and only within a few metres: a dangling end in
- * this data is a cut or a genuine cul-de-sac, and 3 m is far too short to invent a
- * crossing through a fence.
+ * THE TOLERANCE IS 8 m, AND 3 m WAS NOT ENOUGH. Three metres passed those six because
+ * a missing link costs a LONG walk little: the detour is absorbed. The app's own
+ * default view is the case that exposed it — Front & Spadina to King St W at Spadina
+ * Ave, 225 m — where one unjoined 7 m gap sent the route the long way round the block
+ * at 1152 m (5.1×), over the detour ceiling, so the map fell back to the straight line
+ * on the very first screen a rider sees. At 8 m it is 419 m (1.87×). Both datasets
+ * agree: measured over the fixture AND over lines captured live out of the running
+ * app's own tile cache, every other pair is IDENTICAL from 3 m to 12 m, so this buys
+ * the short walks without loosening the long ones.
+ *
+ * Only degree-1 nodes are healed: a dangling end in this data is a tile cut or a
+ * genuine cul-de-sac. The joint's length is charged to the route like any other edge,
+ * so a healed crossing is walked, not teleported.
  *
  * Two cut ends that join EACH OTHER rather than a through-way is the intended
  * outcome, not a miss: the commonest cut is a single way sliced in two, so the ends
