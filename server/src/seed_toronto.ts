@@ -2,18 +2,44 @@
 // Data (CKAN), download + extract it, and load it into the database.
 //
 // GTFS times are stored as seconds-past-service-midnight INTEGERS so 25:30:00
-// stays valid. By default we load only the trips/stop_times/shapes whose service
-// is active within the next N days (GHOSTBUS_SEED_WINDOW_DAYS, default 7); this is
-// the latitude granted in the spec — it keeps this week's schedule exact, keeps
-// the load fast on both PGlite and Neon, and re-seeding refreshes the window.
-// Set GHOSTBUS_SEED_FULL=1 to load the entire feed unfiltered. See DECISIONS.md.
+// stays valid.
+//
+// ---------------------------------------------------------------------------
+// WINDOW SEMANTICS — one window, and the board defines it
+// ---------------------------------------------------------------------------
+// `trips`, `stop_times` and `shapes` are loaded for every service the loaded
+// calendar can activate. That set is derived from the board's OWN validity span
+// — min(start_date)..max(end_date) across calendar.txt, widened by any
+// calendar_dates exception date outside it — replayed day by day through the
+// same `activeServiceIds` resolution the runtime uses. `routes`, `stops`,
+// `calendar`, `calendar_dates` and `cities` are loaded in full, as before.
+//
+// This used to be a rolling N-day window measured from the SEED DATE
+// (GHOSTBUS_SEED_WINDOW_DAYS, default 7) while calendar/calendar_dates were
+// loaded whole: two different windows over one dataset, so the calendar could
+// declare a service active on a date whose trips had never been loaded. On the
+// 2026-07-26..2026-09-05 board that emptied 7 of 42 days — the six Saturdays
+// (service `2`, 32,874 trips) and the 2026-08-03 civic holiday (service `4`,
+// 31,295 trips, with the weekday service switched off by calendar_dates) — and
+// those days rendered exactly like flawless service days. The env var is gone;
+// deriving the filter from the board costs +27 s and +2.0M rows, once. See
+// DECISIONS.md §43 / BLOCKERS.md entry 9.
+//
+// Escape hatches, both diagnostic:
+//   GHOSTBUS_SEED_FULL=1          load every row unfiltered, including services
+//                                 the calendar never activates (1,112 dead trips
+//                                 in this feed: 6702/6703/6704).
+//   GHOSTBUS_SEED_SKIP_DOWNLOAD=1 reuse the already-extracted feed in
+//                                 .data/gtfs/extracted instead of re-downloading,
+//                                 so a re-seed provably loads the same board a
+//                                 running server is already observing.
 
 import AdmZip from 'adm-zip';
 import { parse } from 'csv-parse';
 import { createReadStream } from 'node:fs';
-import { mkdir, writeFile, rm, stat } from 'node:fs/promises';
+import { mkdir, writeFile, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getDb, type Db, type Queryable } from './db.ts';
 import {
@@ -23,7 +49,7 @@ import {
   type CalendarDateRow,
   type WindowDay,
 } from './gtfs.ts';
-import { torontoParts, torontoMidnightEpoch, torontoDay } from './tz.ts';
+import { torontoMidnightEpoch, torontoDay } from './tz.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..', '..');
@@ -34,8 +60,8 @@ const ZIP_PATH = join(DATA_DIR, 'opendata_ttc_schedules.zip');
 const AGENCY = 'ttc';
 const CKAN_URL =
   'https://ckan0.cf.opendata.inter.prod-toronto.ca/api/3/action/package_show?id=ttc-routes-and-schedules';
-const WINDOW_DAYS = Number(process.env.GHOSTBUS_SEED_WINDOW_DAYS ?? 7);
 const FULL = process.env.GHOSTBUS_SEED_FULL === '1';
+const SKIP_DOWNLOAD = process.env.GHOSTBUS_SEED_SKIP_DOWNLOAD === '1';
 const BATCH_SIZE = 1000; // rows per INSERT statement
 const COMMIT_EVERY = 40_000; // rows per transaction
 
@@ -145,15 +171,52 @@ async function* fromArray(rows: unknown[][]): AsyncGenerator<unknown[]> {
   for (const r of rows) yield r;
 }
 
-// ---------- window ----------
-function computeWindow(days: number): WindowDay[] {
-  const now = Date.now();
-  const p = torontoParts(now);
-  const midnight = torontoMidnightEpoch(p.year, p.month, p.day);
+// ---------- window: derived from the loaded board, never from the clock ----------
+
+// A GTFS board is weeks long. This only exists so a malformed date in calendar.txt
+// cannot turn the enumeration below into a hang.
+const MAX_BOARD_DAYS = 800;
+
+/**
+ * Every calendar date the loaded board can speak about: min(start_date)..max(end_date)
+ * across `calendar`, widened by any `calendar_dates` exception date outside that span
+ * (a feed may add or remove a service on a date no calendar row covers).
+ *
+ * Days are sampled at Toronto local noon so a DST transition can never shift one onto
+ * its neighbour. Pure: the result depends on the feed alone, never on the seed date —
+ * that independence is the whole point, and `seed_toronto.test.ts` asserts it.
+ */
+export function boardDays(calendar: CalendarRow[], calendarDates: CalendarDateRow[]): WindowDay[] {
+  let first = Infinity;
+  let last = -Infinity;
+  const see = (ymd: number): void => {
+    // A blank date column parses as 0, not NaN. Ignore anything outside a plausible
+    // GTFS date rather than letting one empty cell drag the span back to 1899.
+    if (!Number.isFinite(ymd) || ymd < 19700101 || ymd > 21001231) return;
+    if (ymd < first) first = ymd;
+    if (ymd > last) last = ymd;
+  };
+  for (const c of calendar) { see(c.start_date); see(c.end_date); }
+  for (const d of calendarDates) see(d.date);
+  if (first === Infinity) {
+    throw new Error('GTFS calendar/calendar_dates carry no usable dates — cannot derive the board span.');
+  }
+
+  const midnight = torontoMidnightEpoch(Math.floor(first / 10000), Math.floor(first / 100) % 100, first % 100);
   const out: WindowDay[] = [];
-  for (let i = 0; i < days; i++) {
-    // Sample at local noon so the DST spring-forward hour never shifts the date.
-    out.push(torontoDay(midnight + i * 86_400_000 + 12 * 3_600_000));
+  for (let i = 0; ; i++) {
+    const day = torontoDay(midnight + i * 86_400_000 + 12 * 3_600_000);
+    if (day.ymd > last) break;
+    out.push(day);
+    if (out.length > MAX_BOARD_DAYS) {
+      throw new Error(`GTFS board span ${first}..${last} exceeds ${MAX_BOARD_DAYS} days — refusing to enumerate it; the feed's calendar dates look wrong.`);
+    }
+  }
+  // Empty means `first` was a well-formed number but not a real date (e.g. 20260231,
+  // which rolls forward past `last` on the first step). Say so here rather than let a
+  // caller trip over days[0].
+  if (out.length === 0) {
+    throw new Error(`GTFS board span ${first}..${last} enumerates to zero days — the feed's calendar dates are not real dates.`);
   }
   return out;
 }
@@ -290,21 +353,30 @@ async function count(db: Db, table: string): Promise<number> {
 async function main(): Promise<void> {
   const started = Date.now();
   const db = await getDb();
-  console.log(`GhostBus seed:toronto — driver=${db.driver}, window=${FULL ? 'FULL' : `${WINDOW_DAYS} days`}`);
+  console.log(`GhostBus seed:toronto — driver=${db.driver}, filter=${FULL ? 'FULL feed' : 'board span'}`);
 
-  console.log('1/8 discovering GTFS feed via CKAN…');
-  const zipUrl = await discoverZipUrl();
-  console.log(`  resource: ${zipUrl}`);
-  await downloadAndExtract(zipUrl);
+  if (SKIP_DOWNLOAD) {
+    if (!existsSync(entry('calendar.txt'))) {
+      throw new Error(`GHOSTBUS_SEED_SKIP_DOWNLOAD=1 but there is no extracted feed at ${EXTRACT_DIR} — run the seed once without it first.`);
+    }
+    console.log('1/8 GHOSTBUS_SEED_SKIP_DOWNLOAD=1 — reusing the extracted feed already on disk…');
+    console.log(`  source: ${EXTRACT_DIR}`);
+  } else {
+    console.log('1/8 discovering GTFS feed via CKAN…');
+    const zipUrl = await discoverZipUrl();
+    console.log(`  resource: ${zipUrl}`);
+    await downloadAndExtract(zipUrl);
+  }
   assertRequiredEntries();
-
-  const window = computeWindow(WINDOW_DAYS);
-  console.log(`  active window days: ${window.map((d) => d.ymd).join(', ')}`);
 
   console.log('2/8 calendar + calendar_dates…');
   const calendar = await loadCalendar();
   const calendarDates = await loadCalendarDates();
-  const active = activeServiceIds(calendar, calendarDates, window);
+  // The window comes from the board we just read, so the calendar we load and the
+  // trips we load are the same window by construction.
+  const days = boardDays(calendar, calendarDates);
+  const active = activeServiceIds(calendar, calendarDates, days);
+  console.log(`  board span: ${days[0].ymd}..${days[days.length - 1].ymd} (${days.length} days)`);
   console.log(`  ${calendar.length} calendar rows, ${calendarDates.length} calendar_dates rows, ${active.size} active service_ids`);
   const nCalendar = await chunkedLoad(
     db, 'calendar',
@@ -340,6 +412,27 @@ async function main(): Promise<void> {
   logSkips('trips', skips.trips);
   console.log(`  ${activeTrips.size} trip_ids / ${activeShapes.size} shape_ids in scope`);
 
+  // The check this seeder did not have, and the reason 7 of 42 days used to load empty:
+  // every service the calendar can activate must own at least one trip. A miss here is a
+  // hole in the board, so name it — never let it pass as a quiet zero.
+  const perService = await db.query<{ service_id: string; n: string }>(
+    `SELECT service_id, COUNT(*)::text AS n FROM trips WHERE agency=$1 GROUP BY service_id`,
+    [AGENCY],
+  );
+  const loadedServices = new Set(perService.rows.map((r) => r.service_id));
+  const emptyActive = [...active].filter((s) => !loadedServices.has(s)).sort();
+  if (emptyActive.length > 0) {
+    const blankDays = days.filter((d) => {
+      const on = activeServiceIds(calendar, calendarDates, [d]);
+      return on.size > 0 && [...on].every((s) => !loadedServices.has(s));
+    });
+    console.log(`  !! WARNING: service_id(s) ${emptyActive.join(', ')} are calendar-active on this board but have ZERO trips.`);
+    console.log(`  !! ${blankDays.length} board day(s) would hold no schedule at all${blankDays.length ? `: ${blankDays.map((d) => d.ymd).join(', ')}` : ''}`);
+    console.log('  !! The feed itself is short of trips for those services — the engine will gate those dates (boardIntegrity).');
+  } else {
+    console.log(`  integrity: all ${active.size} calendar-active service_id(s) have trips loaded`);
+  }
+
   console.log('6/8 stop_times…');
   const nStopTimes = await chunkedLoad(db, 'stop_times', ['agency', 'trip_id', 'stop_sequence', 'stop_id', 'arrival_s', 'departure_s'], stopTimeRows(activeTrips, skips.stopTimes), { label: 'stop_times' });
   logSkips('stop_times', skips.stopTimes);
@@ -362,7 +455,7 @@ async function main(): Promise<void> {
   console.log('\n================ SEED COMPLETE ================');
   console.log(`driver           : ${db.driver}`);
   console.log(`elapsed          : ${secs}s`);
-  console.log(`window           : ${FULL ? 'FULL feed' : `${WINDOW_DAYS} days`}`);
+  console.log(`window           : ${FULL ? 'FULL feed (filter disabled)' : `board span ${days[0].ymd}..${days[days.length - 1].ymd} (${days.length} days)`}`);
   console.log('--- row counts (from DB) ---');
   console.log(`cities           : ${await count(db, 'cities')}`);
   console.log(`routes           : ${nRoutes}`);
@@ -378,7 +471,13 @@ async function main(): Promise<void> {
   await db.close();
 }
 
-main().catch((e) => {
-  console.error('seed:toronto FAILED:', e);
-  process.exit(1);
-});
+// Seed only when run directly (`npm run seed:toronto`), so `seed_toronto.test.ts` can
+// import the window derivation without touching a database. Path comparison, not URL
+// comparison, matching aggregate.ts and record_demo.ts: it is not tripped up by Windows
+// drive-letter casing.
+if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
+  main().catch((e) => {
+    console.error('seed:toronto FAILED:', e);
+    process.exit(1);
+  });
+}
