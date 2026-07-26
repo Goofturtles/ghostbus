@@ -560,8 +560,10 @@ flights into cuts.
 
 ### Security and hygiene
 
-`@fastify/helmet`, CORS locked to same-origin plus localhost dev origins, rate limiting at
-120 req/min on all routes, every parameter validated (bbox side capped at 3°, radius capped
+`@fastify/helmet`, CORS locked to same-origin plus localhost dev origins, rate limiting on
+`/api/*` at 600 req/min with tighter per-route budgets on the two expensive endpoints
+(`/api/plan` 60, `/api/stops` 120) and the app shell deliberately exempt so a reload during
+a throttle still loads the app, every parameter validated (bbox side capped at 3°, radius capped
 at 3 km, query ≤ 64 chars, `at=` rejected before 2020 or beyond +30 days), uniform JSON errors
 with no stack traces, and parameterised SQL everywhere. **There are no API keys anywhere in
 this project** — the TTC feeds are unauthenticated and OpenFreeMap requires no key,
@@ -776,10 +778,10 @@ omitting it.
 | Ghost Forecast chips | **Built, but dormant** — `ghostRiskFor` is served and rendered, and **cannot fire until ghosts exist** (limitation 2). Do not demo it as working until it has real input | `server/src/api.ts`, `web/src/components/DepartureRow.tsx` |
 | Ghost Feed UI | **Built** — today/week ghost + cancelled counters, ghost event cards, honest empty state, service-alerts list. **Renders `0 / 0` today, correctly (limitation 2)** | `web/src/components/AlertsPanel.tsx`, `GET /api/ghosts/feed`, `screenshots/phase5/alerts-ghostfeed-390-dark.png` |
 | PWA — manifest, icons, service worker | **Built** — registered at startup **in production builds only** (`pwa.ts` guards on `import.meta.env.PROD`, so it never registers under `vite dev`) | `web/src/pwa.ts`, `web/public/sw.js`, `manifest.webmanifest`, `screenshots/pwa/*` |
-| Demo Mode | **[IN PROGRESS]** — recorder + replay source written and unit-tested; re-checked 2026-07-25: still **not wired into the poller**, and no web component consumes the `DEMO` badge string. There is no demo footage to shoot | `server/src/record_demo.ts`, `demo.ts` |
+| Demo Mode | **Built** — `npm run demo` (or `GHOSTBUS_DEMO=1`) replays a bundled recording of real TTC protobuf through the identical poller/engine/detector. `/api/health` reports `mode:"demo"` plus a provenance object (capture window, cadence, speed, loops); the UI shows an amber **DEMO** badge and "Nothing here is live" in en/fr-CA/es. Demo observations are written under `agency='ttc-demo'` and can never blend with live rows; the schedule is still read under `'ttc'`. Verified on `ttc-demo-20260726-1040.json.gz` (42/42 frames): 25 search hits, `ride` plan outcome, 119-point shape, 471 vehicles dated on the data clock | `server/src/demo.ts`, `record_demo.ts`, `DECISIONS.md` §44, §48 |
 | Ride Mode | **Designed, not built** | copy exists in `web/src/i18n/en.ts` (`ride.*`) |
-| Plan / "Where to?" routing | **Designed, not built** | app says so: `plan.body` |
-| Saved places | **Designed, not built** | app says so: `saved.body` |
+| Plan / "Where to?" routing | **Built** — a real single-ride planner over `GET /api/plan`: walk, one vehicle, walk. Four distinct outcomes, never collapsed: `ride`, `transfer` (nothing in the schedule links the two ends directly — it says so and offers a maps app rather than inventing a leg), `noService`, `noStopsNear*`. ⌘K opens a real search sheet over `GET /api/stops` with route rows built from boards already held | `web/src/components/PlanView.tsx`, `SearchSheet.tsx`, `web/src/lib/plan.ts`, `search.ts` |
+| Saved places | **Built** — starred stops persist to `localStorage`, render as real rows with live next-departure data, and show an honest empty state until something is saved | `web/src/components/SavedPlaces.tsx` |
 | Catch Mode (Tier 0) | **Built** — `App.tsx` passes `onCatch` and mounts `CatchView` | `web/src/components/CatchView.tsx`, `web/src/lib/catch.ts` |
 | Catch Mode's full guided choreography | **Designed, not built** | remaining `catch.*` strings |
 | Focused Boarding Mode | **Designed, not built** | — |
@@ -838,13 +840,16 @@ worth more than one someone found for you.
 8. **The walk path is a straight line**, not a walking route. There is no routing engine.
 9. **Web-only, foreground-only.** No background tracking, no push notifications; the app says as
    much in its own copy (`ride.keepOpen`).
-10. **The seeded schedule has holes, and the seeder's window is why.** `GHOSTBUS_SEED_WINDOW_DAYS`
-    (default 7) filters trips to services active in the next N days **from the seed date**, which
-    is a different window from the board `calendar` loads whole. Consequence, measured: **7 of
-    this board's 42 days** — the six Saturdays and the civic holiday — are calendar-active with
-    **zero** loaded trips. A `boardIntegrity` gate now refuses to publish on those days rather
-    than letting them read as clean service, but **the seed itself is not fixed**
-    (`DECISIONS.md` §34, `BLOCKERS.md` entry 9). `GHOSTBUS_SEED_FULL=1` loads all 2,151,105 rows.
+10. **~~The seeded schedule has holes~~ — FIXED.** This limitation described a rolling
+    `GHOSTBUS_SEED_WINDOW_DAYS` (default 7) window measured from the *seed date*, which was a
+    different window from the `calendar` the seeder loaded whole: **7 of the board's 42 days**
+    (six Saturdays and the civic holiday) were calendar-active with zero loaded trips, and
+    rendered exactly like flawless service days. The seeder now derives its window from the
+    board itself — every day the loaded calendar actually declares — and the env var is
+    **removed**, not re-defaulted, so no value of it can reintroduce the mismatch. Cost: +27 s
+    and +2.0M rows, once (`DECISIONS.md` §43, `BLOCKERS.md` entry 9 — RESOLVED). The
+    `boardIntegrity` gate stays as a belt-and-braces check. `GHOSTBUS_SEED_FULL=1` still loads
+    all 2,151,105 rows unfiltered.
 11. **Single-operator scale.** All figures come from one collector process against one Neon free-tier
     instance (pool capped at 4 connections) over a single afternoon. Nothing here has been load-tested.
 

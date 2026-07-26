@@ -713,7 +713,7 @@ being published — both were audits that would not catch the error they exist t
 a worse failure for this project than a missing feature, which is why it was filed at this
 priority.
 
-## 18. OPEN, filed against `api.ts` and `web/` — Demo Mode is wired server-side and INVISIBLE client-side
+## 18. RESOLVED 2026-07-26 — Demo Mode is visible client-side, and the agency bug bit twice on the way
 
 The poller now replays the bundled fixture through the identical pipeline and reports
 `mode: 'demo'` honestly (DECISIONS §44). Nothing downstream reads it. Measured against the
@@ -739,6 +739,35 @@ real API, in-process, replaying `fixtures/ttc-demo-20260725-2242.json.gz`:
 derives its agency from the poller, a demo instance must not be pointed at a database that
 holds live observations. The server-side half is complete and tested; the client-side half
 is one const, one timestamp and one badge.
+
+### RESOLVED 2026-07-26 — all three bullets, and the fix for the third was wrong twice
+
+Verified on a fresh `GHOSTBUS_DEMO=1` instance replaying
+`fixtures/ttc-demo-20260726-1040.json.gz` (42/42 frames, no failed polls):
+
+- **`GET /api/health` carries the mode.** `HealthResponse` gained `mode: 'live' | 'demo'`
+  and `demo: DemoProvenance | null` (`shared/types.ts`), served from `poller.getMode()`.
+  The demo instance answers `mode: "demo"` with the fixture's capture window in UTC and
+  America/Toronto, its cadence, replay speed and loop count. The web client consumes it:
+  amber **DEMO** badge on the status pill (`Primitives.tsx`) and a provenance banner
+  (`NearbyPanel.tsx`), in en/fr-CA/es.
+- **`GET /api/vehicles` dates recorded buses on the DATA clock.** `serverNowMs` is
+  `poller.now()`. Measured on the same replay: the newest ping reads **159 s** old against
+  the 1,297-1,719 s (21-29 min) this entry recorded. The fleet no longer greys out wholesale.
+- **`api.ts` derives its agency from the poller - eventually.** This bullet was fixed
+  twice, because the first fix overshot and broke Demo Mode worse than the bug it closed.
+  Binding *every* query to `poller.getMode().agency` meant the static schedule was read
+  under `'ttc-demo'`, a namespace `seed_toronto.ts` never writes to, so a demo instance
+  returned **zero stops, zero search results, no plan and no route shape** - it told a
+  rider standing at King & Spadina there were no stops near them. The correct split is
+  per table: `staticAgency` (`'ttc'`, always) for the published board, `modeAgency` for
+  observations. See `DECISIONS.md` §45 §7 (the overshoot, marked), §48 (the split), §50.
+
+Now measured on the demo instance: 25 search hits for "King", a `ride` plan outcome with
+27 candidates, a 119-point route shape with 36 stops, 471 vehicles. The isolation property
+this entry called for holds - demo observations are written under `agency='ttc-demo'` and
+enforced by the primary keys, so a demo process pointed at a live database cannot serve
+live ghosts, delays or alerts under the amber badge.
 
 ## 19. NOTE — the bundled demo fixture captures real service but an inactive board
 

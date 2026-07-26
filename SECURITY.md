@@ -99,8 +99,19 @@ no stack trace, driver message, or SQL fragment can reach a client.
 
 ## 4. Rate limiting and CORS
 
-**Rate limit:** `@fastify/rate-limit` at **120 requests per minute**, applied globally
-rather than per route.
+**Rate limit:** `@fastify/rate-limit` at **600 requests per minute** on `/api/*`, with
+tighter per-route budgets on the two endpoints that are not cheap: **`/api/plan` 60/min**
+(the windowed board self-join) and **`/api/stops` 120/min** (a leading-wildcard `ILIKE`
+over the whole stops table). The ceiling was raised from an unmeasured 120 after the
+client's real cost was measured at ~19 req/min per open tab — 120 was about six tabs of
+idle polling, and riders were being throttled during normal use (`DECISIONS.md` §45).
+
+The **app shell and static assets are deliberately exempt**, so a reload during an
+exhausted budget still loads the app rather than raw 429 JSON. The exemption is keyed on
+the *routed* path, not `req.url` — gating on the raw target let a percent-encoded
+`/%61pi/stops` skip both budgets (`DECISIONS.md` §48 §6). Unmatched routes are not
+limited either; see item 5 below for why that is accepted and what the exposure actually
+is (`DECISIONS.md` §49, §50).
 
 **Finding (open): the rate limit is evadable as currently configured.** Fastify is
 constructed with `trustProxy: true`, which per Fastify's documentation means "trust all

@@ -277,14 +277,9 @@ Listed honestly. None of the following exists in working form today; each is par
 tier plan, not a claim about the current build.
 
 - **Ride Mode** — the in-vehicle experience.
-- **Plan / "Where to?" routing** — the search field is present in the UI; there is no
-  routing engine behind it.
-- **Saved places** — tab exists, shows a designed placeholder.
-- **Catch Mode's full guided choreography** — the walk path and boarding pin exist; the
-  guided sequence does not.
+- **Catch Mode's full guided choreography** — the walk path, boarding pin, verdict and
+  evidence panel exist; the step-by-step guided sequence does not.
 - **Focused Boarding Mode.**
-- **The 3D voxel building city** — deliberately deferred as the highest-risk,
-  lowest-function tier. The current map is flat 2D by decision, not by accident.
 - **Vancouver and the multi-city coverage engine** — the `agency` seam runs through every
   table, but only the TTC has ever been ingested.
 - **Transit Passport.**
@@ -293,16 +288,45 @@ tier plan, not a claim about the current build.
   data (`is_accessibility`); the surfaced feature is not built.
 - **Offline schedule-slice cache** — the PWA shell caches the app, not the timetable.
 - **Capacitor Android shell.**
-- **Demo Mode** — *partially*, and worth stating precisely: the replay module
-  (`server/src/demo.ts`) and the recorder (`server/src/record_demo.ts`) are written and
-  unit-tested, with an explicit honesty contract (demo and live data can never mix in one
-  process, every frame is labelled). **It is not wired into the poller** — the module's
-  own header says it "wires into nothing by itself", and there is no demo code path in
-  `poller.ts`. So there is no working Demo Mode today.
+### Since landed
 
-Two things the brief listed as unbuilt **have since landed and were verified in code**:
-the **PWA** (manifest, icons and service worker all present and committed) and the
-**Alerts tab / Ghost Feed** with trust and forecast chips.
+Six things this list used to carry have shipped and were verified against a running
+build: the **PWA** (manifest, icons, service worker), the **Alerts tab / Ghost Feed**
+with trust and forecast chips, the **3D voxel city** (the map is a lit isometric diorama,
+not flat 2D), **search and the trip planner**, **Saved places**, and **Demo Mode**.
+
+**Search and Plan.** ⌘K (or `/`) opens a real search sheet: stops come from
+`/api/stops`, routes are built from departure boards already held — so every route row
+carries the stop it actually leaves from and the time it actually leaves — and a distance
+is shown only when the rider's own fix makes one measurable. The Plan tab is a genuine
+single-ride planner over `/api/plan`: walk, stay on one vehicle, walk. It plans **one**
+ride and says so; when the schedule links the two ends only via a change of vehicle it
+reports `transfer` and offers a maps app rather than inventing a connection.
+
+**Demo Mode.** `npm run demo` (or `GHOSTBUS_DEMO=1`) replays a bundled recording of real
+TTC GTFS-realtime through the identical poller, engine and ghost detector — same code
+path, no branch anywhere downstream. It is not a mock: the bytes are real protobuf
+captured from `bustime.ttc.ca`, and they are decoded by the same
+`FeedMessage.decode` the live poller uses.
+
+Three properties make it honest rather than merely functional:
+
+- **It says what it is.** `/api/health` reports `mode: "demo"` and a `demo` provenance
+  object — the fixture's capture window in both UTC and America/Toronto, its cadence,
+  replay speed and loop count. The UI renders an amber **DEMO** badge and the line
+  *"Replaying a recorded slice of real TTC data. Nothing here is live."* in all three
+  locales.
+- **It cannot blend with live data.** Everything a demo process observes is written under
+  `agency = 'ttc-demo'`, enforced by the primary keys. The published schedule is still
+  read under `'ttc'`, because a schedule is not an observation and there is only one
+  published board (`DECISIONS.md` §44, §48).
+- **It runs on the data clock.** Replayed frames are dated by the moment they were
+  captured, not by tonight's wall clock, so countdowns and freshness stay correct instead
+  of reporting the whole fleet as hours stale.
+
+Verified on a fresh instance replaying `fixtures/ttc-demo-20260726-1040.json.gz`
+(42/42 frames, no failed polls): a real departure board, 25 search hits for "King", a
+`ride` plan outcome, a 119-point route shape, and 471 vehicles dated on the data clock.
 
 ---
 
@@ -338,16 +362,19 @@ To use a real Postgres instead (Neon, Render, local), set `DATABASE_URL` — see
 `.env.example`, which documents every variable the code actually reads. `/api/health`
 reports `dbDriver` so you always know which one you are looking at.
 
-> Note: the seeder loads trips/stop_times/shapes for service active in the next 7 days by
-> default (`GHOSTBUS_SEED_WINDOW_DAYS`). `GHOSTBUS_SEED_FULL=1` loads the whole feed —
-> all 2.15 million stop-times, which is slow but complete.
+> Note: the seeder derives its own window from the board — every service day the loaded
+> `calendar`/`calendar_dates` actually declare, rather than a rolling N days from the seed
+> date. There is no window variable to set; `GHOSTBUS_SEED_WINDOW_DAYS` was **removed**
+> when that landed (`DECISIONS.md` §43), and setting it now does nothing.
+> `GHOSTBUS_SEED_FULL=1` still loads the entire feed unfiltered, and
+> `GHOSTBUS_SEED_SKIP_DOWNLOAD=1` reuses an already-extracted feed on disk.
 
 ### Other scripts
 
 | Command | What it does |
 |---|---|
 | `npm run dev:api` / `npm run dev:web` | Run either half alone |
-| `npm test` | 162 unit tests — time/DST, GTFS parsing, pattern matching and the stop crosswalk, ETA percentiles, bbox, grades, forecast |
+| `npm test` | 334 unit tests — time/DST, GTFS parsing, pattern matching and the stop crosswalk, ETA percentiles, bbox, grades, forecast |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run collect` | Run the collector standalone; `GHOSTBUS_MAX_CYCLES=5` for a bounded calibration run |
 | `npm run aggregate` | Recompute the delay aggregates now |
