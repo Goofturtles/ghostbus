@@ -64,7 +64,13 @@ const { transit_realtime } = GtfsRealtimeBindings;
  * The agency whose STATIC schedule we read. Never varies: the seeded GTFS board is the
  * same published schedule in both modes, and reading it is not an observation.
  */
-const STATIC_AGENCY = 'ttc';
+/**
+ * The published schedule's namespace. ALWAYS 'ttc', in both live and demo mode: there is one
+ * published board, `seed_toronto.ts` only ever writes it under this name, and a recording is
+ * a recording OF that board rather than a different one. Exported because `api.ts` has to
+ * make exactly the same distinction for its own queries (DECISIONS §44, §46).
+ */
+export const STATIC_AGENCY = 'ttc';
 /** Default namespace for rows this poller WRITES. A recorded source overrides it. */
 const AGENCY = STATIC_AGENCY;
 const FEEDS: Record<FeedId, string> = {

@@ -15,7 +15,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Db } from './db.ts';
-import type { PollerHandle } from './poller.ts';
+import { STATIC_AGENCY, type PollerHandle } from './poller.ts';
 import { parseBbox, pointInBbox } from './bbox.ts';
 import { selectEvidence, type Agg } from './eta.ts';
 import { WINDOW_DAYS } from './aggregate.ts';
@@ -359,21 +359,37 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
   const { db, poller } = opts;
 
   /**
-   * THE NAMESPACE EVERY QUERY IN THIS FILE IS SCOPED TO, taken from the poller rather
-   * than hardcoded — and this was a real, verified bug, not tidying.
+   * TWO NAMESPACES, BECAUSE THERE ARE TWO KINDS OF ROW — and collapsing them into one was
+   * a bug in each direction. `poller.ts` has drawn this exact distinction since Demo Mode
+   * landed (STATIC_AGENCY vs `agency`); this file now matches it.
    *
-   * `mode` is decided once at boot and can never change for the life of the process, so
-   * one read here is correct for every request. Demo Mode writes its replayed rows under
-   * its OWN agency namespace precisely so a recording can never be mistaken for live
-   * history (DECISIONS §44). But every SELECT below used to bind the literal `'ttc'`.
+   * STATIC_AGENCY — the published schedule: stops, routes, trips, stop_times, shapes,
+   * calendar, calendar_dates. Always `'ttc'`, in BOTH modes. A schedule is not an
+   * observation: there is exactly one published board, `seed_toronto.ts` only ever writes
+   * it under `'ttc'`, and a recording is a recording *of* that board rather than a
+   * different one (DECISIONS §44, demo.ts rule 5).
    *
-   * The consequence: a demo instance pointed at a database that ALSO holds live TTC rows
-   * would read the live rows and serve them under the amber DEMO badge. Live departures
-   * labelled "this is a recording" is the same class of lie as a recording labelled live
-   * — the badge would be attached to data it does not describe. Reading the namespace off
-   * the poller means the badge and the rows always come from the same decision.
+   * MODE_AGENCY — everything this process OBSERVED or DERIVED: trip_delay_obs, ghosts,
+   * agg_delay, agg_delay_route, service_alerts. `'ttc-demo'` in demo mode, so replayed
+   * observations can never be confused with live history. Enforced by the primary keys.
+   *
+   * BOTH DIRECTIONS OF THE MISTAKE ARE REAL BUGS, and this file has now shipped each one:
+   *
+   *   Hardcoding `'ttc'` everywhere (the original) meant a demo instance sharing a
+   *   database with live rows served LIVE observations under the amber DEMO badge — a
+   *   badge attached to data it does not describe.
+   *
+   *   Using the mode agency everywhere (the fix that overshot, caught by testers) meant a
+   *   demo instance read the static tables under `'ttc-demo'`, where nothing is ever
+   *   seeded, so EVERY static query returned zero rows. The visible result was a demo
+   *   instance telling a rider standing at King & Spadina "No TTC stops within 800 m of
+   *   you", with search and the planner both dead. That is the same dishonesty this
+   *   attribution work exists to prevent, produced by a namespace bug instead of a copy
+   *   bug — and it is why `staticAgency` and `modeAgency` are now separate names that
+   *   cannot be typo'd into each other.
    */
-  const AGENCY = poller.getMode().agency;
+  const staticAgency = STATIC_AGENCY;
+  const modeAgency = poller.getMode().agency;
 
   /**
    * The DATA clock. Live it is the wall clock; on a recording it is the capture instant of
@@ -390,15 +406,15 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
   // ----- static caches loaded once (small, read-only) -----
   const routeMeta = new Map<string, RouteMeta>();
   for (const r of (await db.query<{ route_id: string; short_name: string | null; long_name: string | null; route_type: number | null; color: string | null }>(
-    'SELECT route_id, short_name, long_name, route_type, color FROM routes WHERE agency=$1', [AGENCY])).rows) {
+    'SELECT route_id, short_name, long_name, route_type, color FROM routes WHERE agency=$1', [staticAgency])).rows) {
     routeMeta.set(r.route_id, { shortName: r.short_name, longName: r.long_name, routeType: r.route_type == null ? null : Number(r.route_type), color: r.color });
   }
 
   const calendar: CalendarRow[] = (await db.query<{ service_id: string; mon: boolean; tue: boolean; wed: boolean; thu: boolean; fri: boolean; sat: boolean; sun: boolean; start_date: number; end_date: number }>(
-    'SELECT service_id, mon, tue, wed, thu, fri, sat, sun, start_date, end_date FROM calendar WHERE agency=$1', [AGENCY])).rows
+    'SELECT service_id, mon, tue, wed, thu, fri, sat, sun, start_date, end_date FROM calendar WHERE agency=$1', [staticAgency])).rows
     .map((r) => ({ service_id: r.service_id, days: [r.mon, r.tue, r.wed, r.thu, r.fri, r.sat, r.sun], start_date: Number(r.start_date), end_date: Number(r.end_date) }));
   const calendarDates: CalendarDateRow[] = (await db.query<{ service_id: string; date: number; exception_type: number }>(
-    'SELECT service_id, date, exception_type FROM calendar_dates WHERE agency=$1', [AGENCY])).rows
+    'SELECT service_id, date, exception_type FROM calendar_dates WHERE agency=$1', [staticAgency])).rows
     .map((r) => ({ service_id: r.service_id, date: Number(r.date), exception_type: Number(r.exception_type) }));
   const activeSvcCache = new Map<number, string[]>();
   function activeServicesFor(ymd: number, dow: number): string[] {
@@ -429,7 +445,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     const watched = new Set<string>();
     for (const r of (await db.query<{ hr: string | number }>(
       `SELECT DISTINCT FLOOR(EXTRACT(EPOCH FROM ts) / 3600)::bigint AS hr
-       FROM trip_delay_obs WHERE agency=$1 AND ts >= $2`, [AGENCY, since])).rows) {
+       FROM trip_delay_obs WHERE agency=$1 AND ts >= $2`, [modeAgency, since])).rows) {
       const bucketMs = Number(r.hr) * 3_600_000;
       const cell = cellOf(bucketMs);
       watched.add(`${cell.ymd}|${cell.how}`);
@@ -446,7 +462,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
          WHERE t.agency = $1 ORDER BY t.trip_id, st.stop_sequence
        ) x
        WHERE route_id IS NOT NULL AND service_id IS NOT NULL AND start_s IS NOT NULL
-       GROUP BY route_id, service_id, start_s`, [AGENCY])).rows) {
+       GROUP BY route_id, service_id, start_s`, [staticAgency])).rows) {
       const list = byService.get(r.service_id) ?? [];
       list.push({ routeId: r.route_id, startS: Number(r.start_s), n: Number(r.n) });
       byService.set(r.service_id, list);
@@ -467,7 +483,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     const ghosts: { routeId: string; scheduledStartMs: number }[] = [];
     for (const r of (await db.query<{ route_id: string | null; scheduled_start: string | Date }>(
       `SELECT route_id, scheduled_start FROM ghosts
-       WHERE agency=$1 AND kind='ghost' AND scheduled_start >= $2`, [AGENCY, since])).rows) {
+       WHERE agency=$1 AND kind='ghost' AND scheduled_start >= $2`, [modeAgency, since])).rows) {
       if (!r.route_id) continue;
       const ms = r.scheduled_start instanceof Date ? r.scheduled_start.getTime() : Date.parse(String(r.scheduled_start));
       if (!Number.isFinite(ms)) continue;
@@ -552,7 +568,54 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
   const PLAN_MAX_PER_MIN = 60;
   const SEARCH_MAX_PER_MIN = 120;
 
-  await app.register(rateLimit, { max: GLOBAL_MAX_PER_MIN, timeWindow: '1 minute' });
+  /**
+   * THE LIMITER COVERS /api/ ONLY. THE APP SHELL IS NEVER RATE-LIMITED.
+   *
+   * Registered at root scope it also guarded the static bundle, so a rider who reloaded
+   * during a throttle was served raw 429 JSON instead of GhostBus — the app could not even
+   * paint the honest "GhostBus is catching up" screen that the whole attribution fix exists
+   * to show them. A reload is the first thing anyone does when an app looks stuck, and it
+   * was the one action guaranteed to make things worse.
+   *
+   * `index.html` and the hashed assets are a handful of cacheable static files; they are
+   * not what a budget is protecting. The budget protects the database behind /api/, and
+   * that is now exactly what it is scoped to. The shell always loads, so the app can always
+   * explain itself — and the API underneath it still says 429 honestly.
+   */
+  await app.register(rateLimit, {
+    max: GLOBAL_MAX_PER_MIN,
+    timeWindow: '1 minute',
+    /**
+     * Exempt everything that is not the API. `allowList` is the plugin's own hook for this
+     * and returning true means "do not count, do not refuse".
+     *
+     * Deliberately NOT done by registering the limiter inside an encapsulated `/api` scope:
+     * the routes below are registered on `app` itself, so a scoped plugin would apply the
+     * limiter to nothing at all — a silent removal of the budget dressed up as a fix.
+     *
+     * GATED ON THE ROUTED PATH, NEVER ON `req.url` — that difference is a real bypass, not
+     * a nicety. `req.url` is the RAW request target, while the router decodes before
+     * matching: `GET /%61pi/plan` reads as "not /api" here but dispatches to `/api/plan`,
+     * so a single curl loop would skip both the global and the per-route budgets entirely.
+     * Absolute-form targets (`GET http://host/api/vehicles`) do the same. `routeOptions.url`
+     * is the matched route PATTERN, decided before onRequest hooks run, so it cannot be
+     * spelled around.
+     *
+     * The fallback matters as much as the primary: an unmatched request has no route
+     * pattern, and treating "unknown" as exempt is how the bypass comes back. So anything
+     * we cannot positively identify as non-API is limited — including 404s, which are
+     * exactly what a scanner generates.
+     */
+    allowList: (req) => {
+      const routed = (req as { routeOptions?: { url?: string }; routerPath?: string }).routeOptions?.url
+        ?? (req as { routerPath?: string }).routerPath;
+      if (typeof routed === 'string') return !routed.startsWith('/api');
+      // No matched route: decode defensively and only exempt a path we are sure is static.
+      let raw = req.url.split('?')[0];
+      try { raw = decodeURIComponent(raw); } catch { return false; }
+      return !raw.startsWith('/api');
+    },
+  });
 
   /** Per-route budget for the expensive endpoints. Fastify merges this with the global. */
   const routeLimit = (max: number) => ({ rateLimit: { max, timeWindow: '1 minute' } });
@@ -656,7 +719,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     const rows = (await db.query<{ stop_id: string; name: string | null; lat: number | null; lon: number | null; wheelchair_boarding: number | null }>(
       `SELECT stop_id, name, lat, lon, wheelchair_boarding FROM stops
        WHERE agency=$1 AND (stop_id = $2 OR name ILIKE $3) ORDER BY (stop_id = $2) DESC, name LIMIT $4`,
-      [AGENCY, q, `%${q}%`, SEARCH_MAX_RESULTS])).rows;
+      [staticAgency, q, `%${q}%`, SEARCH_MAX_RESULTS])).rows;
     const stops: StopDto[] = rows.map((r) => ({ stopId: r.stop_id, name: r.name, lat: r.lat == null ? null : Number(r.lat), lon: r.lon == null ? null : Number(r.lon), wheelchairBoarding: r.wheelchair_boarding == null ? null : Number(r.wheelchair_boarding) }));
     const body: StopsResponse = { stops, count: stops.length };
     return reply.send(body);
@@ -677,7 +740,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     const rows = (await db.query<{ stop_id: string; name: string | null; lat: number | null; lon: number | null; wheelchair_boarding: number | null }>(
       `SELECT stop_id, name, lat, lon, wheelchair_boarding FROM stops
        WHERE agency=$1 AND lat BETWEEN $2 AND $3 AND lon BETWEEN $4 AND $5`,
-      [AGENCY, lat - dLat, lat + dLat, lon - dLon, lon + dLon])).rows;
+      [staticAgency, lat - dLat, lat + dLat, lon - dLon, lon + dLon])).rows;
     const stops: StopDto[] = [];
     for (const r of rows) {
       if (r.lat == null || r.lon == null) continue;
@@ -719,7 +782,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
          LIMIT 1`,
         // Longitude degrees are shorter than latitude degrees by cos(lat); squaring that
         // ratio makes the planar sort isotropic instead of biased east-west.
-        [AGENCY, lat, lon, Math.cos(lat * Math.PI / 180) ** 2])).rows[0];
+        [staticAgency, lat, lon, Math.cos(lat * Math.PI / 180) ** 2])).rows[0];
       if (nr?.lat != null && nr.lon != null) {
         nearest = {
           stopId: nr.stop_id, name: nr.name, lat: Number(nr.lat), lon: Number(nr.lon),
@@ -764,7 +827,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     const windowMs = windowMin * 60_000;
 
     const stopRow = (await db.query<{ stop_id: string; name: string | null; lat: number | null; lon: number | null; wheelchair_boarding: number | null }>(
-      'SELECT stop_id, name, lat, lon, wheelchair_boarding FROM stops WHERE agency=$1 AND stop_id=$2', [AGENCY, stopId])).rows[0];
+      'SELECT stop_id, name, lat, lon, wheelchair_boarding FROM stops WHERE agency=$1 AND stop_id=$2', [staticAgency, stopId])).rows[0];
     if (!stopRow) return reply.code(404).send({ error: 'stop not found' });
 
     // Scan every service date whose window can overlap [at, at+window]. Sized to the
@@ -791,7 +854,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
          FROM stop_times st JOIN trips t ON t.agency=st.agency AND t.trip_id=st.trip_id
          WHERE st.agency=$1 AND st.stop_id=$2 AND t.service_id = ANY($3::text[])
            AND COALESCE(st.departure_s, st.arrival_s) BETWEEN $4 AND $5`,
-        [AGENCY, stopId, svc, Math.max(0, loSec), hiSec])).rows;
+        [staticAgency, stopId, svc, Math.max(0, loSec), hiSec])).rows;
       for (const r of rows) {
         if (r.dep == null) continue;
         const scheduledMs = midnight + Number(r.dep) * 1000;
@@ -806,14 +869,14 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     // routes involved, then select per departure by the hard n-thresholds.
     const stopAgg = new Map<string, Agg>(); // key `${route}|${how}`
     for (const r of (await db.query<{ route_id: string; hour_of_week: number; n: number; p25: number; p50: number; p75: number }>(
-      'SELECT route_id, hour_of_week, n, p25, p50, p75 FROM agg_delay WHERE agency=$1 AND stop_id=$2', [AGENCY, stopId])).rows) {
+      'SELECT route_id, hour_of_week, n, p25, p50, p75 FROM agg_delay WHERE agency=$1 AND stop_id=$2', [modeAgency, stopId])).rows) {
       stopAgg.set(`${r.route_id}|${r.hour_of_week}`, { n: Number(r.n), p25: Number(r.p25), p50: Number(r.p50), p75: Number(r.p75) });
     }
     const routesInvolved = [...new Set(trimmed.map((r) => r.routeId).filter((x): x is string => !!x))];
     const routeAgg = new Map<string, Agg>();
     if (routesInvolved.length > 0) {
       for (const r of (await db.query<{ route_id: string; hour_of_week: number; n: number; p25: number; p50: number; p75: number }>(
-        'SELECT route_id, hour_of_week, n, p25, p50, p75 FROM agg_delay_route WHERE agency=$1 AND route_id = ANY($2::text[])', [AGENCY, routesInvolved])).rows) {
+        'SELECT route_id, hour_of_week, n, p25, p50, p75 FROM agg_delay_route WHERE agency=$1 AND route_id = ANY($2::text[])', [modeAgency, routesInvolved])).rows) {
         routeAgg.set(`${r.route_id}|${r.hour_of_week}`, { n: Number(r.n), p25: Number(r.p25), p50: Number(r.p50), p75: Number(r.p75) });
       }
     }
@@ -920,7 +983,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       const rows = (await db.query<{ stop_id: string; name: string | null; lat: number | null; lon: number | null; wheelchair_boarding: number | null }>(
         `SELECT stop_id, name, lat, lon, wheelchair_boarding FROM stops
          WHERE agency=$1 AND lat BETWEEN $2 AND $3 AND lon BETWEEN $4 AND $5`,
-        [AGENCY, lat - dLat, lat + dLat, lon - dLon, lon + dLon])).rows;
+        [staticAgency, lat - dLat, lat + dLat, lon - dLon, lon + dLon])).rows;
       const out: PlanStopDto[] = [];
       for (const r of rows) {
         if (r.lat == null || r.lon == null) continue;
@@ -1002,7 +1065,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
            AND COALESCE(b.departure_s, b.arrival_s) BETWEEN $5 AND $6
          ORDER BY COALESCE(b.departure_s, b.arrival_s), b.trip_id, a.stop_sequence
          LIMIT $7`,
-        [AGENCY, boardIds, alightIds, svc, Math.max(0, loSec), hiSec, PLAN_SQL_ROW_LIMIT])).rows;
+        [staticAgency, boardIds, alightIds, svc, Math.max(0, loSec), hiSec, PLAN_SQL_ROW_LIMIT])).rows;
 
       for (const r of rows) {
         if (r.board_s == null || r.alight_s == null) continue;
@@ -1039,7 +1102,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
          JOIN stop_times a ON a.agency = b.agency AND a.trip_id = b.trip_id
                           AND a.stop_sequence > b.stop_sequence
          WHERE b.agency = $1 AND b.stop_id = ANY($2::text[]) AND a.stop_id = ANY($3::text[])
-         LIMIT 1`, [AGENCY, boardIds, alightIds])).rows.length > 0;
+         LIMIT 1`, [staticAgency, boardIds, alightIds])).rows.length > 0;
       return answer(anyDirect ? 'noService' : 'transfer');
     }
 
@@ -1057,10 +1120,10 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
         db.query<{ stop_id: string; route_id: string; hour_of_week: number; n: number; p25: number; p50: number; p75: number }>(
           `SELECT stop_id, route_id, hour_of_week, n, p25, p50, p75 FROM agg_delay
            WHERE agency=$1 AND stop_id = ANY($2::text[]) AND route_id = ANY($3::text[])`,
-          [AGENCY, stopsInvolved, routesInvolved]),
+          [modeAgency, stopsInvolved, routesInvolved]),
         db.query<{ route_id: string; hour_of_week: number; n: number; p25: number; p50: number; p75: number }>(
           `SELECT route_id, hour_of_week, n, p25, p50, p75 FROM agg_delay_route
-           WHERE agency=$1 AND route_id = ANY($2::text[])`, [AGENCY, routesInvolved]),
+           WHERE agency=$1 AND route_id = ANY($2::text[])`, [modeAgency, routesInvolved]),
       ]);
       for (const r of sRows.rows) {
         stopAgg.set(`${r.stop_id}|${r.route_id}|${r.hour_of_week}`, { n: Number(r.n), p25: Number(r.p25), p50: Number(r.p50), p75: Number(r.p75) });
@@ -1126,7 +1189,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     }
 
     // Most representative (shape_id, direction) for this route: parameterized, dir optional.
-    const repParams: unknown[] = [AGENCY, routeId];
+    const repParams: unknown[] = [staticAgency, routeId];
     let dirClause = '';
     if (dir != null) { dirClause = ' AND direction_id = $3'; repParams.push(dir); }
     const rep = (await db.query<{ shape_id: string; direction_id: number | null; n: number }>(
@@ -1136,7 +1199,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     if (!rep) return reply.code(404).send({ error: 'no shape for route' });
 
     const shapeRow = (await db.query<{ points: unknown }>(
-      'SELECT points FROM shapes WHERE agency=$1 AND shape_id=$2', [AGENCY, rep.shape_id])).rows[0];
+      'SELECT points FROM shapes WHERE agency=$1 AND shape_id=$2', [staticAgency, rep.shape_id])).rows[0];
     if (!shapeRow) return reply.code(404).send({ error: 'shape not found' });
     // points stored as [lat, lon][] (JSONB); pg returns it parsed, PGlite may return text.
     const raw = (typeof shapeRow.points === 'string' ? JSON.parse(shapeRow.points) : shapeRow.points) as [number, number][];
@@ -1148,13 +1211,13 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     const tripRow = (await db.query<{ trip_id: string }>(
       `SELECT trip_id FROM trips WHERE agency=$1 AND route_id=$2 AND shape_id=$3
        ${repDir == null ? 'AND direction_id IS NULL' : 'AND direction_id=$4'} LIMIT 1`,
-      repDir == null ? [AGENCY, routeId, rep.shape_id] : [AGENCY, routeId, rep.shape_id, repDir])).rows[0];
+      repDir == null ? [staticAgency, routeId, rep.shape_id] : [staticAgency, routeId, rep.shape_id, repDir])).rows[0];
     const stops: RouteStopDto[] = [];
     if (tripRow) {
       for (const s of (await db.query<{ stop_id: string; name: string | null; lat: number | null; lon: number | null }>(
         `SELECT s.stop_id, s.name, s.lat, s.lon FROM stop_times st
          JOIN stops s ON s.agency=st.agency AND s.stop_id=st.stop_id
-         WHERE st.agency=$1 AND st.trip_id=$2 ORDER BY st.stop_sequence`, [AGENCY, tripRow.trip_id])).rows) {
+         WHERE st.agency=$1 AND st.trip_id=$2 ORDER BY st.stop_sequence`, [staticAgency, tripRow.trip_id])).rows) {
         if (s.lat == null || s.lon == null) continue;
         stops.push({ stopId: s.stop_id, name: s.name, lat: Number(s.lat), lon: Number(s.lon) });
       }
@@ -1179,7 +1242,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       if (!Number.isFinite(n) || n <= 0) return bad(reply, 'limit must be a positive number');
       limit = Math.min(Math.floor(n), ALERTS_MAX_LIMIT);
     }
-    // DATA clock. `service_alerts.active_end` is the AGENCY's own activePeriod off the
+    // DATA clock. `service_alerts.active_end` is the transit agency's own activePeriod off the
     // feed, not a column our database stamps, so "has this alert expired" has to be asked
     // at the moment the snapshot describes. Asking it at tonight's wall clock would expire
     // every alert in a recording and report an empty board as good news.
@@ -1199,7 +1262,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
        FROM service_alerts
        WHERE agency=$1 AND (active_end IS NULL OR active_end >= $2)
        ORDER BY active_start DESC NULLS LAST, alert_id
-       LIMIT $3`, [AGENCY, nowIso, limit])).rows;
+       LIMIT $3`, [modeAgency, nowIso, limit])).rows;
 
     const toMs = (v: string | Date | null): number | null => {
       if (v == null) return null;
@@ -1275,14 +1338,24 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
         trip_id: string; kind: string; route_id: string | null;
         scheduled_start: string | Date; detected_at: string | Date; headsign: string | null;
       }>(
+        /**
+         * THE ONE QUERY THAT CROSSES THE SEAM, so it names both sides explicitly.
+         *
+         * `ghosts` is an observation (modeAgency); `trips` is the published schedule
+         * (staticAgency). Joining `t.agency = g.agency` silently bound the static side to
+         * the observation namespace, so in demo mode the join matched nothing and EVERY
+         * ghost lost its headsign — a row reading "trip 12345" instead of "504 to Dundas
+         * West". The seam test cannot catch this by inspecting $1 alone, which is exactly
+         * why the two agencies are separate bound parameters here.
+         */
         `SELECT g.trip_id, g.kind, g.route_id, g.scheduled_start, g.detected_at, t.headsign
-         FROM ghosts g LEFT JOIN trips t ON t.agency = g.agency AND t.trip_id = g.trip_id
-         WHERE g.agency=$1 AND g.detected_at >= $2
-         ORDER BY g.detected_at DESC LIMIT $3`, [AGENCY, sinceIso, GHOSTS_MAX_EVENTS]),
+         FROM ghosts g LEFT JOIN trips t ON t.agency = $2 AND t.trip_id = g.trip_id
+         WHERE g.agency=$1 AND g.detected_at >= $3
+         ORDER BY g.detected_at DESC LIMIT $4`, [modeAgency, staticAgency, sinceIso, GHOSTS_MAX_EVENTS]),
       db.query<{ kind: string; today: number; week: number }>(
         `SELECT kind, COUNT(*) FILTER (WHERE detected_at >= $2)::int AS today, COUNT(*)::int AS week
          FROM ghosts WHERE agency=$1 AND detected_at >= $3 GROUP BY kind`,
-        [AGENCY, new Date(todaySinceMs).toISOString(), new Date(weekSinceMs).toISOString()]),
+        [modeAgency, new Date(todaySinceMs).toISOString(), new Date(weekSinceMs).toISOString()]),
     ]);
 
     const counters: GhostCounters = { todayGhosts: 0, todayCancelled: 0, weekGhosts: 0, weekCancelled: 0 };
@@ -1323,9 +1396,9 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
   app.get('/api/stats', async (_req, reply) => {
     const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString();
     const [obs, ghosts, avg] = await Promise.all([
-      db.query<{ n: string }>('SELECT COUNT(*)::text AS n FROM trip_delay_obs WHERE agency=$1', [AGENCY]),
-      db.query<{ kind: string; n: string }>('SELECT kind, COUNT(*)::text AS n FROM ghosts WHERE agency=$1 AND detected_at >= $2 GROUP BY kind', [AGENCY, weekAgo]),
-      db.query<{ avg: number | null }>('SELECT AVG(delay_s)::double precision AS avg FROM trip_delay_obs WHERE agency=$1 AND ts >= $2', [AGENCY, new Date(Date.now() - 3 * 3_600_000).toISOString()]),
+      db.query<{ n: string }>('SELECT COUNT(*)::text AS n FROM trip_delay_obs WHERE agency=$1', [modeAgency]),
+      db.query<{ kind: string; n: string }>('SELECT kind, COUNT(*)::text AS n FROM ghosts WHERE agency=$1 AND detected_at >= $2 GROUP BY kind', [modeAgency, weekAgo]),
+      db.query<{ avg: number | null }>('SELECT AVG(delay_s)::double precision AS avg FROM trip_delay_obs WHERE agency=$1 AND ts >= $2', [modeAgency, new Date(Date.now() - 3 * 3_600_000).toISOString()]),
     ]);
     let ghostsThisWeek = 0, cancelledThisWeek = 0;
     for (const r of ghosts.rows) { if (r.kind === 'ghost') ghostsThisWeek = Number(r.n); else if (r.kind === 'cancelled') cancelledThisWeek = Number(r.n); }

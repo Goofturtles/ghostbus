@@ -258,12 +258,23 @@ test('agencyLocalStamp renders the agency wall clock, not UTC', () => {
 
 interface Recorded { sql: string; params: unknown[] }
 
-/** A Db that answers by SQL substring and records every call it received. */
-function fakeDb(fixtures: ReadonlyArray<{ when: string; rows: unknown[] }>): Db & { calls: Recorded[] } {
+/**
+ * A Db that answers by SQL substring and records every call it received.
+ *
+ * `whenParams` additionally gates a fixture on the bound PARAMETERS, which is what lets a
+ * test model a real seeded database: rows exist under one agency namespace and genuinely do
+ * not exist under another. Without it every query gets its fixture regardless of scoping,
+ * and a namespace bug is invisible to the suite — which is exactly how the demo-mode static
+ * table bug reached a tester.
+ */
+function fakeDb(
+  fixtures: ReadonlyArray<{ when: string; rows: unknown[]; whenParams?: (params: unknown[]) => boolean }>,
+): Db & { calls: Recorded[] } {
   const calls: Recorded[] = [];
   const query = async <T>(sql: string, params?: Params): Promise<Result<T>> => {
-    calls.push({ sql, params: params ? [...params] : [] });
-    const hit = fixtures.find((f) => sql.includes(f.when));
+    const bound = params ? [...params] : [];
+    calls.push({ sql, params: bound });
+    const hit = fixtures.find((f) => sql.includes(f.when) && (f.whenParams ? f.whenParams(bound) : true));
     const rows = (hit?.rows ?? []) as T[];
     return { rows, rowCount: rows.length };
   };
@@ -496,9 +507,11 @@ test('/api/ghosts/feed clamps hours, binds them, and rejects nonsense', async ()
 
     const call = db.calls.find((c) => c.sql.includes('FROM ghosts g LEFT JOIN trips'));
     assert.ok(call);
+    // $1 observation agency, $2 STATIC agency (the join crosses the seam), $3 since, $4 cap.
     assert.equal(call.params[0], 'ttc');
-    assert.equal(call.params[2], 200, 'the row cap is bound, not interpolated');
-    assert.ok(call.sql.includes('$2') && call.sql.includes('$3'));
+    assert.equal(call.params[1], 'ttc');
+    assert.equal(call.params[3], 200, 'the row cap is bound, not interpolated');
+    assert.ok(call.sql.includes('$3') && call.sql.includes('$4'));
 
     const res = await app.inject({ method: 'GET', url: '/api/ghosts/feed?hours=-1' });
     assert.equal(res.statusCode, 400);
@@ -575,22 +588,158 @@ test('/api/health on a DEMO poller reports demo, and its provenance survives the
   }
 });
 
-test('every query is scoped to the POLLER\'s agency, not the literal "ttc"', async () => {
-  // The verified bug this closes: a demo instance sharing a database with live TTC rows
-  // would have read the LIVE rows and served them under the amber DEMO badge.
-  const demoPoller: PollerHandle = {
-    ...fakePoller,
-    getMode: () => ({ mode: 'demo', agency: 'ttc-demo', dataNowMs: Date.now(), wallNowMs: Date.now(), demo: null }),
-  };
-  const db = fakeDb([{ when: 'FROM routes', rows: ROUTE_ROWS }]);
+/**
+ * THE AGENCY SEAM HAS TWO SIDES, and this suite has now been wrong about it in both
+ * directions — so it is pinned per TABLE rather than per response.
+ *
+ * The test that used to live here asserted that EVERY agency-scoped query binds the
+ * poller's agency. It only ever exercised `/api/alerts` (an observation table), and it
+ * actively enshrined the bug testers later found: under it, a demo instance read the static
+ * schedule under `'ttc-demo'`, where `seed_toronto.ts` never writes anything, so every
+ * stop/route/trip query returned zero rows. A demo instance told a rider standing at King &
+ * Spadina there were no stops near them, and search and the planner were both dead.
+ *
+ * The contract (DECISIONS §44, demo.ts rule 5, poller.ts's own STATIC_AGENCY):
+ *
+ *   STATIC tables      stops, routes, trips, stop_times, shapes, calendar, calendar_dates
+ *                      -> always 'ttc'. One published board; a recording is a recording OF it.
+ *   OBSERVATION tables trip_delay_obs, ghosts, agg_delay, agg_delay_route, service_alerts
+ *                      -> the poller's agency, so replayed rows can never pass as live.
+ */
+const STATIC_TABLES = ['FROM stops', 'FROM routes', 'FROM trips', 'FROM stop_times', 'FROM shapes', 'FROM calendar', 'FROM calendar_dates'];
+const OBSERVATION_TABLES = ['FROM trip_delay_obs', 'FROM ghosts', 'FROM agg_delay', 'FROM agg_delay_route', 'FROM service_alerts'];
+
+/** Which side of the seam a SQL string belongs to, by the first table it names. */
+function seamSideOf(sql: string): 'static' | 'observation' | null {
+  const hits: Array<{ at: number; side: 'static' | 'observation' }> = [];
+  for (const t of STATIC_TABLES) { const at = sql.indexOf(t); if (at >= 0) hits.push({ at, side: 'static' }); }
+  for (const t of OBSERVATION_TABLES) { const at = sql.indexOf(t); if (at >= 0) hits.push({ at, side: 'observation' }); }
+  if (hits.length === 0) return null;
+  // `FROM agg_delay_route` also matches `FROM agg_delay`; both are observation, so the
+  // earliest match is the driving table either way.
+  hits.sort((a, b) => a.at - b.at);
+  return hits[0].side;
+}
+
+const demoPoller: PollerHandle = {
+  ...fakePoller,
+  getMode: () => ({ mode: 'demo', agency: 'ttc-demo', dataNowMs: Date.now(), wallNowMs: Date.now(), demo: null }),
+};
+
+test('DEMO MODE reads the static schedule under "ttc" and observations under "ttc-demo"', async () => {
+  const db = fakeDb([
+    { when: 'FROM routes', rows: ROUTE_ROWS },
+    { when: 'lat BETWEEN', rows: [{ stop_id: '15647', name: 'King St West at Spadina Ave', lat: 43.6453, lon: -79.3956, wheelchair_boarding: 1 }] },
+    { when: 'FROM stops WHERE agency=$1 AND stop_id=$2', rows: [{ stop_id: '15647', name: 'King St West at Spadina Ave', lat: 43.6453, lon: -79.3956, wheelchair_boarding: 1 }] },
+  ]);
   const app = await buildApi({ db, poller: demoPoller });
   try {
-    await app.inject({ method: 'GET', url: '/api/alerts' });
-    const scoped = db.calls.filter((c) => c.sql.includes('agency=$1'));
-    assert.ok(scoped.length > 0, 'expected agency-scoped queries');
-    for (const call of scoped) {
-      assert.equal(call.params[0], 'ttc-demo', `"${call.sql.slice(0, 48)}…" bound the wrong agency`);
+    // Every surface a rider touches, including the ones that were silently empty.
+    for (const url of [
+      '/api/stops?q=King',
+      '/api/stops/nearby?lat=43.64354&lon=-79.39699&radius=800',
+      '/api/stops/15647/arrivals',
+      '/api/routes/501/shape',
+      '/api/alerts',
+      '/api/ghosts/feed',
+      '/api/stats',
+      '/api/plan?fromLat=43.64&fromLon=-79.39&toLat=43.65&toLon=-79.40',
+    ]) {
+      await app.inject({ method: 'GET', url });
     }
+
+    const scoped = db.calls.filter((c) => c.params[0] === 'ttc' || c.params[0] === 'ttc-demo');
+    assert.ok(scoped.length >= 10, `expected many agency-bound queries, saw ${scoped.length}`);
+
+    let statics = 0, observations = 0;
+    for (const call of scoped) {
+      const side = seamSideOf(call.sql);
+      if (side == null) continue;
+      const oneLine = call.sql.replace(/\s+/g, ' ').slice(0, 64);
+      if (side === 'static') {
+        statics++;
+        assert.equal(call.params[0], 'ttc',
+          `STATIC query bound '${call.params[0]}' — nothing is ever seeded there: "${oneLine}…"`);
+      } else {
+        observations++;
+        assert.equal(call.params[0], 'ttc-demo',
+          `OBSERVATION query bound '${call.params[0]}' — replayed rows would pass as live: "${oneLine}…"`);
+      }
+    }
+    // Both sides must actually have been exercised, or the assertions above proved nothing.
+    assert.ok(statics >= 6, `expected the static side to be exercised, saw ${statics}`);
+    assert.ok(observations >= 3, `expected the observation side to be exercised, saw ${observations}`);
+  } finally {
+    await app.close();
+  }
+});
+
+test('a DEMO instance still finds the stops around a rider — the bug that made it useless', async () => {
+  // The regression in the form a rider met it: /api/stops/nearby at King & Spadina returned
+  // zero rows in demo mode, so the app said "No TTC stops within 800 m of you" in the middle
+  // of downtown Toronto. The fixture is seeded under 'ttc' only, exactly like the real DB.
+  const SEEDED = [{ stop_id: '15647', name: 'King St West at Spadina Ave', lat: 43.64537, lon: -79.395811, wheelchair_boarding: 1 }];
+  const db = fakeDb([
+    { when: 'FROM routes', rows: ROUTE_ROWS },
+    // Answers ONLY when the query is scoped to 'ttc' — mirroring a real seeded database.
+    { when: 'lat BETWEEN', rows: SEEDED, whenParams: (p) => p[0] === 'ttc' },
+  ]);
+  const app = await buildApi({ db, poller: demoPoller });
+  try {
+    const body = (await app.inject({
+      method: 'GET', url: '/api/stops/nearby?lat=43.64354&lon=-79.39699&radius=800',
+    })).json<StopsResponse>();
+    assert.equal(body.count, 1, 'demo mode must see the same board a live instance sees');
+    assert.equal(body.stops[0].stopId, '15647');
+    assert.equal(body.nearest, undefined, 'stops were in range, so no out-of-coverage fallback');
+  } finally {
+    await app.close();
+  }
+});
+
+test('the ghost feed keeps its headsigns in demo mode — the one join that crosses the seam', async () => {
+  // `ghosts` is an observation, `trips` is the published schedule. Joining them on a single
+  // agency bound the static side to 'ttc-demo', where nothing is seeded, so every ghost lost
+  // its headsign and read as a bare trip id. The two sides are separate parameters now.
+  const db = fakeDb([
+    { when: 'FROM routes', rows: ROUTE_ROWS },
+    {
+      when: 'FROM ghosts g LEFT JOIN trips',
+      rows: [{
+        trip_id: 'T1', kind: 'ghost', route_id: '501',
+        scheduled_start: '2026-07-26T14:00:00.000Z', detected_at: '2026-07-26T14:05:00.000Z',
+        headsign: '501 West to Long Branch',
+      }],
+      // Only answers when the STATIC side of the join is scoped to 'ttc'.
+      whenParams: (p) => p[1] === 'ttc',
+    },
+    { when: 'COUNT(*) FILTER', rows: [] },
+  ]);
+  const app = await buildApi({ db, poller: demoPoller });
+  try {
+    const body = (await app.inject({ method: 'GET', url: '/api/ghosts/feed' })).json<GhostFeedResponse>();
+    assert.equal(body.count, 1);
+    assert.equal(body.events[0].headsign, '501 West to Long Branch',
+      'a demo ghost must still name its trip, not fall back to a bare id');
+    const call = db.calls.find((c) => c.sql.includes('FROM ghosts g LEFT JOIN trips'))!;
+    assert.equal(call.params[0], 'ttc-demo', 'the observation side follows the poller');
+    assert.equal(call.params[1], 'ttc', 'the schedule side is always the published board');
+  } finally {
+    await app.close();
+  }
+});
+
+test('LIVE mode binds one agency on both sides of the seam', async () => {
+  // The mirror: with a live poller the two constants collapse to the same value, so nothing
+  // above can be satisfied by accidentally hardcoding 'ttc' everywhere again.
+  const db = fakeDb([{ when: 'FROM routes', rows: ROUTE_ROWS }]);
+  const app = await buildApi({ db, poller: fakePoller });
+  try {
+    await app.inject({ method: 'GET', url: '/api/alerts' });
+    await app.inject({ method: 'GET', url: '/api/stops?q=King' });
+    const scoped = db.calls.filter((c) => seamSideOf(c.sql) != null && typeof c.params[0] === 'string');
+    assert.ok(scoped.length > 0);
+    for (const call of scoped) assert.equal(call.params[0], 'ttc');
   } finally {
     await app.close();
   }
