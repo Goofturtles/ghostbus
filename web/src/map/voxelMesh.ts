@@ -555,6 +555,80 @@ void main() {
 }
 `;
 
+/**
+ * THE CUBE SHADING, EXPORTED — so the voxel VEHICLES are lit by literally this code
+ * rather than by a second implementation of it.
+ *
+ * `voxelVehicles.ts` draws buses and streetcars as cube clusters and has to land on
+ * the same measured face ratios (1.000 : 0.641 : 0.491) and the same viewport-anchored
+ * lamp as the city, or a bus reads as a sticker sitting on a diorama instead of as an
+ * object in it. Two copies of a shader is two copies of every future correction to it
+ * — the same argument the `setWorkerUrl` note in MapCard.tsx makes about the worker
+ * URL, and that one cost a blank production map to learn.
+ *
+ * `makeCubeMaterial` also exports the uniform block, so a caller cannot silently
+ * diverge by forgetting one.
+ */
+export const CUBE_VERT = VERT;
+export const CUBE_FRAG = FRAG;
+
+/** Unit cube in this module's convention: x,y in [-0.5, 0.5], z in [0, 1], so the
+ *  base sits on the ground plane. Callers add their own instanced attributes. */
+export function makeCubeGeometry(): THREE.BoxGeometry {
+  const box = new THREE.BoxGeometry(1, 1, 1);
+  box.rotateX(Math.PI / 2);
+  box.translate(0, 0, 0.5);
+  box.deleteAttribute('uv');
+  return box;
+}
+
+/** A material bound to `CUBE_VERT`/`CUBE_FRAG` with this theme's measured tones. */
+export function makeCubeMaterial(theme: VoxelTheme): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    vertexShader: VERT,
+    fragmentShader: FRAG,
+    uniforms: {
+      uLitAxis: { value: new THREE.Vector2(-0.7, -0.7) },
+      uLit: { value: TONES[theme].lit },
+      uShade: { value: TONES[theme].shade },
+      uCrevice: { value: PALETTES[theme].crevice },
+      uCreviceM: { value: CREVICE_M },
+      uBevelM: { value: BEVEL_M },
+      uGrad: { value: PALETTES[theme].gradient },
+      uAo: { value: PALETTES[theme].aoStrength },
+      uAoHeightM: { value: AO_HEIGHT_M },
+      uHeightGain: { value: 1 },
+      uFlatten: { value: 1 },
+      uMute: { value: new THREE.Vector3(0, 0, 0) },
+      uMuteMix: { value: 0 },
+    },
+  });
+}
+
+/** The measured lit/shaded wall ratios, so a caller can re-apply them on a theme
+ *  swap without reaching into the palette tables. */
+export function cubeTones(theme: VoxelTheme): { lit: number; shade: number; litScreenDeg: number } {
+  return TONES[theme];
+}
+
+/** Hex -> sRGB 0..1 triple, in the same non-colour-managed space the shader expects.
+ *  See the note on `srgb` below for why no conversion happens. */
+export function cubeSrgb(hex: string): [number, number, number] {
+  return srgb(hex);
+}
+
+/** World-XY direction the lit wall faces at a given map bearing, viewport-anchored.
+ *  Shared so a vehicle's lamp can never drift from the city's. */
+export function cubeLitAxis(theme: VoxelTheme, bearingDeg: number): [number, number] {
+  const bearing = bearingDeg * DEG;
+  const a = TONES[theme].litScreenDeg * DEG;
+  const su: [number, number] = [Math.sin(bearing), Math.cos(bearing)];
+  const sr: [number, number] = [Math.cos(bearing), -Math.sin(bearing)];
+  const x = Math.sin(a);
+  const y = Math.cos(a);
+  return [sr[0] * x + su[0] * y, sr[1] * x + su[1] * y];
+}
+
 const SHADOW_VERT = /* glsl */ `
 precision highp float;
 attribute vec2 iExtent;   // full width/depth of the shadow quad, metres
@@ -792,6 +866,11 @@ export interface VoxelMeshLayer extends CustomLayerInterface {
   setRouteFocus(focused: boolean): void;
   /** Rebuild the instance buffers from the tiles currently loaded. */
   sync(): void;
+  /**
+   * Does a circle of `radiusM` at (lng, lat) touch a DRAWN building footprint?
+   * The trees ask this before they plant — see the footprint index in `build`.
+   */
+  hitsBuilding(lng: number, lat: number, radiusM: number): boolean;
   /** Diagnostics for the verification harness. */
   stats(): {
     /** CUBES drawn (one instance each). */
@@ -1129,6 +1208,8 @@ export function createVoxelMeshLayer(opts: VoxelMeshOptions): VoxelMeshLayer {
       }
     }
 
+    indexFootprints();
+
     count = cube;
     clustered = clusters;
     blocks.count = cube;
@@ -1140,6 +1221,104 @@ export function createVoxelMeshLayer(opts: VoxelMeshOptions): VoxelMeshLayer {
     (blocks.geometry.getAttribute('iNbr') as THREE.InstancedBufferAttribute).needsUpdate = true;
     (shadows.geometry.getAttribute('iExtent') as THREE.InstancedBufferAttribute).needsUpdate = true;
     map.triggerRepaint();
+  }
+
+  // -------------------------------------------------------------- footprint index
+  //
+  // THE CITY HAS TO BE ABLE TO ANSWER "IS THERE A BUILDING HERE?".
+  //
+  // The user's report was that the trees clip into the buildings, and they do:
+  // voxelTrees plants on the verge of real road geometry at a fixed multiple of the
+  // canopy width, with no knowledge of what is standing there. Downtown, the verge
+  // IS the building line, so a canopy lands inside a tower and one green cube pushes
+  // out through a violet wall.
+  //
+  // The fix needs the drawn footprints, and this is the only place that has them: the
+  // boxes below are POST-inset and POST-area-true, i.e. exactly the ground the cubes
+  // actually cover, not the raw OSM ring. Anything reconstructing that outside this
+  // module would be a second copy of `push`'s geometry, and the two would drift.
+  //
+  // Stored as flat arrays over a uniform grid rather than objects: `build` runs on
+  // every tile burst, and this must not allocate per footprint.
+  const FP_CELL_M = 96;
+  let fpCx = new Float32Array(0);
+  let fpCy = new Float32Array(0);
+  let fpCos = new Float32Array(0);
+  let fpSin = new Float32Array(0);
+  let fpHalfW = new Float32Array(0);
+  let fpHalfD = new Float32Array(0);
+  let fpCount = 0;
+  /** grid cell key -> footprint indices whose AABB touches that cell */
+  const fpGrid = new Map<number, number[]>();
+  const fpKey = (gx: number, gy: number) => gx * 100_003 + gy;
+
+  /** Rebuild the index from `scratch`, which at call time holds exactly the
+   *  footprints that were drawn (post budget trim). */
+  function indexFootprints(): void {
+    const n = scratch.length;
+    if (fpCx.length < n) {
+      fpCx = new Float32Array(n); fpCy = new Float32Array(n);
+      fpCos = new Float32Array(n); fpSin = new Float32Array(n);
+      fpHalfW = new Float32Array(n); fpHalfD = new Float32Array(n);
+    }
+    fpGrid.clear();
+    fpCount = n;
+    for (let i = 0; i < n; i++) {
+      const b = scratch[i];
+      fpCx[i] = b.cx; fpCy[i] = b.cy;
+      fpCos[i] = Math.cos(b.yaw); fpSin[i] = Math.sin(b.yaw);
+      fpHalfW[i] = b.halfW; fpHalfD[i] = b.halfD;
+      // A rotated box's AABB half-extent is |hw*cos| + |hd*sin| — bounding by the
+      // diagonal instead would over-insert every long thin building into the grid.
+      const ex = Math.abs(b.halfW * fpCos[i]) + Math.abs(b.halfD * fpSin[i]);
+      const ey = Math.abs(b.halfW * fpSin[i]) + Math.abs(b.halfD * fpCos[i]);
+      const gx0 = Math.floor((b.cx - ex) / FP_CELL_M), gx1 = Math.floor((b.cx + ex) / FP_CELL_M);
+      const gy0 = Math.floor((b.cy - ey) / FP_CELL_M), gy1 = Math.floor((b.cy + ey) / FP_CELL_M);
+      for (let gx = gx0; gx <= gx1; gx++) {
+        for (let gy = gy0; gy <= gy1; gy++) {
+          const k = fpKey(gx, gy);
+          const list = fpGrid.get(k);
+          if (list) list.push(i); else fpGrid.set(k, [i]);
+        }
+      }
+    }
+  }
+
+  /**
+   * Does a circle of `radiusM` centred on (lng, lat) touch any DRAWN footprint?
+   *
+   * Exact circle-vs-oriented-box: put the point in the box's own frame, clamp it to
+   * the box, and measure back. No height test, deliberately — the shortest building
+   * the city draws is one course (17 m before the zoom gain) and the tallest tree it
+   * plants is ~12 m, so anything that overlaps in plan overlaps in space.
+   */
+  function hitsBuilding(lng: number, lat: number, radiusM: number): boolean {
+    if (fpCount === 0) return false;
+    toLocal(origin, lng, lat, local);
+    const px = local.x, py = local.y;
+    const r2 = radiusM * radiusM;
+    const gx0 = Math.floor((px - radiusM) / FP_CELL_M), gx1 = Math.floor((px + radiusM) / FP_CELL_M);
+    const gy0 = Math.floor((py - radiusM) / FP_CELL_M), gy1 = Math.floor((py + radiusM) / FP_CELL_M);
+    for (let gx = gx0; gx <= gx1; gx++) {
+      for (let gy = gy0; gy <= gy1; gy++) {
+        const list = fpGrid.get(fpKey(gx, gy));
+        if (!list) continue;
+        for (let j = 0; j < list.length; j++) {
+          const i = list[j] as number;
+          const dx = px - fpCx[i], dy = py - fpCy[i];
+          const c = fpCos[i], s = fpSin[i];
+          // world -> box frame is the INVERSE rotation, hence (+c,+s) / (-s,+c).
+          const u = dx * c + dy * s;
+          const v = -dx * s + dy * c;
+          const hw = fpHalfW[i], hd = fpHalfD[i];
+          const cu = u < -hw ? -hw : u > hw ? hw : u;
+          const cv = v < -hd ? -hd : v > hd ? hd : v;
+          const ex = u - cu, ey = v - cv;
+          if (ex * ex + ey * ey < r2) return true;
+        }
+      }
+    }
+    return false;
   }
 
   /**
@@ -1254,34 +1433,14 @@ export function createVoxelMeshLayer(opts: VoxelMeshOptions): VoxelMeshLayer {
       camera = new THREE.Camera();
       camera.matrixAutoUpdate = false;
 
-      // Unit box: x,y in [-0.5, 0.5], z in [0, 1], so the base sits on the ground.
-      const box = new THREE.BoxGeometry(1, 1, 1);
-      box.rotateX(Math.PI / 2);
-      box.translate(0, 0, 0.5);
-      box.deleteAttribute('uv');
+      // Unit box + material now come from the shared factories above, which is what
+      // makes `voxelVehicles.ts` provably the same cube rather than a lookalike.
+      const box = makeCubeGeometry();
       box.setAttribute('iSize', new THREE.InstancedBufferAttribute(iSize, 3));
       box.setAttribute('iColor', new THREE.InstancedBufferAttribute(iColor, 3));
       box.setAttribute('iNbr', new THREE.InstancedBufferAttribute(iNbr, 4));
 
-      blockMat = new THREE.ShaderMaterial({
-        vertexShader: VERT,
-        fragmentShader: FRAG,
-        uniforms: {
-          uLitAxis: { value: new THREE.Vector2(-0.7, -0.7) },
-          uLit: { value: TONES[theme].lit },
-          uShade: { value: TONES[theme].shade },
-          uCrevice: { value: PALETTES[theme].crevice },
-          uCreviceM: { value: CREVICE_M },
-          uBevelM: { value: BEVEL_M },
-          uGrad: { value: PALETTES[theme].gradient },
-          uAo: { value: PALETTES[theme].aoStrength },
-          uAoHeightM: { value: AO_HEIGHT_M },
-          uHeightGain: { value: 1 },
-          uFlatten: { value: 1 },
-          uMute: { value: new THREE.Vector3(0, 0, 0) },
-          uMuteMix: { value: 0 },
-        },
-      });
+      blockMat = makeCubeMaterial(theme);
 
       blocks = new THREE.InstancedMesh(box, blockMat, MAX_INSTANCES);
       blocks.frustumCulled = false;
@@ -1396,6 +1555,8 @@ export function createVoxelMeshLayer(opts: VoxelMeshOptions): VoxelMeshLayer {
     sync() {
       build();
     },
+
+    hitsBuilding,
 
     stats() {
       return { blocks: count, built, features, dropped, clustered, origin: [origin.lng, origin.lat] };

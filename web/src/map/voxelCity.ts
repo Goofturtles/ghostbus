@@ -508,6 +508,21 @@ export function syncVoxelCity(map: MlMap): void {
   STATE.get(map)?.layer.sync();
 }
 
+/**
+ * Does a circle of `radiusM` at (lon, lat) touch a building the city is actually
+ * DRAWING? False whenever there is no city, which is the right answer: with no
+ * blocks in the scene there is nothing for a tree to grow through.
+ *
+ * This is how `voxelTrees` stops planting inside towers. It has to come from here
+ * rather than from the tiles, because the drawn footprint is not the OSM ring — it
+ * is the ring's area-true oriented box, inset by `INSET_M`, and possibly dropped by
+ * `minHeightForZoom` or the instance budget. A collision test against anything else
+ * would be testing against buildings that are not on screen.
+ */
+export function voxelCityHitsBuilding(map: MlMap, lon: number, lat: number, radiusM: number): boolean {
+  return STATE.get(map)?.layer.hitsBuilding(lon, lat, radiusM) ?? false;
+}
+
 /** Diagnostics for the verification harness: how many blocks are actually in the
  *  scene. Replaces `queryRenderedFeatures({layers:['voxel-body']})`, which cannot
  *  work against a custom layer. */

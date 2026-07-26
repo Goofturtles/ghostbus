@@ -20,6 +20,7 @@
 // never crawl or flicker as the user pans.
 
 import type { Map as MlMap, ExpressionSpecification, GeoJSONSource, MapGeoJSONFeature } from 'maplibre-gl';
+import { voxelCityHitsBuilding } from './voxelCity';
 import type { VoxelTheme } from './voxelCity';
 
 export const TREE_SOURCE = 'voxel-trees';
@@ -330,6 +331,29 @@ export interface CanopyCube {
 }
 
 /**
+ * A test for "is a building standing here". Injected rather than imported at the
+ * call sites below so the placement maths stays pure and unit-testable; the app
+ * wires in `voxelCityHitsBuilding`.
+ */
+export type BlockedFn = (lon: number, lat: number, radiusM: number) => boolean;
+
+/**
+ * Tree-vs-tree clearance, as a multiple of the canopy width.
+ *
+ * A cluster's satellites sit at `CLUSTER_OFFSET` (0.42) from the centre with a half
+ * side of `CLUSTER_SIDE / 2` (0.46), so its cubes reach 0.88 canopies out. Two
+ * centres closer together than 1.76 canopies therefore have interpenetrating cubes —
+ * and because the satellites are dealt DIFFERENT heights, that interpenetration is
+ * visible as one green box passing through the side of another at mid-height, which
+ * is the defect rather than the two canopies merely touching.
+ *
+ * The along-a-street spacing (~55 m at the diorama) is already far wider than this,
+ * so in practice this only fires where two different roads plant near an
+ * intersection — which is exactly where the doubled-up trees were.
+ */
+const TREE_CLEARANCE = 1.76;
+
+/**
  * The cubes of one canopy. Pure; unit-testable. The centre cube is exactly what this
  * module drew before, so a cluster can never be SHORTER or narrower than the single
  * box it replaces.
@@ -362,8 +386,93 @@ export function canopyCubes(
   return out;
 }
 
+/**
+ * Turn accepted tree centres into the cubes that will actually be drawn, dropping
+ * anything that would intersect a building or another canopy. Pure; unit-testable.
+ *
+ * TWO REJECTIONS, AND THEY ARE DELIBERATELY NOT THE SAME STRENGTH.
+ *
+ *  * A building wins outright. The centre cube is tested first, and if it is inside
+ *    a building the whole tree goes — a canopy sprouting out of a tower roof is the
+ *    exact artefact reported. Satellites are then tested one at a time and dropped
+ *    individually, because a four-cube canopy beside a building still reads as a
+ *    tree, whereas deleting every tree that has one satellite near a wall strips the
+ *    verges bare precisely where the reference is densest.
+ *  * A neighbouring tree only blocks the CENTRE, and only at `TREE_CLEARANCE`. Two
+ *    canopies that touch read as one bigger bush; two whose cubes pass through each
+ *    other at different heights read as a bug.
+ *
+ * Testing each cube against its own circumscribed circle (`side * 0.7072`) is
+ * conservative — the drawn cube is an axis-aligned square, so a corner-on near miss
+ * is rejected as a hit. Erring toward "no intersection" is the point.
+ */
+export function placeCanopies(
+  centres: Iterable<[number, number]>,
+  m: { canopy: number; top: number; capBase: number },
+  blocked?: BlockedFn,
+  /** Optional tally, so the verification harness can report how much this rejected
+   *  rather than inferring it from a tree count. */
+  stats?: { centres: number; rejectedBuilding: number; rejectedNeighbour: number; satellitesDropped: number },
+): CanopyCube[] {
+  const out: CanopyCube[] = [];
+  const clearance = m.canopy * TREE_CLEARANCE;
+  // Neighbour lookup over a grid one clearance wide, so a centre only ever compares
+  // against the nine cells that could possibly hold a conflict.
+  const cell = Math.max(1e-9, clearance / M_PER_DEG_LAT);
+  const taken = new Map<string, [number, number][]>();
+  const near = (lon: number, lat: number): boolean => {
+    const gx = Math.floor(lon / Math.max(1e-9, clearance / Math.max(1, mPerDegLon(lat))));
+    const gy = Math.floor(lat / cell);
+    for (let i = -1; i <= 1; i++) {
+      for (let j = -1; j <= 1; j++) {
+        const list = taken.get(`${gx + i},${gy + j}`);
+        if (!list) continue;
+        for (const [ox, oy] of list) {
+          const dx = (lon - ox) * mPerDegLon(lat);
+          const dy = (lat - oy) * M_PER_DEG_LAT;
+          if (dx * dx + dy * dy < clearance * clearance) return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  for (const [lon, lat] of centres) {
+    if (stats) stats.centres++;
+    const cubes = canopyCubes(lon, lat, m);
+    const centre = cubes[0] as CanopyCube;
+    if (blocked && blocked(centre.lon, centre.lat, centre.side * 0.7072)) {
+      if (stats) stats.rejectedBuilding++;
+      continue;
+    }
+    if (near(lon, lat)) {
+      if (stats) stats.rejectedNeighbour++;
+      continue;
+    }
+    out.push(centre);
+    for (let i = 1; i < cubes.length; i++) {
+      const c = cubes[i] as CanopyCube;
+      if (blocked && blocked(c.lon, c.lat, c.side * 0.7072)) {
+        if (stats) stats.satellitesDropped++;
+        continue;
+      }
+      out.push(c);
+    }
+    const gx = Math.floor(lon / Math.max(1e-9, clearance / Math.max(1, mPerDegLon(lat))));
+    const gy = Math.floor(lat / cell);
+    const key = `${gx},${gy}`;
+    const list = taken.get(key);
+    if (list) list.push([lon, lat]); else taken.set(key, [[lon, lat]]);
+  }
+  return out;
+}
+
 /** Build the tree FeatureCollection for whatever roads are on screen right now. */
-function collectTrees(map: MlMap): GeoJSON.FeatureCollection {
+function collectTrees(
+  map: MlMap,
+  blocked?: BlockedFn,
+  stats?: { centres: number; rejectedBuilding: number; rejectedNeighbour: number; satellitesDropped: number },
+): GeoJSON.FeatureCollection {
   const layers = ROAD_LAYERS.filter((id) => map.getLayer(id));
   if (layers.length === 0) return { type: 'FeatureCollection', features: [] };
   const m = treeMetrics(map.getCenter().lat, map.getZoom());
@@ -381,17 +490,15 @@ function collectTrees(map: MlMap): GeoJSON.FeatureCollection {
     else if (g.type === 'MultiLineString') for (const l of g.coordinates) treesAlongLine(l, pts, MAX_TREES, m.spacing, m.verge);
   }
   const features: GeoJSON.Feature[] = [];
-  for (const [lon, lat] of pts.values()) {
-    // `h` / `cb` ride on each cube so the two extrusion layers can read them with
-    // `['get', …]`: fill-extrusion-height is data-driven, and that is what lets one
-    // pair of layers render a canopy whose size tracks the camera.
-    for (const c of canopyCubes(lon, lat, m)) {
-      features.push({
-        type: 'Feature' as const,
-        properties: { h: +c.top.toFixed(2), cb: +c.capBase.toFixed(2) },
-        geometry: { type: 'Polygon' as const, coordinates: squareAt(c.lon, c.lat, c.side) },
-      });
-    }
+  // `h` / `cb` ride on each cube so the two extrusion layers can read them with
+  // `['get', …]`: fill-extrusion-height is data-driven, and that is what lets one
+  // pair of layers render a canopy whose size tracks the camera.
+  for (const c of placeCanopies(pts.values(), m, blocked, stats)) {
+    features.push({
+      type: 'Feature' as const,
+      properties: { h: +c.top.toFixed(2), cb: +c.capBase.toFixed(2) },
+      geometry: { type: 'Polygon' as const, coordinates: squareAt(c.lon, c.lat, c.side) },
+    });
   }
   return { type: 'FeatureCollection', features };
 }
@@ -456,6 +563,11 @@ export function removeVoxelTreeLayers(map: MlMap): void {
 /**
  * Re-plant for the current viewport. Cheap, but not free — call it when the camera
  * SETTLES (`idle`), never per frame. A no-op when the layers are absent.
+ *
+ * MUST BE CALLED AFTER `syncVoxelCity`. The building test reads the city's DRAWN
+ * footprints, so planting first would test each tree against the previous frame's
+ * buildings — and on the frame a new tile lands, that is precisely the frame where
+ * the new buildings are the ones being grown through.
  */
 export function syncVoxelTrees(map: MlMap): number {
   if (!hasVoxelTreeLayers(map)) return 0;
@@ -463,7 +575,16 @@ export function syncVoxelTrees(map: MlMap): number {
     (map.getSource(TREE_SOURCE) as GeoJSONSource | undefined)?.setData({ type: 'FeatureCollection', features: [] });
     return 0;
   }
-  const fc = collectTrees(map);
+  lastStats = { centres: 0, rejectedBuilding: 0, rejectedNeighbour: 0, satellitesDropped: 0 };
+  const fc = collectTrees(map, (lon, lat, r) => voxelCityHitsBuilding(map, lon, lat, r), lastStats);
   (map.getSource(TREE_SOURCE) as GeoJSONSource | undefined)?.setData(fc);
   return fc.features.length;
+}
+
+let lastStats = { centres: 0, rejectedBuilding: 0, rejectedNeighbour: 0, satellitesDropped: 0 };
+
+/** What the last `syncVoxelTrees` rejected, and why. Diagnostics only — this is how
+ *  the tree/building fix is verified with a number instead of by eye. */
+export function voxelTreeStats(): Readonly<typeof lastStats> {
+  return lastStats;
 }
