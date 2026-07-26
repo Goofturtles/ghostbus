@@ -1,0 +1,858 @@
+{
+  "desktop-dark-en": {
+    "search": {
+      "pill": {
+        "w": 62.2,
+        "h": 32,
+        "text": "Live",
+        "truncated": false
+      },
+      "pillColor": {
+        "bg": "rgba(52, 199, 89, 0.16)",
+        "fg": "rgb(52, 199, 89)"
+      },
+      "bannerColor": null,
+      "sheetBg": "rgba(31, 34, 48, 0.88)",
+      "searchGlyphCount": 1,
+      "clearBtn": {
+        "w": 60.8,
+        "h": 44
+      },
+      "chip": {
+        "w": 162.6,
+        "h": 28
+      },
+      "transferOrder": null
+    },
+    "searchOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "searchEscape": {
+      "escapes": 0,
+      "hits": []
+    },
+    "catchingUp": {
+      "pill": {
+        "w": 111,
+        "h": 32,
+        "text": "Catching up",
+        "truncated": false
+      },
+      "pillColor": {
+        "bg": "rgba(52, 120, 246, 0.16)",
+        "fg": "rgb(106, 162, 255)"
+      },
+      "bannerColor": {
+        "bg": "rgba(52, 120, 246, 0.14)",
+        "fg": "rgb(106, 162, 255)"
+      },
+      "sheetBg": null,
+      "searchGlyphCount": 0,
+      "clearBtn": null,
+      "chip": null,
+      "transferOrder": null
+    },
+    "catchingUpOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "coverage": {
+      "pill": {
+        "w": 62.2,
+        "h": 32,
+        "text": "Live",
+        "truncated": false
+      },
+      "pillColor": {
+        "bg": "rgba(52, 199, 89, 0.16)",
+        "fg": "rgb(52, 199, 89)"
+      },
+      "bannerColor": null,
+      "sheetBg": null,
+      "searchGlyphCount": 0,
+      "clearBtn": null,
+      "chip": null,
+      "transferOrder": [
+        "state-glyph",
+        "state-title",
+        "state-body",
+        "btn",
+        "btn",
+        "state-body"
+      ]
+    },
+    "coverageOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "coverageEscape": {
+      "escapes": 0,
+      "hits": []
+    },
+    "coverageBtns": [
+      {
+        "cls": "btn-primary",
+        "w": 248,
+        "h": 44
+      },
+      {
+        "cls": "btn-quiet",
+        "w": 248,
+        "h": 44
+      }
+    ]
+  },
+  "desktop-light-en": {
+    "search": {
+      "pill": {
+        "w": 62.2,
+        "h": 32,
+        "text": "Live",
+        "truncated": false
+      },
+      "pillColor": {
+        "bg": "rgba(52, 199, 89, 0.16)",
+        "fg": "rgb(21, 122, 55)"
+      },
+      "bannerColor": null,
+      "sheetBg": "rgba(253, 253, 253, 0.78)",
+      "searchGlyphCount": 1,
+      "clearBtn": {
+        "w": 60.8,
+        "h": 44
+      },
+      "chip": {
+        "w": 162.6,
+        "h": 28
+      },
+      "transferOrder": null
+    },
+    "searchOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "searchEscape": {
+      "escapes": 0,
+      "hits": []
+    },
+    "catchingUp": {
+      "pill": {
+        "w": 111,
+        "h": 32,
+        "text": "Catching up",
+        "truncated": false
+      },
+      "pillColor": {
+        "bg": "rgba(52, 120, 246, 0.16)",
+        "fg": "rgb(31, 95, 208)"
+      },
+      "bannerColor": {
+        "bg": "rgba(52, 120, 246, 0.14)",
+        "fg": "rgb(31, 95, 208)"
+      },
+      "sheetBg": null,
+      "searchGlyphCount": 0,
+      "clearBtn": null,
+      "chip": null,
+      "transferOrder": null
+    },
+    "catchingUpOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "coverage": {
+      "pill": {
+        "w": 62.2,
+        "h": 32,
+        "text": "Live",
+        "truncated": false
+      },
+      "pillColor": {
+        "bg": "rgba(52, 199, 89, 0.16)",
+        "fg": "rgb(21, 122, 55)"
+      },
+      "bannerColor": null,
+      "sheetBg": null,
+      "searchGlyphCount": 0,
+      "clearBtn": null,
+      "chip": null,
+      "transferOrder": [
+        "state-glyph",
+        "state-title",
+        "state-body",
+        "btn",
+        "btn",
+        "state-body"
+      ]
+    },
+    "coverageOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "coverageEscape": {
+      "escapes": 0,
+      "hits": []
+    },
+    "coverageBtns": [
+      {
+        "cls": "btn-primary",
+        "w": 248,
+        "h": 44
+      },
+      {
+        "cls": "btn-quiet",
+        "w": 248,
+        "h": 44
+      }
+    ]
+  },
+  "desktop-dark-frCA": {
+    "search": {
+      "pill": {
+        "w": 87.3,
+        "h": 32,
+        "text": "En direct",
+        "truncated": false
+      },
+      "pillColor": {
+        "bg": "rgba(52, 199, 89, 0.16)",
+        "fg": "rgb(52, 199, 89)"
+      },
+      "bannerColor": null,
+      "sheetBg": "rgba(31, 34, 48, 0.88)",
+      "searchGlyphCount": 1,
+      "clearBtn": {
+        "w": 70.4,
+        "h": 44
+      },
+      "chip": {
+        "w": 147.2,
+        "h": 28
+      },
+      "transferOrder": null
+    },
+    "searchOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "searchEscape": {
+      "escapes": 0,
+      "hits": []
+    },
+    "catchingUp": {
+      "pill": {
+        "w": 154.2,
+        "h": 32,
+        "text": "Rattrapage en cours",
+        "truncated": false
+      },
+      "pillColor": {
+        "bg": "rgba(52, 120, 246, 0.16)",
+        "fg": "rgb(106, 162, 255)"
+      },
+      "bannerColor": {
+        "bg": "rgba(52, 120, 246, 0.14)",
+        "fg": "rgb(106, 162, 255)"
+      },
+      "sheetBg": null,
+      "searchGlyphCount": 0,
+      "clearBtn": null,
+      "chip": null,
+      "transferOrder": null
+    },
+    "catchingUpOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "coverage": {
+      "pill": {
+        "w": 87.3,
+        "h": 32,
+        "text": "En direct",
+        "truncated": false
+      },
+      "pillColor": {
+        "bg": "rgba(52, 199, 89, 0.16)",
+        "fg": "rgb(52, 199, 89)"
+      },
+      "bannerColor": null,
+      "sheetBg": null,
+      "searchGlyphCount": 0,
+      "clearBtn": null,
+      "chip": null,
+      "transferOrder": [
+        "state-glyph",
+        "state-title",
+        "state-body",
+        "btn",
+        "btn",
+        "state-body"
+      ]
+    },
+    "coverageOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "coverageEscape": {
+      "escapes": 0,
+      "hits": []
+    },
+    "coverageBtns": [
+      {
+        "cls": "btn-primary",
+        "w": 248,
+        "h": 52
+      },
+      {
+        "cls": "btn-quiet",
+        "w": 248,
+        "h": 44
+      }
+    ]
+  },
+  "desktop-light-es": {
+    "search": {
+      "pill": {
+        "w": 78.6,
+        "h": 32,
+        "text": "En vivo",
+        "truncated": false
+      },
+      "pillColor": {
+        "bg": "rgba(52, 199, 89, 0.16)",
+        "fg": "rgb(21, 122, 55)"
+      },
+      "bannerColor": null,
+      "sheetBg": "rgba(253, 253, 253, 0.78)",
+      "searchGlyphCount": 1,
+      "clearBtn": {
+        "w": 65.2,
+        "h": 44
+      },
+      "chip": {
+        "w": 131.5,
+        "h": 28
+      },
+      "transferOrder": null
+    },
+    "searchOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "searchEscape": {
+      "escapes": 0,
+      "hits": []
+    },
+    "catchingUp": {
+      "pill": {
+        "w": 139.8,
+        "h": 32,
+        "text": "Poniéndose al día",
+        "truncated": false
+      },
+      "pillColor": {
+        "bg": "rgba(52, 120, 246, 0.16)",
+        "fg": "rgb(31, 95, 208)"
+      },
+      "bannerColor": {
+        "bg": "rgba(52, 120, 246, 0.14)",
+        "fg": "rgb(31, 95, 208)"
+      },
+      "sheetBg": null,
+      "searchGlyphCount": 0,
+      "clearBtn": null,
+      "chip": null,
+      "transferOrder": null
+    },
+    "catchingUpOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "coverage": {
+      "pill": {
+        "w": 78.6,
+        "h": 32,
+        "text": "En vivo",
+        "truncated": false
+      },
+      "pillColor": {
+        "bg": "rgba(52, 199, 89, 0.16)",
+        "fg": "rgb(21, 122, 55)"
+      },
+      "bannerColor": null,
+      "sheetBg": null,
+      "searchGlyphCount": 0,
+      "clearBtn": null,
+      "chip": null,
+      "transferOrder": [
+        "state-glyph",
+        "state-title",
+        "state-body",
+        "btn",
+        "btn",
+        "state-body"
+      ]
+    },
+    "coverageOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "coverageEscape": {
+      "escapes": 0,
+      "hits": []
+    },
+    "coverageBtns": [
+      {
+        "cls": "btn-primary",
+        "w": 248,
+        "h": 52
+      },
+      {
+        "cls": "btn-quiet",
+        "w": 248,
+        "h": 44
+      }
+    ]
+  },
+  "mobile-dark-en": {
+    "search": {
+      "pill": {
+        "w": 60.2,
+        "h": 30,
+        "text": "",
+        "truncated": false
+      },
+      "pillColor": {
+        "bg": "rgba(52, 199, 89, 0.16)",
+        "fg": "rgb(52, 199, 89)"
+      },
+      "bannerColor": null,
+      "sheetBg": "rgb(31, 34, 48)",
+      "searchGlyphCount": 1,
+      "clearBtn": {
+        "w": 60.8,
+        "h": 44
+      },
+      "chip": {
+        "w": 162.6,
+        "h": 28
+      },
+      "transferOrder": null
+    },
+    "searchOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "searchEscape": {
+      "escapes": 0,
+      "hits": []
+    },
+    "catchingUp": {
+      "pill": {
+        "w": 109,
+        "h": 30,
+        "text": "Catching up",
+        "truncated": false
+      },
+      "pillColor": {
+        "bg": "rgba(52, 120, 246, 0.16)",
+        "fg": "rgb(106, 162, 255)"
+      },
+      "bannerColor": {
+        "bg": "rgba(52, 120, 246, 0.14)",
+        "fg": "rgb(106, 162, 255)"
+      },
+      "sheetBg": null,
+      "searchGlyphCount": 0,
+      "clearBtn": null,
+      "chip": null,
+      "transferOrder": null
+    },
+    "catchingUpOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "coverage": {
+      "pill": {
+        "w": 60.2,
+        "h": 30,
+        "text": "Live",
+        "truncated": false
+      },
+      "pillColor": {
+        "bg": "rgba(52, 199, 89, 0.16)",
+        "fg": "rgb(52, 199, 89)"
+      },
+      "bannerColor": null,
+      "sheetBg": null,
+      "searchGlyphCount": 0,
+      "clearBtn": null,
+      "chip": null,
+      "transferOrder": [
+        "state-glyph",
+        "state-title",
+        "state-body",
+        "btn",
+        "btn",
+        "state-body"
+      ]
+    },
+    "coverageOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "coverageEscape": {
+      "escapes": 0,
+      "hits": []
+    },
+    "coverageBtns": [
+      {
+        "cls": "btn-primary",
+        "w": 318,
+        "h": 44
+      },
+      {
+        "cls": "btn-quiet",
+        "w": 318,
+        "h": 44
+      }
+    ]
+  },
+  "mobile-light-en": {
+    "search": {
+      "pill": {
+        "w": 60.2,
+        "h": 30,
+        "text": "",
+        "truncated": false
+      },
+      "pillColor": {
+        "bg": "rgba(52, 199, 89, 0.16)",
+        "fg": "rgb(21, 122, 55)"
+      },
+      "bannerColor": null,
+      "sheetBg": "rgb(255, 255, 255)",
+      "searchGlyphCount": 1,
+      "clearBtn": {
+        "w": 60.8,
+        "h": 44
+      },
+      "chip": {
+        "w": 162.6,
+        "h": 28
+      },
+      "transferOrder": null
+    },
+    "searchOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "searchEscape": {
+      "escapes": 0,
+      "hits": []
+    },
+    "catchingUp": {
+      "pill": {
+        "w": 109,
+        "h": 30,
+        "text": "Catching up",
+        "truncated": false
+      },
+      "pillColor": {
+        "bg": "rgba(52, 120, 246, 0.16)",
+        "fg": "rgb(31, 95, 208)"
+      },
+      "bannerColor": {
+        "bg": "rgba(52, 120, 246, 0.14)",
+        "fg": "rgb(31, 95, 208)"
+      },
+      "sheetBg": null,
+      "searchGlyphCount": 0,
+      "clearBtn": null,
+      "chip": null,
+      "transferOrder": null
+    },
+    "catchingUpOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "coverage": {
+      "pill": {
+        "w": 60.2,
+        "h": 30,
+        "text": "Live",
+        "truncated": false
+      },
+      "pillColor": {
+        "bg": "rgba(52, 199, 89, 0.16)",
+        "fg": "rgb(21, 122, 55)"
+      },
+      "bannerColor": null,
+      "sheetBg": null,
+      "searchGlyphCount": 0,
+      "clearBtn": null,
+      "chip": null,
+      "transferOrder": [
+        "state-glyph",
+        "state-title",
+        "state-body",
+        "btn",
+        "btn",
+        "state-body"
+      ]
+    },
+    "coverageOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "coverageEscape": {
+      "escapes": 0,
+      "hits": []
+    },
+    "coverageBtns": [
+      {
+        "cls": "btn-primary",
+        "w": 318,
+        "h": 44
+      },
+      {
+        "cls": "btn-quiet",
+        "w": 318,
+        "h": 44
+      }
+    ]
+  },
+  "mobile-dark-frCA": {
+    "search": {
+      "pill": {
+        "w": 85.3,
+        "h": 30,
+        "text": "",
+        "truncated": false
+      },
+      "pillColor": {
+        "bg": "rgba(52, 199, 89, 0.16)",
+        "fg": "rgb(52, 199, 89)"
+      },
+      "bannerColor": null,
+      "sheetBg": "rgb(31, 34, 48)",
+      "searchGlyphCount": 1,
+      "clearBtn": {
+        "w": 70.4,
+        "h": 44
+      },
+      "chip": {
+        "w": 147.2,
+        "h": 28
+      },
+      "transferOrder": null
+    },
+    "searchOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "searchEscape": {
+      "escapes": 0,
+      "hits": []
+    },
+    "catchingUp": {
+      "pill": {
+        "w": 152.2,
+        "h": 30,
+        "text": "Rattrapage en cours",
+        "truncated": false
+      },
+      "pillColor": {
+        "bg": "rgba(52, 120, 246, 0.16)",
+        "fg": "rgb(106, 162, 255)"
+      },
+      "bannerColor": {
+        "bg": "rgba(52, 120, 246, 0.14)",
+        "fg": "rgb(106, 162, 255)"
+      },
+      "sheetBg": null,
+      "searchGlyphCount": 0,
+      "clearBtn": null,
+      "chip": null,
+      "transferOrder": null
+    },
+    "catchingUpOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "coverage": {
+      "pill": {
+        "w": 85.3,
+        "h": 30,
+        "text": "En direct",
+        "truncated": false
+      },
+      "pillColor": {
+        "bg": "rgba(52, 199, 89, 0.16)",
+        "fg": "rgb(52, 199, 89)"
+      },
+      "bannerColor": null,
+      "sheetBg": null,
+      "searchGlyphCount": 0,
+      "clearBtn": null,
+      "chip": null,
+      "transferOrder": [
+        "state-glyph",
+        "state-title",
+        "state-body",
+        "btn",
+        "btn",
+        "state-body"
+      ]
+    },
+    "coverageOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "coverageEscape": {
+      "escapes": 0,
+      "hits": []
+    },
+    "coverageBtns": [
+      {
+        "cls": "btn-primary",
+        "w": 318,
+        "h": 44
+      },
+      {
+        "cls": "btn-quiet",
+        "w": 318,
+        "h": 44
+      }
+    ]
+  },
+  "mobile-light-es": {
+    "search": {
+      "pill": {
+        "w": 76.6,
+        "h": 30,
+        "text": "",
+        "truncated": false
+      },
+      "pillColor": {
+        "bg": "rgba(52, 199, 89, 0.16)",
+        "fg": "rgb(21, 122, 55)"
+      },
+      "bannerColor": null,
+      "sheetBg": "rgb(255, 255, 255)",
+      "searchGlyphCount": 1,
+      "clearBtn": {
+        "w": 65.2,
+        "h": 44
+      },
+      "chip": {
+        "w": 131.5,
+        "h": 28
+      },
+      "transferOrder": null
+    },
+    "searchOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "searchEscape": {
+      "escapes": 0,
+      "hits": []
+    },
+    "catchingUp": {
+      "pill": {
+        "w": 137.8,
+        "h": 30,
+        "text": "Poniéndose al día",
+        "truncated": false
+      },
+      "pillColor": {
+        "bg": "rgba(52, 120, 246, 0.16)",
+        "fg": "rgb(31, 95, 208)"
+      },
+      "bannerColor": {
+        "bg": "rgba(52, 120, 246, 0.14)",
+        "fg": "rgb(31, 95, 208)"
+      },
+      "sheetBg": null,
+      "searchGlyphCount": 0,
+      "clearBtn": null,
+      "chip": null,
+      "transferOrder": null
+    },
+    "catchingUpOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "coverage": {
+      "pill": {
+        "w": 76.6,
+        "h": 30,
+        "text": "En vivo",
+        "truncated": false
+      },
+      "pillColor": {
+        "bg": "rgba(52, 199, 89, 0.16)",
+        "fg": "rgb(21, 122, 55)"
+      },
+      "bannerColor": null,
+      "sheetBg": null,
+      "searchGlyphCount": 0,
+      "clearBtn": null,
+      "chip": null,
+      "transferOrder": [
+        "state-glyph",
+        "state-title",
+        "state-body",
+        "btn",
+        "btn",
+        "state-body"
+      ]
+    },
+    "coverageOverlap": {
+      "trueOverlaps": 0,
+      "top": [],
+      "hScroll": false
+    },
+    "coverageEscape": {
+      "escapes": 0,
+      "hits": []
+    },
+    "coverageBtns": [
+      {
+        "cls": "btn-primary",
+        "w": 318,
+        "h": 44
+      },
+      {
+        "cls": "btn-quiet",
+        "w": 318,
+        "h": 44
+      }
+    ]
+  }
+}

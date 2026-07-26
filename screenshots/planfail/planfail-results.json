@@ -1,0 +1,32 @@
+{
+  "ride": {
+    "stateTitle": null,
+    "planLegs": 3,
+    "walkNodes": 1,
+    "statusPill": "Live"
+  },
+  "transfer1": {
+    "stateTitle": "This trip needs a transfer",
+    "planLegs": 0,
+    "walkNodes": 0,
+    "statusPill": "Live"
+  },
+  "transfer2": {
+    "stateTitle": "This trip needs a transfer",
+    "planLegs": 0,
+    "walkNodes": 0,
+    "statusPill": "Live"
+  },
+  "rideAgain": {
+    "stateTitle": null,
+    "planLegs": 3,
+    "walkNodes": 1,
+    "statusPill": "Live"
+  },
+  "fetchError": {
+    "stateTitle": "Can't reach the planner",
+    "planLegs": 0,
+    "walkNodes": 0,
+    "statusPill": "Catching up"
+  }
+}
