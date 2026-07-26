@@ -29,7 +29,7 @@ export function StopHeader({ arr, distanceM, headsigns }: {
   headsigns?: (string | null | undefined)[];
 }) {
   const { t } = useTranslation();
-  const saved = useStore((s) => s.savedStops.includes(arr.stopId));
+  const saved = useStore((s) => s.savedStops.some((x) => x.agency === arr.agency && x.stopId === arr.stopId));
   const toggleSaved = useStore((s) => s.toggleSaved);
   const units = useStore((s) => s.units);
   const pace = useStore((s) => s.pace);
@@ -78,7 +78,7 @@ export function StopHeader({ arr, distanceM, headsigns }: {
         className={`stop-save ${saved ? 'is-saved' : ''}`}
         aria-pressed={saved}
         aria-label={saved ? t('stop.saved') : t('stop.save')}
-        onClick={() => toggleSaved(arr.stopId)}
+        onClick={() => toggleSaved({ agency: arr.agency, stopId: arr.stopId })}
       >
         <span className="only-desktop"><HeartIcon width={20} height={20} filled={saved} /></span>
         <span className="only-mobile"><StarIcon width={20} height={20} filled={saved} /></span>

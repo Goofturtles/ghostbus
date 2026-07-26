@@ -26,11 +26,11 @@ function candidate(o: Partial<RideCandidateDto> & {
     headsign: 'East - 504A King towards Distillery Loop', directionId: 0,
     directionLabel: 'East - 504A King towards Distillery Loop',
     board: {
-      stopId: 'B1', name: 'King St West at Spadina Ave', lat: 43.64537, lon: -79.395811,
+      agency: 'ttc', stopId: 'B1', name: 'King St West at Spadina Ave', lat: 43.64537, lon: -79.395811,
       wheelchairBoarding: 1, distanceM: boardDistanceM,
     },
     alight: {
-      stopId: 'A1', name: 'Dundas West Station', lat: 43.656862, lon: -79.453415,
+      agency: 'ttc', stopId: 'A1', name: 'Dundas West Station', lat: 43.656862, lon: -79.453415,
       wheelchairBoarding: 1, distanceM: alightDistanceM,
     },
     boardStopSequence: 14, alightStopSequence: 38, stopsRidden: 24,

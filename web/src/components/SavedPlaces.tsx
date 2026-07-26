@@ -25,12 +25,16 @@ function useSavedRows() {
   const nearby = useLive((s) => s.nearby);
   const arrivals = useLive((s) => s.arrivals);
 
-  return savedStops.map((stopId) => {
-    const near = nearby.find((s) => s.stopId === stopId);
-    const name = near?.name ?? (arrivals?.stopId === stopId ? arrivals.stopName : null);
+  return savedStops.map((saved) => {
+    const { agency, stopId } = saved;
+    // Matched on the PAIR: another agency can carry the same stop id, and matching on the
+    // id alone would label a saved stop with a different city's name and countdown.
+    const near = nearby.find((s) => s.agency === agency && s.stopId === stopId);
+    const onThisStop = arrivals?.agency === agency && arrivals?.stopId === stopId;
+    const name = near?.name ?? (onThisStop ? arrivals.stopName : null);
 
     let sub: string | null = null;
-    if (arrivals?.stopId === stopId && arrivals.departures.length > 0) {
+    if (onThisStop && arrivals.departures.length > 0) {
       const d = arrivals.departures[0];
       const eta = d.liveEtaMs ?? d.honest.estimateMs ?? d.scheduledMs;
       const min = Math.max(0, Math.round((eta - liveNow()) / 60_000));
@@ -41,11 +45,11 @@ function useSavedRows() {
       sub = t('stop.walkEst', { min: walkMinutes(walkLegSeconds('direct', near.distanceM, paceMps(pace))) });
     }
 
-    return { stopId, title: name ?? t('stop.code', { code: stopId }), sub };
+    return { agency, stopId, title: name ?? t('stop.code', { code: stopId }), sub };
   });
 }
 
-function SavedRow({ stopId, title, sub }: { stopId: string; title: string; sub: string | null }) {
+function SavedRow({ agency, stopId, title, sub }: { agency: string; stopId: string; title: string; sub: string | null }) {
   const { t } = useTranslation();
   const selectStop = useStore((s) => s.selectStop);
   const setTab = useStore((s) => s.setTab);
@@ -68,7 +72,7 @@ function SavedRow({ stopId, title, sub }: { stopId: string; title: string; sub: 
         className="saved-star is-saved"
         aria-pressed="true"
         aria-label={t('stop.saved')}
-        onClick={() => toggleSaved(stopId)}
+        onClick={() => toggleSaved({ agency, stopId })}
       >
         <StarIcon width={18} height={18} filled />
       </button>
@@ -92,7 +96,7 @@ export function SavedPlacesSection() {
       </div>
       {rows.length > 0 ? (
         <ul className="saved-list">
-          {rows.slice(0, 2).map((r) => <SavedRow key={r.stopId} {...r} />)}
+          {rows.slice(0, 2).map((r) => <SavedRow key={`${r.agency}/${r.stopId}`} {...r} />)}
         </ul>
       ) : (
         <p className="saved-empty">{t('saved.empty')}</p>
@@ -124,7 +128,7 @@ export function SavedPanel() {
         <span className="eyebrow" id="gb-savedtab-head">{t('sections.savedPlaces')}</span>
       </div>
       <ul className="saved-list">
-        {rows.map((r) => <SavedRow key={r.stopId} {...r} />)}
+        {rows.map((r) => <SavedRow key={`${r.agency}/${r.stopId}`} {...r} />)}
       </ul>
     </section>
   );

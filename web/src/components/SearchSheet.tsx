@@ -137,13 +137,14 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
   );
 
   /** Saved stops, named from whatever real data we already hold. */
-  const savedRows = useMemo<StopResult[]>(() => savedStops.map((stopId) => {
-    const near = nearby.find((s) => s.stopId === stopId);
-    const onBoard = arrivals?.stopId === stopId ? arrivals : null;
+  const savedRows = useMemo<StopResult[]>(() => savedStops.map(({ agency, stopId }) => {
+    const near = nearby.find((s) => s.agency === agency && s.stopId === stopId);
+    const onBoard = arrivals?.agency === agency && arrivals?.stopId === stopId ? arrivals : null;
     const lat = near?.lat ?? onBoard?.lat ?? null;
     const lon = near?.lon ?? onBoard?.lon ?? null;
     return {
       kind: 'stop',
+      agency,
       stopId,
       name: near?.name ?? onBoard?.stopName ?? stopId,
       lat, lon,
@@ -157,7 +158,7 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
     if (mode === 'destination') return []; // a route is not a place to travel TO
     const boards = [arrivals, nextService]
       .filter((b): b is ArrivalsResponse => b != null)
-      .map((b) => ({ stopId: b.stopId, stopName: b.stopName, departures: b.departures }));
+      .map((b) => ({ agency: b.agency, stopId: b.stopId, stopName: b.stopName, departures: b.departures }));
     return matchRoutes(boards, q);
   }, [arrivals, nextService, q, mode]);
 
@@ -218,7 +219,7 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
   }, [peekStopId, peek]);
 
   // ---------------- choosing ----------------
-  const chooseStop = useCallback(async (place: { stopId: string; name: string; lat: number | null; lon: number | null; wheelchairBoarding?: number | null }) => {
+  const chooseStop = useCallback(async (place: { agency: string; stopId: string; name: string; lat: number | null; lon: number | null; wheelchairBoarding?: number | null }) => {
     const store = useStore.getState();
     let { lat, lon } = place;
     // A saved stop we have never had coordinates for still has to be plannable. The
@@ -227,11 +228,12 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
     if (mode === 'destination' && (lat == null || lon == null)) {
       try {
         const res = await api.stops(place.stopId);
-        const hit = res.stops.find((s) => s.stopId === place.stopId);
+        // Match on BOTH, not just the id: another agency can carry the same stopId.
+        const hit = res.stops.find((s) => s.agency === place.agency && s.stopId === place.stopId);
         if (hit) { lat = hit.lat; lon = hit.lon; }
       } catch { /* leave them null — handled honestly below */ }
     }
-    const remembered: RecentPlace = { stopId: place.stopId, name: place.name, lat, lon, ts: Date.now() };
+    const remembered: RecentPlace = { agency: place.agency, stopId: place.stopId, name: place.name, lat, lon, ts: Date.now() };
 
     if (mode === 'destination') {
       // Without coordinates there is nothing to plan a journey to, so the destination
@@ -241,7 +243,7 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
       store.setTab('plan');
     } else {
       store.rememberStop(remembered);
-      useLive.getState().openStop({ ...place, lat, lon });
+      useLive.getState().openStop({ ...place, agency: place.agency, lat, lon });
       store.setTab('nearby');
     }
     close();
@@ -253,8 +255,11 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
       // from — the one place the app can show a rider something true about it. The
       // board it came from carries that stop's real coordinates, so the distance
       // survives the jump instead of the header losing it.
-      const board = [arrivals, nextService].find((b) => b?.stopId === opt.row.stopId) ?? null;
+      // Matched on the pair, like every other stop lookup in this file.
+      const board = [arrivals, nextService].find(
+        (b) => b?.agency === opt.row.agency && b?.stopId === opt.row.stopId) ?? null;
       void chooseStop({
+        agency: opt.row.agency,
         stopId: opt.row.stopId,
         name: opt.row.stopName ?? opt.row.stopId,
         lat: board?.lat ?? null,
@@ -264,6 +269,7 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
       return;
     }
     void chooseStop({
+      agency: opt.row.agency,
       stopId: opt.row.stopId,
       name: opt.row.name,
       lat: opt.row.lat, lon: opt.row.lon,

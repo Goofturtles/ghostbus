@@ -1,8 +1,12 @@
 // Shared request/response contracts between the GhostBus API (server/src/api.ts)
 // and the Phase-3 web client. One source of truth so the API and UI cannot drift.
 //
-// Tier 0 is Toronto-only; every payload is scoped to the TTC internally
-// (agency = 'ttc') and the wire format never leaks the agency seam.
+// The wire format NAMES the agency on every row that carries an agency-scoped id.
+//
+// It used to say "Tier 0 is Toronto-only … the wire format never leaks the agency seam",
+// which was true and is now false on purpose. With more than one agency seeded, a bare
+// stop_id or route_id is ambiguous — see the note on StopDto.agency for the measured
+// collision counts — so hiding the seam would mean shipping ids the client cannot resolve.
 
 export type DbDriver = 'pg' | 'pglite';
 
@@ -106,6 +110,8 @@ export interface HealthResponse {
 // ---------- /api/vehicles ----------
 
 export interface VehicleDto {
+  /** The agency operating this vehicle. Vehicle ids collide across fleets too. */
+  agency: string;
   id: string;
   routeId: string | null;
   shortName: string | null;
@@ -137,6 +143,20 @@ export interface VehiclesResponse {
 // ---------- /api/stops + /api/stops/nearby ----------
 
 export interface StopDto {
+  /**
+   * WHICH AGENCY THIS ROW BELONGS TO. Required, because every id beside it — stop_id,
+   * route_id, trip_id — is unique only WITHIN an agency, and the collisions are measured
+   * rather than theoretical: across the GTA static feeds, 2,824 stop_ids are shared between
+   * the TTC and YRT, 1,496 between MiWay and the TTC, and Brampton shares 45 route_ids with
+   * the TTC. `stop_id 2334` is "Eglinton Ave West at Caledonia Rd" on the TTC and "Finch GO
+   * Bus Terminal Platform 15" on YRT — two real stops, ten kilometres apart, one number.
+   *
+   * Deliberately a SEPARATE FIELD rather than a prefix baked into the id ("ttc:2334").
+   * A composite string type-checks everywhere and silently does the wrong thing wherever an
+   * id is compared, de-duplicated or persisted; DECISIONS §48's lesson was two names so
+   * neither can be typed where the other belongs.
+   */
+  agency: string;
   stopId: string;
   name: string | null;
   lat: number | null;
@@ -216,6 +236,8 @@ export interface GhostRisk {
 }
 
 export interface DepartureDto {
+  /** The agency running this departure. See the note on StopDto.agency. */
+  agency: string;
   routeId: string | null;
   shortName: string | null;
   longName: string | null;
@@ -240,6 +262,8 @@ export interface DepartureDto {
 }
 
 export interface ArrivalsResponse {
+  /** Which agency's stop this board belongs to. */
+  agency: string;
   stopId: string;
   stopName: string | null;
   lat: number | null;
@@ -286,6 +310,9 @@ export interface RouteShapeResponse {
  *  profile (`lib/walk.ts`), which is exactly where that preference already lives and
  *  the one place it is allowed to stay: the server is never told how fast anyone walks. */
 export interface PlanStopDto {
+  /** Which agency's stop this is. A single-vehicle ride never crosses agencies, but the
+   *  two ends of a plan are matched against a stop table that now holds several. */
+  agency: string;
   stopId: string;
   name: string | null;
   lat: number;
@@ -379,6 +406,8 @@ export interface AlertInformedDto {
 }
 
 export interface AlertDto {
+  /** Which agency published this alert. */
+  agency: string;
   alertId: string;
   /** GTFS-realtime `Alert.Effect` enum name, e.g. 'NO_SERVICE'. The TTC feed
    *  publishes 'UNKNOWN_EFFECT' on every alert today — reported as-is, never guessed. */
@@ -416,6 +445,8 @@ export interface AlertsResponse {
 export type GhostKind = 'ghost' | 'cancelled';
 
 export interface GhostEventDto {
+  /** Which agency's trip failed to appear. */
+  agency: string;
   tripId: string;
   /** 'ghost' = scheduled, due, and never showed up. 'cancelled' = the agency said so. */
   kind: GhostKind;

@@ -373,13 +373,16 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
    * a bug in each direction. `poller.ts` has drawn this exact distinction since Demo Mode
    * landed (STATIC_AGENCY vs `agency`); this file now matches it.
    *
-   * STATIC_AGENCY — the published schedule: stops, routes, trips, stop_times, shapes,
-   * calendar, calendar_dates. Always `'ttc'`, in BOTH modes. A schedule is not an
-   * observation: there is exactly one published board, `seed_toronto.ts` only ever writes
-   * it under `'ttc'`, and a recording is a recording *of* that board rather than a
-   * different one (DECISIONS §44, demo.ts rule 5).
+   * `staticAgency` — the published schedule: stops, routes, trips, stop_times, shapes,
+   * calendar, calendar_dates. Read from `poller.getMode().staticAgency`, so it is whichever
+   * agency this poller observes ('ttc', 'miway', …) — it is NO LONGER always `'ttc'`, and
+   * `seed_toronto.ts` no longer writes only under `'ttc'` either: it takes `--agency` and
+   * writes each agency's board under that agency's own id. What has not changed is the
+   * rule: a schedule is not an observation, there is one published board per agency, and a
+   * recording is a recording *of* that board rather than a different one (DECISIONS §44,
+   * demo.ts rule 5). Demo Mode is exactly where the two names diverge.
    *
-   * MODE_AGENCY — everything this process OBSERVED or DERIVED: trip_delay_obs, ghosts,
+   * `modeAgency` — everything this process OBSERVED or DERIVED: trip_delay_obs, ghosts,
    * agg_delay, agg_delay_route, service_alerts. `'ttc-demo'` in demo mode, so replayed
    * observations can never be confused with live history. Enforced by the primary keys.
    *
@@ -420,6 +423,18 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
    * Phase 1 lands the union queries (`/api/stops`, `/nearby`, the nearest-stop fallback,
    * arrivals, shape, plan, alerts, the ghosts-feed join and `/api/stats`) and removes this.
    */
+  /**
+   * THE AGENCY NAME THAT GOES ON THE WIRE.
+   *
+   * Always the STATIC agency, never `modeAgency`. In Demo Mode observations are stored
+   * under 'ttc-demo', but that suffix is a storage namespace, not a transit system — a
+   * rider looking at a replayed TTC alert is looking at a TTC alert. Sending 'ttc-demo'
+   * would leak our bookkeeping into the UI and, worse, would not match the `agency` on the
+   * stops and routes beside it, so the client could not join them. DECISIONS §44: a
+   * recording is a recording OF the published board.
+   */
+  const wireAgency = staticAgency;
+
   const enabled = enabledAgencies();
   if (enabled.length > 1 && poller.getMode().mode === 'live') {
     throw new Error(
@@ -803,6 +818,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       if (!pointInBbox(v.lat, v.lon, b)) continue;
       const meta = routeMetaFor(staticAgency, v.routeId);
       vehicles.push({
+        agency: wireAgency,
         id: v.id, routeId: v.routeId, shortName: meta?.shortName ?? null, routeType: meta?.routeType ?? null,
         color: colorFor(meta), lat: v.lat, lon: v.lon, heading: v.heading, speedMs: v.speedMs, isGhost: false, ts: v.ts,
       });
@@ -826,7 +842,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       `SELECT stop_id, name, lat, lon, wheelchair_boarding FROM stops
        WHERE agency=$1 AND (stop_id = $2 OR name ILIKE $3) ORDER BY (stop_id = $2) DESC, name LIMIT $4`,
       [staticAgency, q, `%${q}%`, SEARCH_MAX_RESULTS])).rows;
-    const stops: StopDto[] = rows.map((r) => ({ stopId: r.stop_id, name: r.name, lat: r.lat == null ? null : Number(r.lat), lon: r.lon == null ? null : Number(r.lon), wheelchairBoarding: r.wheelchair_boarding == null ? null : Number(r.wheelchair_boarding) }));
+    const stops: StopDto[] = rows.map((r) => ({ agency: wireAgency, stopId: r.stop_id, name: r.name, lat: r.lat == null ? null : Number(r.lat), lon: r.lon == null ? null : Number(r.lon), wheelchairBoarding: r.wheelchair_boarding == null ? null : Number(r.wheelchair_boarding) }));
     const body: StopsResponse = { stops, count: stops.length };
     return reply.send(body);
   });
@@ -852,7 +868,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       if (r.lat == null || r.lon == null) continue;
       const distanceM = haversineM(lat, lon, Number(r.lat), Number(r.lon));
       if (distanceM > radius) continue;
-      stops.push({ stopId: r.stop_id, name: r.name, lat: Number(r.lat), lon: Number(r.lon), wheelchairBoarding: r.wheelchair_boarding == null ? null : Number(r.wheelchair_boarding), distanceM: Math.round(distanceM) });
+      stops.push({ agency: wireAgency, stopId: r.stop_id, name: r.name, lat: Number(r.lat), lon: Number(r.lon), wheelchairBoarding: r.wheelchair_boarding == null ? null : Number(r.wheelchair_boarding), distanceM: Math.round(distanceM) });
     }
     stops.sort((a, b2) => (a.distanceM ?? 0) - (b2.distanceM ?? 0));
 
@@ -891,6 +907,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
         [staticAgency, lat, lon, Math.cos(lat * Math.PI / 180) ** 2])).rows[0];
       if (nr?.lat != null && nr.lon != null) {
         nearest = {
+          agency: wireAgency,
           stopId: nr.stop_id, name: nr.name, lat: Number(nr.lat), lon: Number(nr.lon),
           wheelchairBoarding: nr.wheelchair_boarding == null ? null : Number(nr.wheelchair_boarding),
           distanceM: Math.round(haversineM(lat, lon, Number(nr.lat), Number(nr.lon))),
@@ -1006,6 +1023,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       const ghostRisk = cell ? ghostRiskFor(cell.ghosts, cell.scheduled, WINDOW_DAYS) : null;
 
       const dep: DepartureDto = {
+        agency: wireAgency,
         routeId: r.routeId, shortName: meta?.shortName ?? null, longName: meta?.longName ?? null,
         routeType: meta?.routeType ?? null, color: colorFor(meta),
         headsign: r.headsign, directionId: r.directionId,
@@ -1025,6 +1043,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     });
 
     const body: ArrivalsResponse = {
+      agency: wireAgency,
       stopId: stopRow.stop_id, stopName: stopRow.name,
       lat: stopRow.lat == null ? null : Number(stopRow.lat), lon: stopRow.lon == null ? null : Number(stopRow.lon),
       wheelchairBoarding: stopRow.wheelchair_boarding == null ? null : Number(stopRow.wheelchair_boarding),
@@ -1096,6 +1115,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
         const distanceM = haversineM(lat, lon, Number(r.lat), Number(r.lon));
         if (distanceM > radius) continue;
         out.push({
+          agency: wireAgency,
           stopId: r.stop_id, name: r.name, lat: Number(r.lat), lon: Number(r.lon),
           wheelchairBoarding: r.wheelchair_boarding == null ? null : Number(r.wheelchair_boarding),
           distanceM: Math.round(distanceM),
@@ -1381,6 +1401,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     };
 
     const alerts: AlertDto[] = rows.map((r) => {
+      // `wireAgency`, not `modeAgency`: a replayed TTC alert is still a TTC alert.
       // JSONB: pg returns it parsed, PGlite can hand back the text form.
       const raw = typeof r.informed === 'string' ? JSON.parse(r.informed) : r.informed;
       const list: AlertInformedDto[] = Array.isArray(raw)
@@ -1395,6 +1416,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
         })
         : [];
       return {
+        agency: wireAgency,
         alertId: r.alert_id,
         effect: blank(r.effect), cause: blank(r.cause),
         header: blank(r.header), description: blank(r.description),
@@ -1481,6 +1503,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       if (!Number.isFinite(scheduledStartMs) || !Number.isFinite(detectedAtMs)) continue;
       const meta = routeMetaFor(staticAgency, r.route_id);
       events.push({
+        agency: wireAgency,
         tripId: r.trip_id,
         kind: (r.kind === 'cancelled' ? 'cancelled' : 'ghost') satisfies GhostKind,
         routeId: r.route_id, shortName: meta?.shortName ?? null, longName: meta?.longName ?? null,

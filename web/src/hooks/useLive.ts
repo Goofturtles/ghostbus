@@ -194,7 +194,7 @@ interface LiveState {
   start: () => () => void;
   /** Open a stop the rider chose from search, remembering it so the board's header
    *  can still show a real distance when the stop is outside the nearby radius. */
-  openStop: (stop: { stopId: string; name: string | null; lat: number | null; lon: number | null; wheelchairBoarding?: number | null }) => void;
+  openStop: (stop: { agency: string; stopId: string; name: string | null; lat: number | null; lon: number | null; wheelchairBoarding?: number | null }) => void;
   requestLocation: () => void;
   /** Abandon the rider's out-of-coverage fix and go back to the DEFAULT view — which
    *  relabels itself as a default location, because that is what it is. Only ever called
@@ -307,7 +307,9 @@ export const useLive = create<LiveState>((set, get) => ({
       : undefined;
     set({
       pickedStop: {
-        stopId: stop.stopId, name: stop.name, lat: stop.lat, lon: stop.lon,
+        // Carried through, not re-derived: with several agencies seeded, a stopId alone
+        // no longer identifies a stop.
+        agency: stop.agency, stopId: stop.stopId, name: stop.name, lat: stop.lat, lon: stop.lon,
         wheelchairBoarding: stop.wheelchairBoarding ?? null,
         ...(distanceM == null ? {} : { distanceM }),
       },

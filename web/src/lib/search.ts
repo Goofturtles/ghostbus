@@ -19,6 +19,9 @@ export interface Point { lat: number; lon: number }
 
 /** A place the rider has opened before, persisted in localStorage (see store.ts). */
 export interface RecentPlace {
+  /** Persisted alongside the id: with several agencies seeded a bare stopId is ambiguous,
+   *  and a remembered place must reopen the stop the rider actually visited. */
+  agency: string;
   stopId: string;
   name: string;
   lat: number | null;
@@ -29,6 +32,8 @@ export interface RecentPlace {
 
 export interface StopResult {
   kind: 'stop';
+  /** Which agency's stop. Carried so opening a result reopens the right one. */
+  agency: string;
   stopId: string;
   name: string;
   lat: number | null;
@@ -40,6 +45,9 @@ export interface StopResult {
 
 export interface RouteResult {
   kind: 'route';
+  /** The agency running this route AND owning `stopId` below — they are the same agency,
+   *  because a departure belongs to one board. */
+  agency: string;
   routeId: string;
   shortName: string;
   longName: string | null;
@@ -98,6 +106,7 @@ export function shapeStopResults(
   const q = query.trim();
   const rows: StopResult[] = stops.map((s) => ({
     kind: 'stop',
+    agency: s.agency,
     stopId: s.stopId,
     name: s.name ?? s.stopId,
     lat: s.lat,
@@ -130,7 +139,7 @@ export function shapeStopResults(
  * about it and nowhere to send the rider who tapped it.
  */
 export function matchRoutes(
-  boards: ReadonlyArray<{ stopId: string; stopName: string | null; departures: readonly DepartureDto[] }>,
+  boards: ReadonlyArray<{ agency: string; stopId: string; stopName: string | null; departures: readonly DepartureDto[] }>,
   query: string,
   limit = 6,
 ): RouteResult[] {
@@ -147,11 +156,14 @@ export function matchRoutes(
         || matches(routeId, q) || matches(destination, q);
       if (!hit) continue;
 
-      const key = `${routeId}|${d.directionId ?? 'x'}`;
+      // Agency in the key: two agencies can run a route with the same id (Brampton shares
+      // 45 route_ids with the TTC), and collapsing them would hide one of the two.
+      const key = `${board.agency}|${routeId}|${d.directionId ?? 'x'}`;
       const prev = best.get(key);
       if (prev && prev.departureMs <= d.scheduledMs) continue;
       best.set(key, {
         kind: 'route',
+        agency: board.agency,
         routeId,
         shortName: d.shortName ?? routeId,
         longName: d.longName,
@@ -183,11 +195,15 @@ export function filterRecents(recents: readonly RecentPlace[], query: string, li
  * one list. Recents win because they are the shorter path to the same destination.
  */
 export function dedupeAgainst(rows: readonly StopResult[], shown: readonly RecentPlace[]): StopResult[] {
-  const seen = new Set(shown.map((r) => r.stopId));
-  return rows.filter((r) => !seen.has(r.stopId));
+  // Keyed on (agency, stopId): two agencies can carry the same stop id, and collapsing
+  // them would silently drop a real, different stop from the results.
+  const key = (r: { agency: string; stopId: string }) => `${r.agency}${r.stopId}`;
+  const seen = new Set(shown.map(key));
+  return rows.filter((r) => !seen.has(key(r)));
 }
 
 /** The most recent list of `n` places, newest first, with `place` promoted to the front. */
 export function pushRecent(list: readonly RecentPlace[], place: RecentPlace, cap = 8): RecentPlace[] {
-  return [place, ...list.filter((r) => r.stopId !== place.stopId)].slice(0, cap);
+  // Same reasoning as dedupeAgainst: identity is the pair, never the id alone.
+  return [place, ...list.filter((r) => !(r.agency === place.agency && r.stopId === place.stopId))].slice(0, cap);
 }

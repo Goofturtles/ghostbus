@@ -25,10 +25,35 @@ function ls<T>(key: string, fallback: T): T {
     return fallback;
   }
 }
-/** Always a list of stop ids. Anything else in `gb.saved` is discarded. */
-function savedIds(v: unknown): string[] {
-  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+/**
+ * A saved stop, identified by the PAIR. See the migration note below.
+ */
+export interface SavedStop { agency: string; stopId: string }
+
+/**
+ * Always a list of real saved stops. Anything else in `gb.saved` is discarded.
+ *
+ * MULTI-AGENCY MIGRATION. This used to be a list of bare stop id strings, and those are
+ * now ambiguous — 2,824 stop_ids are shared between the TTC and YRT alone. A bare string
+ * is therefore DROPPED rather than assumed to be the TTC, for the same reason the recents
+ * sanitiser drops one: silently re-pointing somebody's saved stop at a different city's
+ * platform is worse than forgetting it.
+ */
+function savedIds(v: unknown): SavedStop[] {
+  if (!Array.isArray(v)) return [];
+  const out: SavedStop[] = [];
+  for (const raw of v) {
+    if (typeof raw !== 'object' || raw === null) continue;
+    const r = raw as Record<string, unknown>;
+    if (typeof r.agency !== 'string' || r.agency === '') continue;
+    if (typeof r.stopId !== 'string' || r.stopId === '') continue;
+    out.push({ agency: r.agency, stopId: r.stopId });
+  }
+  return out;
 }
+/** Identity of a saved stop is the pair, never the id alone. */
+export const sameStop = (a: SavedStop, b: SavedStop): boolean =>
+  a.agency === b.agency && a.stopId === b.stopId;
 /** Always a list of real places. localStorage is writable by anything, and these
  *  rows are rendered — and, for a trip, fed straight into the planner as coordinates
  *  — on first paint, so every field is checked rather than trusted. */
@@ -40,8 +65,18 @@ function recentPlaces(v: unknown): RecentPlace[] {
     if (typeof raw !== 'object' || raw === null) continue;
     const r = raw as Record<string, unknown>;
     if (typeof r.stopId !== 'string' || typeof r.name !== 'string') continue;
+    /**
+     * MULTI-AGENCY MIGRATION. Rows written before the agency seam reached the wire carry
+     * a bare stopId and no agency. That id is now AMBIGUOUS — 2,824 stop_ids are shared
+     * between the TTC and YRT alone, so "guess the TTC" would silently re-point somebody's
+     * saved stop at a different city's platform. There is no honest default, so an entry
+     * without an agency is DROPPED. The cost is one forgotten recent; the alternative is a
+     * remembered place that quietly becomes the wrong place.
+     */
+    if (typeof r.agency !== 'string' || r.agency === '') continue;
     const lat = num(r.lat), lon = num(r.lon);
     out.push({
+      agency: r.agency,
       stopId: r.stopId,
       name: r.name,
       // A half-known position is no position: the planner must never be handed one.
@@ -75,7 +110,7 @@ interface State {
   largerText: boolean;
   highContrast: boolean;
   voice: boolean;
-  savedStops: string[];
+  savedStops: SavedStop[];
   /** Stops opened from search, most recent first. Personal, so localStorage only. */
   recentStops: RecentPlace[];
   /** Destinations the rider has planned a trip to, most recent first. */
@@ -136,7 +171,7 @@ interface State {
   setLargerText: (v: boolean) => void;
   setHighContrast: (v: boolean) => void;
   setVoice: (v: boolean) => void;
-  toggleSaved: (id: string) => void;
+  toggleSaved: (stop: SavedStop) => void;
   setLocaleId: (l: LocaleId) => void;
   openSettings: (v: boolean) => void;
   openAbout: (v: boolean) => void;
@@ -209,9 +244,11 @@ export const useStore = create<State>((set, get) => ({
   setLargerText: (v) => { save('gb.largerText', v); set({ largerText: v }); applyTextSize(v); },
   setHighContrast: (v) => { save('gb.highContrast', v); set({ highContrast: v }); applyContrast(v); },
   setVoice: (v) => { save('gb.voice', v); set({ voice: v }); },
-  toggleSaved: (id) => {
+  toggleSaved: (stop) => {
     const cur = get().savedStops;
-    const next = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
+    const next = cur.some((x) => sameStop(x, stop))
+      ? cur.filter((x) => !sameStop(x, stop))
+      : [...cur, stop];
     save('gb.saved', next);
     set({ savedStops: next });
   },

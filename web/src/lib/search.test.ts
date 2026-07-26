@@ -15,7 +15,7 @@ import {
 const RIDER = { lat: 43.64354, lon: -79.39699 }; // King & Spadina
 
 const stop = (o: Partial<StopDto> & { stopId: string }): StopDto => ({
-  name: `Stop ${o.stopId}`, lat: null, lon: null, wheelchairBoarding: null, ...o,
+  agency: 'ttc', name: `Stop ${o.stopId}`, lat: null, lon: null, wheelchairBoarding: null, ...o,
 });
 
 // ---------------- primitives ----------------
@@ -81,7 +81,7 @@ test('stops we can measure sort ahead of stops we cannot, then by name', () => {
 });
 
 test('shapeStopResults falls back to the stop code when the agency published no name', () => {
-  const rows = shapeStopResults([{ stopId: '7', name: null, lat: null, lon: null, wheelchairBoarding: null }], null, '7');
+  const rows = shapeStopResults([{ agency: 'ttc', stopId: '7', name: null, lat: null, lon: null, wheelchairBoarding: null }], null, '7');
   assert.equal(rows[0].name, '7');
 });
 
@@ -93,7 +93,7 @@ test('shapeStopResults respects its limit', () => {
 // ---------------- route results ----------------
 
 const dep = (o: Partial<DepartureDto> & { tripId: string; scheduledMs: number }): DepartureDto => ({
-  routeId: '504', shortName: '504', longName: 'King', routeType: 0, color: 'ED1C24',
+  agency: 'ttc', routeId: '504', shortName: '504', longName: 'King', routeType: 0, color: 'ED1C24',
   headsign: 'East - 504A King towards Distillery Loop', directionId: 0,
   directionLabel: 'East - 504A King towards Distillery Loop',
   stopSequence: 1, liveEtaMs: null,
@@ -102,8 +102,8 @@ const dep = (o: Partial<DepartureDto> & { tripId: string; scheduledMs: number })
   ...o,
 });
 
-const board = (departures: DepartureDto[]) => [{
-  stopId: '15647', stopName: 'King St West at Spadina Ave West Side', departures,
+const board = (departures: DepartureDto[], agency = 'ttc') => [{
+  agency, stopId: '15647', stopName: 'King St West at Spadina Ave West Side', departures,
 }];
 
 test('a route row carries the real stop it leaves from and the real time it leaves', () => {
@@ -152,8 +152,8 @@ test('a route row reports live only when the feed actually predicted it', () => 
 
 // ---------------- recents ----------------
 
-const rec = (stopId: string, name: string, ts: number): RecentPlace =>
-  ({ stopId, name, lat: 43.6, lon: -79.4, ts });
+const rec = (stopId: string, name: string, ts: number, agency = 'ttc'): RecentPlace =>
+  ({ agency, stopId, name, lat: 43.6, lon: -79.4, ts });
 
 test('recents come back newest first, and filter on name or code', () => {
   const list = [rec('1', 'Union Station', 100), rec('2', 'Dundas West', 300), rec('3', 'Broadview', 200)];
