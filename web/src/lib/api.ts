@@ -78,21 +78,48 @@ export function failureKind(e: unknown): ApiFailureKind {
  */
 const inFlight = new Map<string, Promise<unknown>>();
 
+/**
+ * A request that never settles must never be able to wedge a URL.
+ *
+ * Without this the dedupe introduces a failure mode that did not exist before it: a
+ * black-holed socket leaves an entry in `inFlight` forever, every later caller is handed
+ * the same never-settling promise, no success or failure is ever recorded, the backoff
+ * never engages, and the UI shows no error at all — a silent permanent hang that even
+ * regaining focus or network cannot clear, because the resume path just re-subscribes to
+ * the wedged promise. Un-deduped polling was self-healing by accident; deduped polling has
+ * to be self-healing on purpose.
+ *
+ * 15s is comfortably above a slow cold query on a loaded box and well below the 20s health
+ * cadence, so a timed-out poll is replaced by the next one rather than overlapping it.
+ */
+const REQUEST_TIMEOUT_MS = 15_000;
+
 async function request<T>(url: string, signal?: AbortSignal): Promise<T> {
+  // A caller-supplied signal owns the request's lifetime; it is not shared (see above).
   if (signal) return raw<T>(url, signal);
   const shared = inFlight.get(url) as Promise<T> | undefined;
   if (shared) return shared;
-  const p = raw<T>(url).finally(() => { inFlight.delete(url); });
+  const p = raw<T>(url, AbortSignal.timeout(REQUEST_TIMEOUT_MS), true)
+    .finally(() => { inFlight.delete(url); });
   inFlight.set(url, p);
   return p;
 }
 
-/** The one place an HTTP outcome becomes an `ApiFailure`. */
-async function raw<T>(url: string, signal?: AbortSignal): Promise<T> {
+/**
+ * The one place an HTTP outcome becomes an `ApiFailure`.
+ *
+ * `ownTimeout` distinguishes OUR watchdog firing from a caller cancelling: both surface as
+ * an AbortError, but a timeout is a genuine failure the backoff must see, while a caller's
+ * abort is a decision it must ignore.
+ */
+async function raw<T>(url: string, signal?: AbortSignal, ownTimeout = false): Promise<T> {
   let res: Response;
   try {
     res = await fetch(url, { signal, headers: { accept: 'application/json' } });
   } catch (e) {
+    if (ownTimeout && e instanceof DOMException && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
+      throw new ApiFailure('unreachable', `no response within ${REQUEST_TIMEOUT_MS / 1000}s`);
+    }
     // An abort is a decision we made, not a failure to report.
     if (e instanceof DOMException && e.name === 'AbortError') throw new ApiFailure('aborted', 'aborted');
     // The request never completed. This is the offline / captive-portal / server-not-

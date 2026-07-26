@@ -414,11 +414,21 @@ async function probeNextService(
   const base = start.getTime();
   for (let d = 0; d < NEXT_SERVICE_MAX_DAYS; d++) {
     if (!current()) return;
+    // This walk is the single most expensive thing the client does — up to eight requests
+    // for one empty board — so it is the LAST thing that should run while we are backed
+    // off. It used to ignore the window entirely and swallow its failures, which both
+    // undid the backoff and hid the reason for it. It now yields, and reports.
+    if (isBackedOff()) return;
     try {
       const res = await api.arrivals(stopId, { atMs: base + d * 86_400_000, windowMin: NEXT_SERVICE_WINDOW_MIN });
       if (!current()) return;
       if (res.departures.length > 0) { set({ nextService: res }); return; }
-    } catch { /* best-effort; try the next day */ }
+    } catch (e) {
+      // Best-effort per day, but a server-wide failure still has to be seen by the backoff
+      // rather than absorbed eight times in a row.
+      noteFailure(e);
+      if (isBackedOff()) return;
+    }
   }
 }
 
@@ -486,13 +496,35 @@ async function loadNearby(
 /** Next epoch ms each task may run at. 0 = due now. */
 const dueAt = { health: 0, arrivals: 0, alerts: 0, ghosts: 0 };
 
-/** A success anywhere means the server is answering again: resume full cadence at once. */
+/**
+ * ROUND ACCOUNTING, so the four tasks cannot argue with each other.
+ *
+ * `pollDue` fires up to four requests in one tick and they settle milliseconds apart. With
+ * a single global flag the LAST one to settle would decide the state, so one persistently
+ * broken endpoint (say a 5xx ghost feed) would have its failure wiped by a sibling's
+ * success every cycle: the banner flaps on and off and the backoff never actually engages.
+ *
+ * A round is one `pollDue` pass. A success only clears the backoff if nothing else in the
+ * SAME round failed, and the backoff curve advances once per round rather than once per
+ * request — otherwise a single failing round counted four times and jumped 2s straight to
+ * the 60s cap.
+ */
+let pollRound = 0;
+let failedRound = -1;
+let backedOffRound = -1;
+
+/** A success means the server is answering — resume full cadence, unless a sibling in this
+ *  same round says otherwise. */
 function noteOk(): void {
-  if (useLive.getState().apiFailure == null && useLive.getState().apiFailures === 0) return;
+  if (failedRound === pollRound) return;
+  const s = useLive.getState();
+  if (s.apiFailure == null && s.apiFailures === 0) return;
   clearBackoff();
 }
 
 function clearBackoff(): void {
+  failedRound = -1;
+  backedOffRound = -1;
   useLive.setState({ apiFailure: null, apiFailures: 0, retryAtMs: 0 });
 }
 
@@ -500,20 +532,47 @@ function clearBackoff(): void {
  * Record a failure and set the shared backoff.
  *
  * An `aborted` request is a decision we made, not a failure — counting it would let the
- * search sheet's own cancellations throttle the whole app. A `badRequest` is our bug and
- * retrying it faster will not fix it, so it is reported but never backed off (the poll
- * loop has no malformed requests in it; this exists so a future one is visible).
+ * search sheet's own cancellations throttle the whole app. A `badRequest` is our own bug:
+ * it is REPORTED, because a silent malformed request is how a defect hides, but it never
+ * backs anything off, because retrying more slowly cannot fix a malformed URL.
  */
-function noteFailure(e: unknown): void {
+export function noteFailure(e: unknown): void {
   const kind = failureKind(e);
-  if (kind === 'aborted' || kind === 'badRequest') return;
+  if (kind === 'aborted') return;
+  if (kind === 'badRequest') {
+    useLive.setState({ apiFailure: 'badRequest' });
+    return;
+  }
+  failedRound = pollRound;
+  // Once per ROUND, not once per request: four tasks failing together is one failure.
+  if (backedOffRound === pollRound) return;
+  backedOffRound = pollRound;
+
   const fails = useLive.getState().apiFailures + 1;
   const curve = Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** (fails - 1));
-  // The server's own retry-after wins over our curve — it knows when its window resets.
-  const asked = e instanceof ApiFailure && e.retryAfterSec != null ? e.retryAfterSec * 1000 : null;
-  // Jitter in [0.5, 1.0): several tabs that failed together must not retry in lockstep.
-  const wait = asked ?? Math.round(curve * (0.5 + Math.random() * 0.5));
+  /**
+   * The server's own retry-after beats our curve — it knows when its window resets — but it
+   * is CLAMPED to the same ceiling and jittered like everything else. Unclamped, a proxy or
+   * CDN answering `Retry-After: 86400` would freeze every poll for a day with no way back;
+   * un-jittered, every tab that hit the same limit would return in lockstep, which is the
+   * herd the jitter exists to prevent.
+   */
+  const asked = e instanceof ApiFailure && e.retryAfterSec != null
+    ? Math.min(BACKOFF_MAX_MS, e.retryAfterSec * 1000)
+    : null;
+  const base = asked ?? curve;
+  // Jitter in [0.75, 1.0) of an honoured retry-after (never returning EARLY than asked is
+  // the polite half), and [0.5, 1.0) of our own curve.
+  const wait = asked != null
+    ? Math.round(base * (0.75 + Math.random() * 0.25))
+    : Math.round(base * (0.5 + Math.random() * 0.5));
   useLive.setState({ apiFailure: kind, apiFailures: fails, retryAtMs: Date.now() + wait });
+}
+
+/** True while the shared backoff window is open. Everything that spends rate-limit budget
+ *  on a timer must consult this, or it undoes the backoff for everybody. */
+export function isBackedOff(): boolean {
+  return useLive.getState().retryAtMs > Date.now();
 }
 
 /**
@@ -521,12 +580,14 @@ function noteFailure(e: unknown): void {
  * network regained) but still honours the backoff window unless it was just cleared.
  */
 async function pollDue(force: boolean): Promise<void> {
-  const s = useLive.getState();
   const now = Date.now();
-  // Backed off: say nothing, spend nothing, and let the window expire.
-  if (s.retryAtMs > now) return;
-
   const live = useLive.getState();
+  // Backed off: say nothing, spend nothing, and let the window expire.
+  if (live.retryAtMs > now) return;
+  pollRound++;
+
+  // `dueAt.x = now + INTERVAL` rather than `+= INTERVAL`: the heartbeat is 5s, so anchoring
+  // to the actual fire time keeps a task from drifting a whole tick later on every pass.
   if (force || now >= dueAt.health) { dueAt.health = now + HEALTH_INTERVAL_MS; live.refetchHealth(); }
   if (force || now >= dueAt.arrivals) { dueAt.arrivals = now + ARRIVALS_INTERVAL_MS; live.refetchArrivals(); }
   if (force || now >= dueAt.alerts) { dueAt.alerts = now + ALERTS_INTERVAL_MS; live.refetchAlerts(); }

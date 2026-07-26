@@ -17,7 +17,7 @@ import * as maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import type { VehicleDto, RouteShapeResponse } from '@shared/types';
 import { api, type Bbox } from '@/lib/api';
-import { useLive, selectedNearbyStop, DEFAULT_LOCATION } from '@/hooks/useLive';
+import { useLive, selectedNearbyStop, DEFAULT_LOCATION, isBackedOff, noteFailure } from '@/hooks/useLive';
 import { useStore, resolveTheme, paceMps } from '@/store';
 import { walkSeconds } from '@/lib/format';
 import { buildStyle, type MapTheme } from './mapStyle';
@@ -819,12 +819,26 @@ export default function MapCard() {
   async function fetchVehicles() {
     const map = mapRef.current;
     if (!map || document.hidden) return;
+    /**
+     * THE SHARED BACKOFF APPLIES HERE TOO, and this is the poll it matters most for.
+     *
+     * /api/vehicles runs every 5s — 12 req/min, more than the other four tasks combined
+     * and the single largest line in the rate-limit budget. It used to sit outside the
+     * backoff and swallow its own errors, so during a 429 it kept hammering at full rate
+     * while every other task politely stood down: the app would have throttled itself
+     * awake again and again. Standing down here is most of what makes the backoff real.
+     */
+    if (isBackedOff()) return;
     try {
       const res = await api.vehicles(currentBbox());
       if (!mapRef.current) return;
       ingest(res.vehicles);
       setVehCount(res.count);
-    } catch { /* transient; next tick retries */ }
+    } catch (e) {
+      // Reported, so a server-wide failure reaches the one place that decides the copy —
+      // and so the map cannot silently disagree with the banner beside it.
+      noteFailure(e);
+    }
   }
   function scheduleFetch() {
     if (moveTimerRef.current) clearTimeout(moveTimerRef.current);
@@ -1493,12 +1507,13 @@ export default function MapCard() {
       {mapFailure && (
         <div className="map-fallback" role="status">
           <span className="map-fallback-glyph" aria-hidden><LayersIcon width={20} height={20} /></span>
-          {/* 'tiles' is the only failure `map.tilesUnavailable` actually describes. For an
-              engine failure it would be a guess dressed as a diagnosis, so fall back to the
-              neutral 'map.loading' until a truthful key exists in all three locales.
-              TODO(i18n, owner: orchestrator): add `map.engineUnavailable` to en/frCA/es —
-              EN: "Map can't load right now — the list below is still live." */}
-          <span>{t(mapFailure === 'tiles' ? 'map.tilesUnavailable' : 'map.loading')}</span>
+          {/* Two different failures, two different sentences. `map.tilesUnavailable`
+              describes exactly one of them; using it for an engine failure would be a
+              guess dressed as a diagnosis, and 'map.loading' was a placeholder that
+              claimed something still in progress when nothing was. `map.engineUnavailable`
+              now exists in all three locales, and it says the one thing that matters to a
+              rider staring at a dead map: the departures below are still live. */}
+          <span>{t(mapFailure === 'tiles' ? 'map.tilesUnavailable' : 'map.engineUnavailable')}</span>
         </div>
       )}
 

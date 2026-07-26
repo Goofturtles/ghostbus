@@ -9,7 +9,10 @@
 // Run with:  node --import tsx --test web/src/lib/api.test.ts
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { api, ApiFailure, failureKind } from './api.ts';
+import { api, ApiFailure, failureKind, type ApiFailureKind } from './api.ts';
+import en from '../i18n/en.ts';
+import frCA from '../i18n/frCA.ts';
+import es from '../i18n/es.ts';
 
 const realFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = realFetch; });
@@ -99,6 +102,108 @@ test('failureKind never guesses "the feed is down" for an unrecognised throw', a
   for (const thrown of [new Error('boom'), 'a string', null, undefined, { weird: true }]) {
     assert.notEqual(failureKind(thrown), 'feedDown' as never);
     assert.ok(['unreachable', 'aborted'].includes(failureKind(thrown)));
+  }
+});
+
+// =====================================================================================
+// the copy each failure is allowed to reach for
+// =====================================================================================
+//
+// The tests above pin the FAILURE KIND. These pin the step after it — the i18n key the UI
+// picks — because that is where the rider's bug actually lived: the kind was already
+// knowable, and the copy still said "TTC". This asserts the mapping directly against the
+// real dictionaries, so adding a fourth state or re-wording a string cannot quietly
+// reintroduce an accusation against the agency.
+
+/** The key NearbyPanel/Primitives choose for a given failure. Mirrors their branches. */
+function copyKeysFor(kind: ApiFailureKind | null, health: { ok: boolean; mode: 'live' | 'demo' } | null): string[] {
+  if (health?.mode === 'demo') return ['status.demoBadge', 'status.demoNote'];
+  if (kind != null) {
+    return [
+      'status.catchingUp', 'status.catchingUpDetail', 'empty.apiDownTitle',
+      kind === 'throttled' ? 'empty.apiDownThrottled' : 'empty.apiDownBody',
+    ];
+  }
+  if (health != null && !health.ok) return ['status.feedDownGeneric'];
+  return [];
+}
+
+/** Every string in a locale, flattened to dotted keys. */
+function flatten(o: Record<string, unknown>, prefix = ''): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(o)) {
+    const key = prefix ? `${prefix}.${k}` : k;
+    if (typeof v === 'string') out[key] = v;
+    else if (v && typeof v === 'object') Object.assign(out, flatten(v as Record<string, unknown>, key));
+  }
+  return out;
+}
+
+const DICTS: Array<[string, Record<string, string>]> = [
+  ['en', flatten(en as unknown as Record<string, unknown>)],
+  ['frCA', flatten(frCA as unknown as Record<string, unknown>)],
+  ['es', flatten(es as unknown as Record<string, unknown>)],
+];
+
+/** The two keys that ARE allowed to name the agency — state (b) only. */
+const AGENCY_BLAMING_KEYS = ['status.feedDown', 'status.feedDownGeneric'];
+
+test('a THROTTLED failure reaches the internal-failure copy, never the feed-down copy', () => {
+  const keys = copyKeysFor('throttled', { ok: true, mode: 'live' });
+  assert.ok(keys.includes('empty.apiDownThrottled'), 'throttling has its own sentence');
+  assert.ok(keys.includes('status.catchingUp'));
+  for (const blaming of AGENCY_BLAMING_KEYS) {
+    assert.ok(!keys.includes(blaming), `a 429 must never render ${blaming}`);
+  }
+});
+
+test('NO failure of ours can reach an agency-blaming key, in any locale', () => {
+  const kinds: ApiFailureKind[] = ['throttled', 'serverDown', 'unreachable', 'badRequest'];
+  for (const kind of kinds) {
+    // Even while the agency's own feed is genuinely unhealthy, OUR failure wins the copy:
+    // we cannot honestly report on a feed we could not read.
+    for (const health of [{ ok: true, mode: 'live' as const }, { ok: false, mode: 'live' as const }, null]) {
+      const keys = copyKeysFor(kind, health);
+      for (const blaming of AGENCY_BLAMING_KEYS) {
+        assert.ok(!keys.includes(blaming), `${kind} + health.ok=${health?.ok} rendered ${blaming}`);
+      }
+    }
+  }
+});
+
+test('the copy every failure of ours reaches never mentions the agency, in any locale', () => {
+  const kinds: ApiFailureKind[] = ['throttled', 'serverDown', 'unreachable', 'badRequest'];
+  for (const [locale, dict] of DICTS) {
+    for (const kind of kinds) {
+      for (const key of copyKeysFor(kind, { ok: true, mode: 'live' })) {
+        const text = dict[key];
+        assert.ok(text != null, `${locale} is missing ${key}`);
+        // "not the TTC" / "pas de la TTC" is a DENIAL and is the point, so only an
+        // accusation is forbidden: naming the agency as the thing that is unreachable.
+        assert.doesNotMatch(
+          text,
+          /(TTC|agency)[^.]{0,30}(unreachable|injoignable|inaccesible|down|no disponible)/i,
+          `${locale}:${key} blames the agency: "${text}"`,
+        );
+      }
+    }
+  }
+});
+
+test('state (b) copy DOES name the agency — that is the one place it is honest', () => {
+  // The mirror assertion. If this ever stops being true the app has lost the ability to
+  // report a real agency outage, which is just as dishonest in the other direction.
+  const keys = copyKeysFor(null, { ok: false, mode: 'live' });
+  assert.deepEqual(keys, ['status.feedDownGeneric']);
+  for (const [locale, dict] of DICTS) {
+    assert.match(dict['status.feedDownGeneric'], /TTC/, `${locale} lost the agency attribution`);
+  }
+});
+
+test('demo mode outranks everything — a recording is never reported as live or as broken', () => {
+  for (const kind of [null, 'throttled'] as Array<ApiFailureKind | null>) {
+    const keys = copyKeysFor(kind, { ok: true, mode: 'demo' });
+    assert.deepEqual(keys, ['status.demoBadge', 'status.demoNote']);
   }
 });
 

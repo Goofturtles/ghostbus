@@ -185,6 +185,7 @@ const es: Dict = {
     noCoverageNearest: 'La parada más cercana que cubre GhostBus es {{stop}}, a unos {{dist}}.',
     noCoverageUnknown: 'GhostBus solo cubre la TTC, en Toronto.',
     noCoverageAction: 'Explorar el centro de Toronto en su lugar',
+    noCoverageRetry: 'Comprobar mi ubicación de nuevo',
     noCoverageActionNote: 'Esa vista se identifica como una ubicación predeterminada, no como la tuya.',
     defaultLocation: 'Usando una ubicación predeterminada — toca para usar la tuya',
     noWindow: 'No hay salidas en los próximos {{min}} minutos',
@@ -389,6 +390,7 @@ const es: Dict = {
     youWalk: 'Tú · {{min}} min a pie',
     srAlt: 'Mapa en vivo del tránsito cercano y la parada de embarque {{stop}}. Vehículos a la vista: {{count}}.',
     tilesUnavailable: 'Teselas del mapa no disponibles — mostrando solo la lista.',
+    engineUnavailable: 'El mapa no puede cargarse ahora — la lista de abajo sigue en vivo.',
     selectedVehicle: 'Ruta {{route}} seleccionada.',
   },
   plan: {

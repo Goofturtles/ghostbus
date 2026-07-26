@@ -205,6 +205,7 @@ const en = {
     noCoverageNearest: 'The nearest stop GhostBus covers is {{stop}}, about {{dist}} away.',
     noCoverageUnknown: 'GhostBus only covers the TTC, in Toronto.',
     noCoverageAction: 'Browse downtown Toronto instead',
+    noCoverageRetry: 'Check my location again',
     noCoverageActionNote: 'That view is labelled as a default location, not as where you are.',
     defaultLocation: 'Using a default location — tap to use yours',
     noWindow: 'No departures in the next {{min}} minutes',
@@ -416,6 +417,7 @@ const en = {
     youWalk: 'You · {{min}} min walk',
     srAlt: 'Live map of nearby transit and the boarding stop {{stop}}. Vehicles in view: {{count}}.',
     tilesUnavailable: 'Map tiles unavailable — showing list only.',
+    engineUnavailable: "Map can't load right now — the list below is still live.",
     selectedVehicle: 'Selected route {{route}}.',
   },
   plan: {

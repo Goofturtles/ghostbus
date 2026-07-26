@@ -185,6 +185,7 @@ const frCA: Dict = {
     noCoverageNearest: "L'arrêt le plus proche couvert par GhostBus est {{stop}}, à environ {{dist}}.",
     noCoverageUnknown: 'GhostBus ne couvre que la TTC, à Toronto.',
     noCoverageAction: 'Explorer le centre-ville de Toronto plutôt',
+    noCoverageRetry: 'Vérifier ma position à nouveau',
     noCoverageActionNote: "Cette vue est identifiée comme un emplacement par défaut, pas comme le vôtre.",
     defaultLocation: 'Position par défaut utilisée — touchez pour utiliser la vôtre',
     noWindow: 'Aucun départ dans les {{min}} prochaines minutes',
@@ -389,6 +390,7 @@ const frCA: Dict = {
     youWalk: 'Vous · {{min}} min à pied',
     srAlt: 'Carte en direct du transport à proximité et de l’arrêt d’embarquement {{stop}}. Véhicules visibles : {{count}}.',
     tilesUnavailable: 'Tuiles de carte indisponibles — affichage en liste seulement.',
+    engineUnavailable: 'La carte ne peut pas se charger pour le moment — la liste ci-dessous reste en direct.',
     selectedVehicle: 'Ligne {{route}} sélectionnée.',
   },
   plan: {

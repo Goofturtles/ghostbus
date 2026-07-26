@@ -102,6 +102,13 @@ export function NearbyPanel({ onCatch, onOpen }: {
           <button className="btn btn-primary" onClick={useDefaultLocation}>
             {t('empty.noCoverageAction')}
           </button>
+          {/* Geolocation is a one-shot fix, so nothing re-queries as the rider moves — and
+              without this the card is a dead end for somebody who has since walked or
+              driven back into the service area. It is the only other way out, so it is on
+              screen rather than implied. */}
+          <button className="btn btn-quiet" onClick={requestLocation}>
+            {t('empty.noCoverageRetry')}
+          </button>
           <p className="state-body state-fine">{t('empty.noCoverageActionNote')}</p>
         </div>
       </div>
