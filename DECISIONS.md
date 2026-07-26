@@ -4083,3 +4083,197 @@ Every number either script prints traces to a parameterized, agency-scoped (`'tt
 `'ttc-demo'` is never queried) query; both sections exit 0 on thin data, because an honest
 "not enough data yet" is this script's success case, not its failure one. 331 tests green
 (324 pre-existing + 7 new), `tsc -p tsconfig.node.json --noEmit` clean.
+
+## §48 — A schedule is not an observation: §45 §7's agency fix overshot, and the limiter was refusing the app itself
+
+Two corrections to §45, both found by testers on the build §45 describes, and both in the same
+file. **§45 is left exactly as written** — it records what was decided and why at the time,
+and the honest way to handle a decision that turned out to be half right is to say so in a
+new entry rather than to quietly improve the old one. This is that entry.
+
+---
+
+### 1. The claim that is superseded
+
+**§45 §7 (DECISIONS.md:3945-3951) asserts:**
+
+> **`AGENCY` now comes from `poller.getMode().agency`, not the literal `'ttc'`.** Verified
+> bug: a demo instance sharing a database with live TTC rows would have read the *live* rows
+> and served them under the amber DEMO badge…
+
+**That is superseded by commit 5ba1bbf.** The verified bug it describes was real and the fix
+was right — *for observations*. Applying it to **every** query in `api.ts` was an overshoot,
+and it broke Demo Mode completely.
+
+`seed_toronto.ts:60` hardcodes `const AGENCY = 'ttc'` and only ever writes the static tables
+under it. There is no `'ttc-demo'` seed path and there was never meant to be. So once every
+query in `buildApi()` bound `poller.getMode().agency`, a demo instance asked for
+`stops`/`routes`/`trips`/`stop_times`/`shapes`/`calendar`/`calendar_dates` under
+`'ttc-demo'` — **a namespace nothing is ever written to — and got zero rows from all of
+them.**
+
+What a rider saw: a demo instance standing at King & Spadina reporting **"No TTC stops within
+800 m of you"**, with search, the arrivals board, the planner and route shapes all silently
+dead. **That is a new instance of exactly the dishonesty §45 exists to prevent** — the UI
+asserting something untrue — produced by a namespace bug instead of a copy bug. §45 §6 makes
+the same argument about substituting a location the rider did not choose; this is the same
+failure with a different cause.
+
+The intent was already written down correctly in two places, and neither was followed:
+
+* **§44**: "The static board is read under `ttc` in both modes… a schedule is not an
+  observation, there is one published board, and a recording is a recording *of* it."
+* **`demo.ts` rule 5**: "Everything a demo process writes is tagged `agency = 'ttc-demo'`
+  (DEMO_AGENCY). The static schedule is read under `'ttc'` because a schedule is not an
+  observation and there is only one published board."
+
+`poller.ts` had implemented that split since Demo Mode landed (`STATIC_AGENCY` vs `agency`),
+which is why `/api/health`'s `boardCoverage` kept reporting the real span while `/api/stops`
+returned nothing. **`api.ts` was the only file that had not made the distinction.**
+
+### 2. The split, per table
+
+`STATIC_AGENCY` is now exported from `poller.ts` and `api.ts` binds two clearly different
+names, so neither can be typed where the other belongs:
+
+| constant | value | tables | sites |
+|---|---|---|---|
+| `staticAgency` | always `'ttc'` | `stops`, `routes`, `trips`, `stop_times`, `shapes`, `calendar`, `calendar_dates` | 17 |
+| `modeAgency` | `poller.getMode().agency` | `trip_delay_obs`, `ghosts`, `agg_delay`, `agg_delay_route`, `service_alerts` | 12 |
+
+(Counted as binding lines in `api.ts` with comments stripped. One line appears in both
+columns — the cross-seam join in §3 below, which is the point of it.)
+
+Every site was classified by the table that **drives** it, not by the endpoint it serves —
+including two that are easy to get wrong:
+
+* **`/api/plan`'s self-join** is `stop_times` joined to `stop_times` and `trips`. All three
+  inherit `b.agency`, so the whole join is **static**. Binding it to the mode agency is what
+  made the planner return nothing in demo mode.
+* **The forecast denominator** is mixed and is bound per query: the `trips`/`stop_times`
+  scheduled-trip count is static, while its `trip_delay_obs` and `ghosts` inputs are
+  observations.
+
+**Both directions of this mistake are real bugs, and `api.ts` has now shipped each one.**
+Hardcoding `'ttc'` served live observations under the DEMO badge; using the mode agency
+everywhere served nothing at all. That is the reason for two names rather than one clever
+one.
+
+### 3. The one query that crosses the seam
+
+`/api/ghosts/feed` joins the published schedule onto an observation to recover a headsign:
+
+```sql
+FROM ghosts g LEFT JOIN trips t ON t.agency = $2 AND t.trip_id = g.trip_id
+WHERE g.agency = $1
+```
+
+It used to read `ON t.agency = g.agency`, which bound the **static** side to the
+**observation** namespace. In demo mode the join matched nothing and **every ghost lost its
+headsign**, rendering as a bare trip id instead of "504 to Dundas West". The two agencies
+are separate bound parameters now, which is the only form that states the fact: this row
+comes from two namespaces on purpose.
+
+Found by review, not by the tests — noted because the seam test **cannot** catch it. That
+test classifies a query by its first `FROM` table and inspects `$1`; a cross-namespace join
+is invisible to both rules. It has its own test.
+
+### 4. Why the old test did not catch any of this
+
+`api.test.ts` contained a test literally named *"every query is scoped to the POLLER's
+agency, not the literal 'ttc'"*. **It asserted the bug.** It exercised only `/api/alerts` —
+an observation table — and then asserted that *every* agency-scoped query binds the poller's
+agency, which is precisely the over-generalisation that broke the static side. A test that
+encodes a wrong rule is worse than no test: it defends the defect.
+
+Replaced with tests that pin the seam **per table** across eight endpoints, one that
+reproduces the rider-visible symptom (`/api/stops/nearby` at King & Spadina under a demo
+poller, against a fixture seeded under `'ttc'` only), one for the cross-seam join, and a
+live-mode mirror so the split cannot be satisfied by hardcoding `'ttc'` again.
+
+The fake `Db` grew a `whenParams` predicate for this. Without it, a fixture answers every
+query that matches its SQL substring regardless of the parameters bound — so **a namespace
+bug is structurally invisible to the suite**, which is exactly how this one reached a
+tester. A test can now model what a real seeded database does: rows exist under one agency
+and genuinely do not exist under another.
+
+**Verified against a real demo instance** replaying the 2026-07-26 fixture: `mode: "demo"`
+with its recorded notice on the wire, 7 search hits for "Dundas West", 18 departures at King
+& Spadina, a real ride plan with 27 candidates, a 119-point route shape with 36 stops. Every
+one of those was zero.
+
+---
+
+### 5. The rate limiter was refusing the app itself
+
+Undocumented in §45, and a defect in the same file: `rateLimit` was registered at **root
+scope**, so it guarded the static bundle as well as the API. A rider who reloaded during a
+throttle was served **raw 429 JSON instead of GhostBus** — the app could not even paint the
+"GhostBus is catching up — retrying automatically" screen that §45 §3 built to explain the
+throttle. **A reload is the first thing anyone does when an app looks stuck, and it was the
+one action guaranteed to make things worse.**
+
+The limiter is now scoped to `/api` via the plugin's own `allowList`. `index.html` and the
+hashed assets are a handful of cacheable static files; they are not what a budget protects.
+The budget protects the database behind `/api/`, and that is now exactly what it covers. The
+ceilings from §45 §1 are unchanged and restated here for the record:
+
+| scope | budget | why |
+|---|---|---|
+| global, `/api/*` | **600 / min** | ~31 tabs of steady-state polling; a human cannot reach it |
+| `/api/plan` | **60 / min** | the windowed board self-join, the heaviest query in the file |
+| `/api/stops` | **120 / min** | a leading-wildcard `ILIKE` over the whole stops table |
+| everything else (`/`, `/assets/*`) | **unlimited** | the shell must always load so the app can explain itself |
+
+### 6. `req.url` is not the routed path, and the difference is a bypass
+
+The first version of that scoping read:
+
+```ts
+allowList: (req) => !req.url.startsWith('/api'),
+```
+
+**That is bypassable, and a code review caught it before it shipped.** `req.url` is the
+**raw** request target, but the router decodes before matching. So:
+
+```
+GET /%61pi/stops?q=King
+```
+
+reads as "not an API route" in the `allowList` — and dispatches to `/api/stops` anyway. Both
+the 600/min global and the 60/min plan budget are skipped entirely by one curl loop.
+Absolute-form targets (`GET http://host/api/vehicles`) do the same thing, since Fastify
+strips the origin before matching.
+
+The gate is now the **routed** path (`routeOptions.url`, the matched route *pattern*, decided
+before `onRequest` hooks run), which cannot be spelled around. **And the fallback matters as
+much as the primary:** a request with no matched route has no pattern, and treating "unknown"
+as exempt is how the bypass comes straight back. So anything not positively identifiable as
+non-API is **limited** — including 404s, which is precisely what a scanner generates.
+
+Measured on a running server, with `/api/stops`' own 120/min budget exhausted:
+
+```
+/api/stops?q=King      -> 429      (plain path, refused)
+/%61pi/stops?q=King    -> 429      (encoded path, refused by the same budget)
+GET /                  -> 200      (the shell, never limited)
+GET /assets/index-*.js -> 200      (the bundle, never limited)
+```
+
+**The general lesson, and the reason this is in the ledger rather than only in a comment:**
+any security or budget decision keyed on a URL must be keyed on the value the *router*
+resolved, never on the bytes the client sent. Those are two different strings, and an
+attacker picks which one you read.
+
+---
+
+### 7. What this section does not change
+
+The attribution contract in §45 §2-§3 is untouched and still holds: three states, typed
+`ApiErrorKind` on the wire, `ApiFailure` in the client, and no failure of ours able to reach
+a copy string that names the transit agency. Testers re-verified it across eight combinations
+of a 107,385-response 429 storm and eight of a genuinely dead server. What changed here is
+**who** the queries are scoped to and **what** the limiter covers — not what the app says
+when either one fails.
+
+334 tests green, both typechecks clean, §F still zero across all eight combinations.
