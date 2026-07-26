@@ -168,12 +168,43 @@ export default function MapCard() {
     if (!arrivals || arrivals.lat == null || arrivals.lon == null) return null;
     return { id: arrivals.stopId, name: arrivals.stopName, lat: arrivals.lat, lon: arrivals.lon };
   }, [arrivals]);
-  const walkMin = useMemo(() => {
+  /**
+   * IS THE BOARDING STOP ACTUALLY WALKABLE FROM HERE — and the answer gates GEOMETRY.
+   *
+   * The beaded path this component draws is a CLAIM: "you can walk this". It was drawn
+   * unconditionally, as a straight line from the rider to whatever stop was selected. So
+   * searching a stop across town, or asking for a trip the planner could not complete,
+   * left a dotted line running clear across the city — which reads as a suggested walking
+   * route, and it is not one. In an app whose argument is that it does not show riders
+   * things that are not true, that line was a lie drawn in the loudest place available.
+   *
+   * THE THRESHOLD IS THE APP'S OWN, not a new opinion. `PLAN_MAX_RADIUS_M` (500 m default,
+   * 1500 m ceiling, server/src/api.ts) is the longest walk the planner will put in a plan
+   * at all; past that our own API declines to connect a rider to a stop on foot. Drawing a
+   * walk we would refuse to plan is self-contradictory, so 1500 m is where the geometry
+   * stops. Beyond it there is NO line, no walker node and no walk time — an absence, which
+   * claims nothing, rather than a shape that claims something false.
+   *
+   * This also covers the failed-plan case by construction rather than by special-casing:
+   * `PlanView` moves the selection to the plan's boarding stop only when a ride resolves,
+   * so a transfer / noService / unreachable outcome leaves the selection wherever it was,
+   * and if that is across town no route-like geometry is drawn for it.
+   */
+  const WALKABLE_MAX_M = 1500;
+  // A plan that failed takes the geometry with it, whatever the distance says: the leg
+  // still drawn would belong to the PREVIOUS journey, under this one's failure message.
+  // Set by PlanView; see the note on `planUnresolved` in store.ts.
+  const planUnresolved = useStore((s) => s.planUnresolved);
+  const walkDistM = useMemo(() => {
     if (!geo || !boarding) return null;
     const near = selectedNearbyStop();
-    const dM = near?.distanceM ?? haversineM(geo.lat, geo.lon, boarding.lat, boarding.lon);
-    return Math.max(1, Math.round(walkSeconds(dM, paceMps(pace)) / 60));
-  }, [geo, boarding, pace]);
+    return near?.distanceM ?? haversineM(geo.lat, geo.lon, boarding.lat, boarding.lon);
+  }, [geo, boarding]);
+  const walkable = walkDistM != null && walkDistM <= WALKABLE_MAX_M && !planUnresolved;
+  const walkMin = useMemo(() => {
+    if (walkDistM == null || !walkable) return null;
+    return Math.max(1, Math.round(walkSeconds(walkDistM, paceMps(pace)) / 60));
+  }, [walkDistM, walkable, pace]);
 
   /**
    * Which route line to draw in red — the reference's defining stroke, and the only
@@ -206,6 +237,10 @@ export default function MapCard() {
   boardingRef.current = boarding;
   const geoRef = useRef(geo);
   geoRef.current = geo;
+  // Read from `applyWalk` and `frameCamera`, both of which can run from callers
+  // registered long before this render (see the note on applyWalk).
+  const walkableRef = useRef(walkable);
+  walkableRef.current = walkable;
 
   // ============================ map init (once) ============================
   useEffect(() => {
@@ -610,7 +645,10 @@ export default function MapCard() {
     if (!map) return;
     const g = geoRef.current;
     const b = boardingRef.current;
-    if (!g || !b) { applyVoxelCamera(map, { animate }); return; }
+    // With no walk drawn there is no walk to compose around, and fitting the rider and a
+    // stop kilometres away would dissolve the diorama to escape a line that is not there.
+    // Fall back to the standard city camera on the stop itself.
+    if (!g || !b || !walkableRef.current) { applyVoxelCamera(map, { animate }); return; }
 
     const centre: LngLat = [(g.lon + b.lon) / 2, (g.lat + b.lat) / 2];
     const from = { center: map.getCenter(), zoom: map.getZoom(), pitch: map.getPitch(), bearing: map.getBearing() };
@@ -1119,7 +1157,9 @@ export default function MapCard() {
     }
 
     // --- the walker node sitting partway along the beaded walk path ------------
-    if (geo && boarding) {
+    // Gated on the same `walkable` test as the path: a walker glyph floating with no
+    // path under it would be the same claim with worse draughtsmanship.
+    if (geo && boarding && walkable) {
       const mid: LngLat = [(geo.lon + boarding.lon) / 2, (geo.lat + boarding.lat) / 2];
       if (!walkMarker.current) {
         const el = document.createElement('div');
@@ -1141,7 +1181,7 @@ export default function MapCard() {
       frameCamera(true);
     }
     collide();
-  }, [geo, boarding, walkMin, t]);
+  }, [geo, boarding, walkMin, walkable, t]);
 
   // A new boarding stop is a new picture: re-frame it (unless the user has taken
   // the camera themselves).
@@ -1168,14 +1208,16 @@ export default function MapCard() {
     if (!src) return;
     const g = geoRef.current;
     const b = boardingRef.current;
-    if (g && b) {
+    // NOT WALKABLE -> NO GEOMETRY. An absence claims nothing; a city-spanning beaded
+    // line claims "walk this", which would be false. See the note on WALKABLE_MAX_M.
+    if (g && b && walkableRef.current) {
       src.setData({
         type: 'Feature', properties: {},
         geometry: { type: 'LineString', coordinates: [[g.lon, g.lat], [b.lon, b.lat]] },
       });
     } else src.setData(emptyFC());
   }
-  useEffect(() => { const m = mapRef.current; if (m) applyWalk(m); }, [geo, boarding]);
+  useEffect(() => { const m = mapRef.current; if (m) applyWalk(m); }, [geo, boarding, walkable]);
 
   // ============================ route shape (red line + stop dots) ============================
   useEffect(() => {
