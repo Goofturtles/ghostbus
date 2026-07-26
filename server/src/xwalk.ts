@@ -366,13 +366,76 @@ export interface XwalkEntry {
 }
 
 export const XWALK_MIN_CONFIDENCE = 0.60;
-const GEO_SELF_CONFIRM_M = 60;
+/** Exported so the warm-start guard tests the same threshold promotion used. */
+export const GEO_SELF_CONFIRM_M = 60;
 
 /**
- * Promotion. An entry becomes `confirmed` when two independent RT patterns agree on it,
- * or when it is a geometric anchor whose own centroid sits within 60 m of the stop it
- * names. A second, different static stop id for the same rt stop id marks it `conflicted`
- * — permanently unusable until the board tag changes, because we cannot tell which
+ * Time-domain validation of the STATIC PATTERN that implies a stop identity: how many
+ * distinct origin-locked bindings have run on it and survived the consistency gate and
+ * the per-pattern drift breaker, over how many distinct cycles.
+ *
+ * READ THE NAME CAREFULLY. This is not a second observation of the stop. A bound trip's
+ * `staticStops[seq - 1]` is the very pattern entry that implied the mapping, so asking a
+ * binding whether it agrees is asking the same inference twice. That was measured, not
+ * assumed: over 23 live cycles, 37,319 binding "confirmations" of blocked mappings
+ * produced 0 disagreements and 29 (0.08%) that came from a pattern the stop did not
+ * already have. A test that cannot fail is not evidence — see §33 and BLOCKERS 17 for the
+ * two previous times this project shipped one.
+ *
+ * What a surviving binding DOES establish is independent: the pattern was matched to a
+ * scheduled slot at its origin, beat its runner-up by 120 s, and kept agreeing with the
+ * schedule for cycles afterwards. That is evidence in the TIME domain about the pattern
+ * assignment — the one thing that, if wrong, makes every identity the pattern implies
+ * wrong together. It is the failure mode the two-pattern rule exists to catch, reached by
+ * a different road.
+ */
+export interface PatternValidation {
+  /** distinct origin-locked bindings that survived on the implying pattern. */
+  bindings: number;
+  /** distinct cycles in which at least one such binding was alive. */
+  cycles: number;
+}
+
+/**
+ * Thresholds for the second promotion path, derived from the held-out-geometry run in
+ * DECISIONS §46 (one-pattern mappings, the arm of the experiment where errors exist):
+ *
+ *     validating bindings N=0  89.81% (n=363)   validating cycles M=0  89.81% (n=363)
+ *                         N=1 100.00% (n= 25)                     M=1 100.00% (n= 23)
+ *                       N=2-3  97.48% (n=159)                     M=2 100.00% (n= 23)
+ *                       N=4-7 100.00% (n=140)                    M>=3  98.5% (n=278)
+ *
+ * Any validation at all lifts a one-pattern mapping from 89.81% to 97.5-100%, so the
+ * thresholds are set at the first level the measurement actually covers rather than at
+ * the highest number the data would tolerate: 2 bindings across 2 distinct cycles. One of
+ * each was measured at 100% too, but on 23-25 samples, and a single long-dwelling vehicle
+ * can produce one binding in one cycle. Two of each cannot come from one trip.
+ */
+export const MIN_VALIDATING_BINDINGS = 2;
+export const MIN_VALIDATING_CYCLES = 2;
+
+/**
+ * Promotion. An entry becomes `confirmed` on any ONE of three paths:
+ *
+ *  1. two independent RT patterns agree on it;
+ *  2. it is a geometric anchor whose own centroid sits within 60 m of the stop it names;
+ *  3. one pattern implies it, that pattern has been validated in the time domain by at
+ *     least MIN_VALIDATING_BINDINGS surviving bindings across MIN_VALIDATING_CYCLES
+ *     distinct cycles, AND the stop it names is not structurally ambiguous.
+ *
+ * `structurallyAmbiguous` is the safety condition path 3 cannot go without, and it is
+ * measured rather than assumed. The obvious guard — require the corroborating bindings to
+ * be direction-consistent, since direction_id names the two sides of a street — was
+ * checked against the board first: of 4,262 same-route stop pairs within 80 m of each
+ * other, only 3,375 (79.19%) have no direction in common. For the other 887 (20.81%)
+ * direction_id cannot separate the platforms at all, so a direction check would have read
+ * as a safeguard while silently passing one adjacent pair in five. `structurallyAmbiguous`
+ * is the condition direction_id was supposed to approximate, taken directly: is there
+ * another stop on this route within 80 m that is served in the SAME direction? If so,
+ * nothing available to this engine can tell the two apart, and path 3 refuses.
+ *
+ * A second, different static stop id for the same rt stop id marks it `conflicted` —
+ * permanently unusable until the board tag changes, because we cannot tell which
  * observation was the wrong one.
  */
 export function promotionState(
@@ -380,11 +443,136 @@ export function promotionState(
   source: 'geo' | 'propagated',
   geoResidM: number | null,
   hasConflict: boolean,
+  validation: PatternValidation | null = null,
+  structurallyAmbiguous = false,
 ): XwalkState {
   if (hasConflict) return 'conflicted';
   if (distinctPatterns >= 2) return 'confirmed';
   if (source === 'geo' && geoResidM != null && geoResidM <= GEO_SELF_CONFIRM_M) return 'confirmed';
+  if (
+    distinctPatterns >= 1 &&
+    !structurallyAmbiguous &&
+    validation != null &&
+    validation.bindings >= MIN_VALIDATING_BINDINGS &&
+    validation.cycles >= MIN_VALIDATING_CYCLES
+  ) return 'confirmed';
   return 'candidate';
+}
+
+/**
+ * The bookkeeping behind `PatternValidation`, kept pure so its retraction rules can be
+ * tested without a database. Three properties earn that separation, because all three
+ * were wrong in the first draft and none of them is visible from a passing coverage
+ * number:
+ *
+ *  1. **Cycles are held per TRIP, not per pattern.** A pattern-level cycle counter kept
+ *     counting cycles contributed by bindings that were later voided, so two bindings
+ *     credited in one cycle could clear a two-cycle floor on the strength of a third
+ *     binding the audits had already thrown out.
+ *  2. **Distrust is permanent and order-independent.** When the per-trip consistency gate
+ *     catches a pattern contradicting the crosswalk, deleting its credit is not enough:
+ *     sibling bindings on the same pattern, reached later in the same settle pass, put it
+ *     straight back. The pattern is marked, and marked patterns never validate again.
+ *  3. **Validation is read off ONE pattern.** Taking the largest binding count from one
+ *     pattern and the largest cycle count from another reports a strength no pattern has.
+ */
+export interface PatternCreditStore {
+  /** One binding survived a settle cycle on this pattern. */
+  credit(staticPatternId: string, rtTripId: string, cycle: number): void;
+  /** This binding was voided; it was never evidence, and its cycles go with it. */
+  retractTrip(staticPatternId: string, rtTripId: string): void;
+  /** The consistency gate caught this pattern. It may never validate anything again. */
+  distrust(staticPatternId: string): void;
+  /** The best-validated single pattern among those given, or null. */
+  validation(staticPatternIds: Iterable<string>): PatternValidation | null;
+  clear(): void;
+  readonly size: number;
+}
+
+export function createPatternCreditStore(): PatternCreditStore {
+  const credits = new Map<string, Map<string, Set<number>>>();
+  const distrusted = new Set<string>();
+  return {
+    credit(staticPatternId, rtTripId, cycle) {
+      if (distrusted.has(staticPatternId)) return;
+      let trips = credits.get(staticPatternId);
+      if (!trips) { trips = new Map(); credits.set(staticPatternId, trips); }
+      let cycles = trips.get(rtTripId);
+      if (!cycles) { cycles = new Set(); trips.set(rtTripId, cycles); }
+      // Capped at the threshold: beyond it the exact count changes no decision, and an
+      // all-day trip would otherwise grow a set entry every cycle.
+      if (cycles.size < MIN_VALIDATING_CYCLES) cycles.add(cycle);
+    },
+    retractTrip(staticPatternId, rtTripId) {
+      const trips = credits.get(staticPatternId);
+      if (!trips) return;
+      trips.delete(rtTripId);
+      if (trips.size === 0) credits.delete(staticPatternId);
+    },
+    distrust(staticPatternId) {
+      distrusted.add(staticPatternId);
+      credits.delete(staticPatternId);
+    },
+    validation(staticPatternIds) {
+      let best: PatternValidation | null = null;
+      for (const patternId of staticPatternIds) {
+        if (distrusted.has(patternId)) continue;
+        const trips = credits.get(patternId);
+        if (!trips || trips.size === 0) continue;
+        const cycles = new Set<number>();
+        for (const cs of trips.values()) for (const c of cs) cycles.add(c);
+        const here = { bindings: trips.size, cycles: cycles.size };
+        if (!best || Math.min(here.bindings, here.cycles) > Math.min(best.bindings, best.cycles)) best = here;
+      }
+      return best;
+    },
+    clear() { credits.clear(); distrusted.clear(); },
+    get size() { return credits.size; },
+  };
+}
+
+/** Does this validation clear both floors of the second promotion path? */
+export function validationSufficient(v: PatternValidation | null): boolean {
+  return v != null && v.bindings >= MIN_VALIDATING_BINDINGS && v.cycles >= MIN_VALIDATING_CYCLES;
+}
+
+/** Metres within which two stops on one route are close enough to be confused. */
+export const ADJACENT_STOP_M = 80;
+
+/**
+ * The stops for which the adjacent-platform failure mode is structurally possible: a stop
+ * with another stop on the SAME ROUTE within ADJACENT_STOP_M that is served in the SAME
+ * DIRECTION. Measured on the live board: 1,484 of 9,361 stops (15.85%).
+ *
+ * The same-direction clause is what makes this a real filter rather than a distance
+ * threshold. Two platforms across a street from each other are almost always the two
+ * directions of the route, and the crosswalk's own machinery — geometric anchors,
+ * propagation, bindings — all carry direction implicitly through the pattern. It is the
+ * pairs that share a direction that nothing here can separate.
+ *
+ * O(stops^2) per route, run once when the pattern index is loaded, never per cycle.
+ */
+export function structurallyAmbiguousStops(
+  routeStops: ReadonlyMap<string, readonly StopPoint[]>,
+  dirsOfStop: ReadonlyMap<string, ReadonlySet<number | null>>,
+): Set<string> {
+  const out = new Set<string>();
+  for (const stops of routeStops.values()) {
+    for (let i = 0; i < stops.length; i++) {
+      for (let j = i + 1; j < stops.length; j++) {
+        const a = stops[i], b = stops[j];
+        if (out.has(a.stopId) && out.has(b.stopId)) continue;
+        if (metres(a.lat, a.lon, b.lat, b.lon) > ADJACENT_STOP_M) continue;
+        const da = dirsOfStop.get(a.stopId);
+        const db = dirsOfStop.get(b.stopId);
+        if (!da || !db) continue;
+        let shared = false;
+        for (const d of da) if (db.has(d)) { shared = true; break; }
+        if (shared) { out.add(a.stopId); out.add(b.stopId); }
+      }
+    }
+  }
+  return out;
 }
 
 /**

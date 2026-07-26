@@ -758,6 +758,76 @@ board-active fixture the expected honest suppression reason shifts from `boardAc
 
 ---
 
+---
+
+## 20. RESOLVED for the delay gate, OPEN for ghost detection — the crosswalk plateau, and the premise that had to die first
+
+New entry, 2026-07-26. Entry 10 recorded that the two-independent-patterns promotion rule alone
+blocks 43.2% of realtime stop occurrences, and that relaxing it was refused on a held-out
+experiment too weak to justify it. The plateau held: on the live Sunday board the engine sat at
+42.5–45.3% against a 0.50 gate across a whole morning, `SUPPRESSED
+(xwalkOccurrenceCoverage)` every cycle, with 627 due trips and 341+ active bindings.
+
+### The proposed fix was measured and is wrong
+
+The proposal: an active binding is an independent witness to a stop identity, so a mapping
+corroborated by live bindings should promote. Measured over 23 live cycles before anything was
+built on it:
+
+| | |
+|---|---:|
+| binding "confirmations" pooled | 81,729 |
+| from a pattern the stop did not already have | 55 (**0.07%**) |
+| confirmations of mappings blocked by the rule | 37,319 |
+| disagreements among those | **0** |
+
+The comparison is circular. A binding's static pattern *is* the pattern that implied the
+mapping, so `staticStops[seq-1]` is the entry being checked. **It is a test that cannot fail** —
+the third one this project has caught, after §33's monotonicity audit and entry 17's cross-route
+audit, and the first that would have reached published delay numbers. Recorded here because the
+premise was plausible, specific, and false, and the next person to propose it should find this.
+
+### What replaced it, and the number that killed the obvious safeguard
+
+A *surviving* binding does carry independent evidence — in the time domain, about the **pattern
+assignment**, which is the failure the two-pattern rule exists to catch. Re-running entry 10's
+held-out experiment with its known flaw removed (the withheld truth restricted to unambiguous
+nearest-stop matches, runner-up ≥ 60 m further) reproduced its finding at six times the sample
+and confirmed its hypothesis about the cause: one-pattern identities score 94.03% (n=687)
+against 88.42% (n=501) for two-or-more, and restricting the truth to unambiguous geometry
+removes **100% of the disagreements in both arms**. One-pattern accuracy with binding
+validation is 98.67% (n=301) against 89.81% (n=363) without.
+
+The obvious safeguard — require the corroborating bindings to be direction-consistent, since
+`direction_id` names the two sides of a street — **does not hold on this board**: of 4,262
+same-route stop pairs within 80 m, only 3,375 (79.19%) have no direction in common. For 887
+pairs (20.81%) `direction_id` cannot separate the platforms at all. A direction check would
+have read as a safeguard while passing one adjacent pair in five. The shipped condition tests
+the thing directly instead (`structurallyAmbiguousStops`, 1,484 of 9,361 stops ruled out).
+
+### Result
+
+`MIN_XWALK_OCCURRENCE_COVERAGE` unchanged at 0.50, no gate touched. Two runs from a
+byte-identical cold-crosswalk board against the live feed, differing only in the new promotion
+path: control peaks at **45.26%** and is suppressed on all 23 cycles; the new path reaches
+**66.75%**. The final code (after review found three credit-lifecycle defects, all of which make
+validation harder to earn) was re-measured warm: **47.3% to 68.5% over 18 cycles**, above the
+gate throughout, while the production server on the old code sat at **49.4% and SUPPRESSED at
+cycle 131** on the same board and feed. It wrote **3,105 real `trip_delay_obs` rows** across 457
+trips, 149 routes and 1,972 stops (p50 0 s, p10 −203 s, p90 +175 s, 58 rows exactly zero, 137
+ground-truth rows). See DECISIONS §46.
+
+### STILL OPEN: ghost detection is nowhere near its own gate
+
+Zero ghosts across both runs, and the reason is not silence — it is the poller's
+`GLOBAL MASS-GHOST BREAKER`, which found 470 of 646 due static trips unbound (73%, against its
+30% ceiling) and suppressed the lot as "feed outage or our bug, not reality". The breaker is
+behaving correctly. The delay engine cleared its gate at a 36.6% join rate; **ghost detection
+needs most of the board bound, not a third of it**, and nothing in this change moves that.
+Entry 12 (ghost detection inherits every binding refusal) is the live constraint.
+
+---
+
 ## Cross-document note (not a blocker in this file's own scope)
 
 `DECISIONS.md` §12 and `DEVPOST.md` still describe `server/src/join.ts` as a shipped

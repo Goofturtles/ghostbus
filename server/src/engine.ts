@@ -21,7 +21,9 @@ import {
 import {
   nearestStopOnRoute, mergeRtTrip, resolvePatterns, promotionState,
   crossRouteAgreement, monotonicityViolations, crosswalkedStaticSeqs, corroboratedConfidence,
+  structurallyAmbiguousStops, GEO_SELF_CONFIRM_M, createPatternCreditStore, validationSufficient,
   type RtPattern, type StaticPatternLite, type XwalkEntry, type PatternState,
+  type PatternValidation,
 } from './xwalk.ts';
 import { originLock, preferBinding, type LockAnchor, type LockSlot, type LockResult } from './bind.ts';
 import {
@@ -215,6 +217,20 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT, write
   const xwalkAgreeingPatterns = new Map<string, Set<string>>();
   /** distinct_patterns restored from the database, so a warm start does not forget it. */
   const xwalkDistinctFloor = new Map<string, number>();
+  /**
+   * staticPatternId -> the bindings that have RUN and SURVIVED on it, and how many
+   * distinct cycles they covered. This is the evidence behind the second promotion path
+   * (xwalk.ts, `PatternValidation`), and "survived" is the load-bearing word: a binding is
+   * credited only after it has cleared the per-trip consistency gate and the per-pattern
+   * drift breaker in a cycle, and its credit is taken back when either later voids it.
+   * Crediting at lock time instead would count the bindings the audits went on to reject.
+   */
+  const patternValidation = createPatternCreditStore();
+  /**
+   * Stops where the adjacent-platform failure mode is structurally possible. Computed once
+   * per pattern-index load; the second promotion path refuses on every stop in here.
+   */
+  let ambiguousStops = new Set<string>();
   const conflictedStops = new Set<string>();
   const rtPatterns: RtPattern[] = [];
   const rtPatternByTrip = new Map<string, RtPattern>();
@@ -231,6 +247,8 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT, write
   const claimedStatic = new Map<string, string>();       // staticTripId -> rtTripId
   const firstStopResids: number[] = [];
   let serviceDateOfState = 0;
+  /** Monotonic cycle counter, so binding validation can count DISTINCT cycles. */
+  let cycleSeq = 0;
 
   const stats = blankStats();
   let lastGate: GateResult = { publish: false, reason: 'engine has not run a cycle yet', failed: 'boot' };
@@ -306,6 +324,7 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT, write
     index = next;
     boardTag = newBoardTag;
     ready = true;
+    recomputeAmbiguousStops();
     if (boardChanged) {
       // A new board is a new set of stop identities. Carrying the old crosswalk across
       // would silently map realtime stops onto a schedule they were never learned from.
@@ -315,6 +334,7 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT, write
       rtPatterns.length = 0; rtPatternByTrip.clear(); patternStates.clear(); quarantined.clear();
       patternResid.clear(); births.clear(); bindings.clear(); refusedTrips.clear();
       claimedStatic.clear(); firstStopResids.length = 0;
+      patternValidation.clear();
       resolvedStatic = new Map(); resolvedIter = new Map();
       console.log(`[engine] board changed to ${boardTag} — crosswalk and bindings invalidated`);
     }
@@ -327,6 +347,73 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT, write
     if (xwalk.size === 0) await loadCrosswalk();
     console.log(`[engine] pattern index: ${index.patterns.size} patterns, ${index.tripIds.size} trips, ` +
       `${index.routeStops.size} routes with geometry (${(index.elapsedMs / 1000).toFixed(1)}s, ${index.source})`);
+  }
+
+  /**
+   * Which stops the adjacent-platform failure mode can reach on THIS board. Recomputed
+   * whenever the index is replaced, because it is a property of the schedule's geometry.
+   * Roughly a second on the live board (225 routes, 9,361 stops), paid once per index
+   * load against a 30-70 s build — never on a cycle.
+   */
+  function recomputeAmbiguousStops(): void {
+    const dirsOfStop = new Map<string, Set<number | null>>();
+    for (const p of index.patterns.values()) {
+      for (const stopId of p.stops) {
+        let d = dirsOfStop.get(stopId);
+        if (!d) { d = new Set(); dirsOfStop.set(stopId, d); }
+        d.add(p.dirId);
+      }
+    }
+    const t0 = Date.now();
+    ambiguousStops = structurallyAmbiguousStops(index.routeStops, dirsOfStop);
+    console.log(`[engine] ${ambiguousStops.size} of ${dirsOfStop.size} static stops are structurally ` +
+      `ambiguous (a same-route stop within 80 m served the same direction) — the second ` +
+      `promotion path refuses on these (${Date.now() - t0} ms)`);
+  }
+
+  /** The validation held by the best-validated pattern that agrees on this stop. */
+  function validationFor(rtStop: string): PatternValidation | null {
+    const agreeing = xwalkAgreeingPatterns.get(rtStop);
+    if (!agreeing || agreeing.size === 0) return null;
+    return patternValidation.validation(agreeing);
+  }
+
+  /**
+   * Credit a binding that has just survived a full settle cycle. Called only after the
+   * per-trip consistency gate and the per-pattern drift breaker have both passed for it,
+   * so the credit means "this pattern ran against the schedule and the audits did not
+   * object", not "this pattern was guessed at once".
+   */
+  function creditBinding(b: Binding): void {
+    patternValidation.credit(b.staticPatternId, b.rtTripId, cycleSeq);
+  }
+
+  /** Take the credit back. A binding the audits later rejected was never evidence. */
+  function retractBinding(b: Binding, wholePattern: boolean): void {
+    // The consistency gate fired: the pattern ASSIGNMENT is in doubt, so no binding on
+    // it — past, present or later this cycle — counts as validation again.
+    if (wholePattern) patternValidation.distrust(b.staticPatternId);
+    else patternValidation.retractTrip(b.staticPatternId, b.rtTripId);
+  }
+
+  /**
+   * Demote entries whose only claim to `confirmed` was time-domain validation that has
+   * since been withdrawn — a pattern distrusted by the consistency gate, or one whose
+   * bindings were all voided by the drift breaker.
+   *
+   * The promotion loop only rewrites entries the current cycle re-proposed, and a stop can
+   * stop being proposed the moment its RT pattern is quarantined. Without this sweep such
+   * an entry would keep backing delay rows on evidence that no longer exists — the exact
+   * failure the warm-start guard closes across a restart, left open within one process.
+   * Paths 1 and 2 rest on evidence that only accumulates, so they are never swept.
+   */
+  function demoteUnvalidated(): void {
+    for (const e of xwalk.values()) {
+      if (e.state !== 'confirmed' || e.distinctPatterns >= 2) continue;
+      if (e.source === 'geo' && e.geoResidM != null && e.geoResidM <= GEO_SELF_CONFIRM_M) continue;
+      if (validationSufficient(validationFor(e.rtStopId))) continue;
+      e.state = 'candidate';
+    }
   }
 
   /**
@@ -362,8 +449,24 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT, write
         [writeAgency, boardTag],
       );
       let usable = 0;
+      let demoted = 0;
       for (const r of res.rows) {
-        const state = r.state === 'confirmed' || r.state === 'conflicted' ? r.state : 'candidate';
+        let state = r.state === 'confirmed' || r.state === 'conflicted' ? r.state : 'candidate';
+        // A ROW MAY NOT CARRY MORE AUTHORITY THAN THE EVIDENCE THAT COMES BACK WITH IT.
+        // `distinct_patterns` and `geo_resid_m` are persisted, so the first two promotion
+        // paths can be re-checked here. The third — time-domain validation by surviving
+        // bindings — is NOT persisted: bindings are a property of the running service day,
+        // not of the board. Restoring such a row as `confirmed` would republish a promotion
+        // whose evidence no longer exists anywhere in the process. It comes back as a
+        // `candidate` and re-earns confirmation within a few cycles if the service is still
+        // doing what it was doing. This is a no-op for rows written before the third path
+        // existed, because nothing else could have confirmed them.
+        if (state === 'confirmed') {
+          const dp = Number(r.distinct_patterns);
+          const resid = r.geo_resid_m == null ? null : Number(r.geo_resid_m);
+          const geoSelfConfirmed = r.source === 'geo' && resid != null && resid <= GEO_SELF_CONFIRM_M;
+          if (dp < 2 && !geoSelfConfirmed) { state = 'candidate'; demoted++; }
+        }
         const confidence = state === 'conflicted' ? 0 : Number(r.confidence);
         xwalk.set(r.rt_stop_id, {
           rtStopId: r.rt_stop_id,
@@ -383,7 +486,8 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT, write
       }
       if (res.rows.length > 0) {
         console.log(`[engine] restored ${res.rows.length} crosswalk entries for ${boardTag} ` +
-          `(${usable} usable for a delay row, ${conflictedStops.size} conflicted) — warm start`);
+          `(${usable} usable for a delay row, ${conflictedStops.size} conflicted` +
+          `${demoted > 0 ? `, ${demoted} back to candidate pending fresh binding evidence` : ''}) — warm start`);
       }
     } catch (e) {
       // A failed restore costs warm-up time, not correctness: the crosswalk relearns.
@@ -529,10 +633,12 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT, write
       xwalk.set(rtStop, {
         rtStopId: rtStop, stopId: prop.stop, votes, distinctPatterns, geoResidM: prop.resid,
         source,
-        state: promotionState(distinctPatterns, source, prop.resid, hasConflict),
+        state: promotionState(distinctPatterns, source, prop.resid, hasConflict,
+          validationFor(rtStop), ambiguousStops.has(prop.stop)),
         confidence: hasConflict ? 0 : corroboratedConfidence(votes, prop.resid, prop),
       });
     }
+    demoteUnvalidated();
     // A stop that became conflicted after it was written must lose its usability too.
     for (const rtStop of conflictedStops) {
       const e = xwalk.get(rtStop);
@@ -733,6 +839,7 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT, write
             refusedTrips.set(rtTripId, 'refused_ambiguous');
             continue;
           }
+          retractBinding(holder, false);
           bindings.delete(holderRt);
           claimedStatic.delete(res.tripId);
           fireAndLog(db.query(
@@ -871,6 +978,10 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT, write
       });
 
       if (res.inconsistent) {
+        // The crosswalk and the binding contradict each other, so the pattern assignment
+        // is in doubt — and every promotion that leaned on this pattern's validation was
+        // leaning on a pattern the audit just rejected. Take the whole pattern's credit.
+        retractBinding(b, true);
         await voidForInconsistency(inp.serviceDate, rtTripId, b, res.inconsistent);
         continue;
       }
@@ -878,6 +989,7 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT, write
       // Per-pattern breaker: a pattern whose rolling residual has drifted past half its own
       // headway is producing self-consistent delays that are wrong by about one headway.
       if (!patternHealthy(b.headwayS, med(patternResid.get(b.staticPatternId) ?? []))) {
+        retractBinding(b, false);
         bindings.delete(rtTripId);
         claimedStatic.delete(b.staticTripId);
         fireAndLog(db.query(
@@ -886,6 +998,8 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT, write
         continue;
       }
 
+      // Survived both audits this cycle: this is what the second promotion path counts.
+      creditBinding(b);
       counters = addCounters(counters, res.counters);
       if (publish) out.push(...res.rows);
       else suppressed += res.rows.length;
@@ -1029,14 +1143,85 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT, write
     return inserted;
   }
 
+  // ---------- measurement probe ----------
+
+  /**
+   * Dump the engine's crosswalk/pattern/binding state to `GHOSTBUS_XWALK_PROBE_DIR`, one
+   * file per cycle. OFF unless the variable is set, and it is never set in production.
+   *
+   * This exists because §35's held-out-geometry experiment could not be repeated: it was
+   * run from a throwaway script against state that no longer exists, so the next attempt
+   * had to start by rebuilding the instrument rather than from the evidence. A promotion
+   * rule that guards published delay numbers will be re-examined more than once, and the
+   * only honest way to re-examine it is on live state. The dump is deliberately raw —
+   * every input a promotion decision sees, and nothing summarised — so an analyser written
+   * later can ask a question this cycle did not anticipate.
+   */
+  const probeDir = process.env.GHOSTBUS_XWALK_PROBE_DIR ?? null;
+  let probeStaticWritten = false;
+
+  function probeDump(n: number, inp: EngineCycleInput, occ: ReadonlyMap<string, number>): void {
+    if (!probeDir) return;
+    // SERIALISED SYNCHRONOUSLY, written asynchronously. Every map below is live engine
+    // state that the next cycle mutates in place, so building the JSON inside the async
+    // path would race the engine and could dump a half-updated crosswalk.
+    const staticJson = probeStaticWritten ? null : JSON.stringify({
+      boardTag,
+      patterns: [...index.patterns.values()].map((p) => [p.patternId, p.routeId, p.dirId, p.stops]),
+      routeStops: [...index.routeStops].map(([r, ss]) => [r, ss.map((s) => [s.stopId, s.lat, s.lon])]),
+      medianHeadwayS: [...index.medianHeadwayS],
+    });
+    const cycleJson = JSON.stringify({
+      cycleNo: n,
+      // Every cycle carries the board tag, so an analyser can never join rt stops learned
+      // against one board onto another board's geometry across a rollover.
+      boardTag,
+      nowMs: inp.nowMs,
+      serviceDate: inp.serviceDate,
+      occurrences: [...occ],
+      xwalk: [...xwalk.values()].map((e) => [e.rtStopId, e.stopId, e.votes, e.distinctPatterns,
+        e.geoResidM, e.source, e.state, e.confidence]),
+      agreeing: [...xwalkAgreeingPatterns].map(([s, set]) => [s, [...set]]),
+      distinctFloor: [...xwalkDistinctFloor],
+      conflicted: [...conflictedStops],
+      // Centroid, not the resolved stop: the analyser recomputes the nearest-stop match
+      // itself so it can also see the runner-up gap, which promotion never stores.
+      anchorCentroids: [...anchors].map(([k, a]) => [k, a.sumLat / a.n, a.sumLon / a.n, a.n, a.vehicles.size]),
+      geoAnchors: [...geoAnchors].map(([k, s]) => [k, s, geoResid.get(k) ?? null]),
+      rtPatterns: rtPatterns.map((p) => [p.rtPatternId, p.routeId, p.nTrips, [...p.seqStops]]),
+      patternStates: [...patternStates],
+      resolvedStatic: [...resolvedStatic],
+      bindings: [...bindings.values()].map((b) => [b.rtTripId, b.staticTripId, b.routeId,
+        b.rtPatternId, b.staticPatternId, b.confidence, b.residS, b.marginS, b.agree,
+        [...b.tracked.values()].map((t) => [t.stopSequence, t.rtStopId])]),
+    });
+    void (async () => {
+      const { mkdir, writeFile } = await import('node:fs/promises');
+      const { join } = await import('node:path');
+      await mkdir(probeDir, { recursive: true });
+      // Flagged only once the write has actually landed: a transient first-cycle failure
+      // would otherwise lose static.json permanently, and every cycle dump is useless
+      // without the pattern geometry it joins against.
+      if (staticJson) { await writeFile(join(probeDir, 'static.json'), staticJson); probeStaticWritten = true; }
+      await writeFile(join(probeDir, `cycle-${String(n).padStart(4, '0')}.json`), cycleJson);
+    })().catch((e) => console.error('[engine] probe dump failed:', e instanceof Error ? e.message : e));
+  }
+
   // ---------- the cycle ----------
+
+  let cycleNo = 0;
 
   async function runCycle(inp: EngineCycleInput): Promise<{ rows: number; gate: GateResult }> {
     const nowS = Math.floor(inp.nowMs / 1000);
+    cycleSeq++;
 
     if (serviceDateOfState !== inp.serviceDate) {
       births.clear(); bindings.clear(); refusedTrips.clear(); claimedStatic.clear();
       firstStopResids.length = 0;
+      // Binding validation is evidence about the service that ran, not about the board. A
+      // new service day has none of yesterday's bindings alive, so the credit goes with
+      // them; the patterns still running re-earn it within a couple of cycles.
+      patternValidation.clear();
       serviceDateOfState = inp.serviceDate;
     }
 
@@ -1077,10 +1262,12 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT, write
     // Coverage is measured on OCCURRENCES, not distinct stops: what matters is how much of
     // the live feed we can actually read, and popular stops appear far more often.
     let occTotal = 0, occCovered = 0;
+    const occByStop = probeDir ? new Map<string, number>() : null;
     for (const tu of inp.tripUpdates) {
       for (const s of tu.stops) {
         if (!s.rtStopId) continue;
         occTotal++;
+        if (occByStop) occByStop.set(s.rtStopId, (occByStop.get(s.rtStopId) ?? 0) + 1);
         const e = xwalk.get(s.rtStopId);
         if (e && e.state === 'confirmed' && e.confidence >= XWALK_MIN_CONF) occCovered++;
       }
@@ -1149,6 +1336,7 @@ export function createDelayEngine(db: Db, agency: string = AGENCY_DEFAULT, write
     if (gate.publish && rows.length > 0) written = await writeObs(rows);
 
     await persistCrosswalk().catch((e) => console.error('[engine] crosswalk persist failed:', e));
+    if (occByStop) probeDump(++cycleNo, inp, occByStop);
     return { rows: written, gate };
   }
 

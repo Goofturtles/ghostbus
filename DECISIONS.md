@@ -3628,63 +3628,103 @@ anchors and bindings once per cycle — off unless set, never set in production.
 that produced every table above reads those dumps. The next person to re-examine this rule
 starts from the evidence rather than from rebuilding the instrument.
 
-### The result: two runs, same board, same feed, one line of code apart
+### The result
 
-Both runs start from a byte-identical copy of the same PGlite board with a **cold** crosswalk,
-poll the live TTC feeds at the production 45 s cadence, and differ only in whether the third
-promotion path exists. Neither touches the running :8799 server.
+Three runs, all against the live TTC feeds at the production 45 s cadence, none of them
+touching the running :8799 server.
 
-| cycles after the crosswalk clears its confidence floor | control | with the third path |
-|---|---:|---:|
-| +1 | 39.93% | 42.23% |
-| +3 | 41.17% | 56.49% |
-| +6 | 43.52% | 62.07% |
-| +9 | 44.35% | 63.87% |
-| +12 | **45.26%** | **65.69%** |
-| +16 | — | **66.75%** |
+**The controlled pair (cold crosswalk, byte-identical starting board, one code path apart).**
+Coverage by cycles elapsed after the crosswalk clears its confidence floor:
+
+| +1 | +3 | +6 | +9 | +12 | +16 |
+|---:|---:|---:|---:|---:|---:|
+| control 39.93% | 41.17% | 43.52% | 44.35% | **45.26%** | — |
+| third path 42.23% | 56.49% | 62.07% | 63.87% | **65.69%** | **66.75%** |
 
 The control never reaches the gate: 23 cycles, peak 45.26%, `SUPPRESSED
-(xwalkOccurrenceCoverage)` on every one of them — the plateau this section set out to explain.
-The run with the third path crosses 0.50 on its third productive cycle and holds above it for
-16 consecutive cycles, ending at 66.75%.
+(xwalkOccurrenceCoverage)` on every one — the plateau this section set out to explain.
 
-**The gate cleared, and the engine published.** 1,663 `trip_delay_obs` rows over 240 distinct
-static trips, 132 routes and 1,433 stops:
+**The contemporaneous control is better than any of ours, because it is the product.** The
+running production server — old code, warm crosswalk, same board, same feed — sat at
+**49.4–49.7% and `SUPPRESSED` at cycle 131**, an hour and a half in. That is the plateau in
+its natural habitat, and it is the number the third path has to beat honestly.
+
+**The confirmation run, on the final code, warm.** After code review found three defects in the
+credit lifecycle (below), the whole thing was re-measured rather than argued about, because
+every fix makes validation *harder* to earn and none of the earlier numbers would have
+transferred:
+
+| cycle | 1 | 3 | 6 | 9 | 12 | 15 | 18 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| coverage | 47.3% | 58.9% | 61.6% | 64.1% | 65.8% | 66.7% | **68.5%** |
+
+Above the gate on every cycle, against the live server's 49.4% at the same wall clock.
+
+**The gate cleared, and the engine published.** 3,105 `trip_delay_obs` rows over 457 distinct
+static trips, 149 routes and 1,972 stops:
 
 | | |
 |---|---:|
-| delay p10 / p25 / p50 / p75 / p90 | −161 s / −81 s / **−3 s** / +76 s / +164 s |
-| min / max | −700 s / +492 s |
-| exactly zero | 18 rows (1.1%) |
-| late (> 60 s) / on time / early (< −60 s) | 491 / 669 / 503 |
-| ground-truth rows (`source='observed'`, a VehiclePosition reporting STOPPED_AT) | 64 |
+| delay p10 / p25 / p50 / p75 / p90 | −203 s / −93 s / **0 s** / +75 s / +175 s |
+| min / max | −1,409 s / +673 s |
+| exactly zero | 58 rows (1.9%) |
+| late (> 60 s) / on time / early (< −60 s) | 898 / 1,193 / 1,014 |
+| ground-truth rows (`source='observed'`, a VehiclePosition reporting STOPPED_AT) | 137 |
+| bindings bound / voided / refused | 886 / 30 / 161 |
 
 That is a plausible Sunday distribution and, more usefully, it is **not** either of the two
-shapes that would mean the engine is lying. It is not the all-zero census of §29 (18 of 1,663
-rows are exactly zero), and it is not absurd (worst late 492 s on route 59, 435 s on 504).
-The bias check §29 built the `observed` column for now has an answer: ground-truth rows read
-p10 −161 s / p50 −7 s / p90 +180 s against predicted rows at −161 / −3 / +164. **The predicted
-rows are not measurably biased against the ones we watched happen.**
+shapes that would mean the engine is lying. It is not the all-zero census of §29 — 58 of 3,105
+rows are exactly zero, and the mass is spread across ±3 minutes — and it is not absurd. On the
+earlier run the bias check §29 built the `observed` column for got its first answer: ground-truth
+rows read p10 −161 s / p50 −7 s / p90 +180 s against predicted rows at −161 / −3 / +164. **The
+predicted rows are not measurably biased against the ones we watched happen.**
 
-**Ghosts: a genuine 0, with a reason.** 646 due trips in the final cycle and zero ghosts,
-because the poller's `GLOBAL MASS-GHOST BREAKER` fired: 470 of 646 due static trips had no
-binding, far past its 30% ceiling, so it suppressed all of them as "feed outage or our bug, not
-reality". That is the breaker working. The join rate is 36.6% and rising, and ghost detection
-stays honestly silent until far more of the board is bound. **This change moved the delay
-engine past its gate; it did not move ghost detection past its own, and nothing here pretends
-otherwise.**
+**Ghosts: a genuine 0, with a reason.** 646 due trips and zero ghosts, because the poller's
+`GLOBAL MASS-GHOST BREAKER` fired: 470 of 646 due static trips had no binding, far past its 30%
+ceiling, so it suppressed all of them as "feed outage or our bug, not reality". That is the
+breaker working. The join rate is 36.0% and rising, and ghost detection stays honestly silent
+until far more of the board is bound. **This change moved the delay engine past its gate; it did
+not move ghost detection past its own, and nothing here pretends otherwise.**
 
-**What the safety condition costs, stated rather than buried.** At the final cycle, 2.60% of
-occurrences sit in `candidate, one pattern, binding-validated, structurally AMBIGUOUS` — stops
-the third path could have taken and refused. That is coverage deliberately left on the table,
-and it is the right trade: those are precisely the platforms nothing here can tell apart.
+**What the safety condition costs, stated rather than buried.** 2.60% of occurrences sit in
+`candidate, one pattern, binding-validated, structurally AMBIGUOUS` — stops the third path could
+have taken and refused. That is coverage deliberately left on the table, and it is the right
+trade: those are precisely the platforms nothing here can tell apart.
+
+### Three defects the first draft of this shipped, and what they teach
+
+Code review of the credit bookkeeping found three, all of the same species — evidence outliving
+its retraction — and all invisible to a passing coverage number:
+
+1. **Cycles were counted per pattern, not per binding.** A binding voided by the drift breaker
+   left its cycles behind, so two bindings credited in a single later cycle could clear the
+   two-cycle floor on the strength of a binding the audits had already thrown out.
+2. **Whole-pattern retraction was order-dependent.** When the consistency gate caught a pattern,
+   deleting its credit was not enough: a sibling binding on the same pattern, reached later in
+   the same settle pass, put it straight back. Patterns are now *distrusted* permanently.
+3. **A path-3 confirmation was never demoted in-process.** The promotion loop only rewrites
+   entries the current cycle re-proposed, and a stop stops being proposed the moment its RT
+   pattern is quarantined — so an entry could keep backing delay rows on evidence that no longer
+   existed. `demoteUnvalidated()` sweeps for exactly that; paths 1 and 2 rest on evidence that
+   only accumulates and are never swept.
+
+The bookkeeping moved into `xwalk.ts` as `createPatternCreditStore`, per this engine's own rule
+that everything algorithmic lives in the pure modules, and each of the three failures is now a
+named regression test. **The point is not that three bugs were found. It is that all three would
+have quietly promoted stop identities on withdrawn evidence, and none of them would have shown
+up as anything except coverage going up** — which is the outcome this work was trying to produce.
 
 ### What this measurement does not cover
 
 - **The holdout population is stops geometry can see clearly.** A propagated-only stop has no
   geometric anchor by definition, so it can never be scored this way. Generalising from one to
   the other is an assumption, and it is the same assumption §35 made.
-- **One board, one Sunday, 23 cycles, a cold-start crosswalk.** Not a soak, and not a weekday.
+- **One board, one Sunday, 18-23 cycles per run.** Not a soak, and not a weekday.
+- **The controlled cold-start pair was run on the pre-review code.** The three lifecycle
+  defects were found afterwards, and every fix makes validation strictly harder to earn, so the
+  final code was re-measured on its own run (47.3% to 68.5%) against the production server's
+  contemporaneous 49.4%. What was not re-run is the *control arm* on the final code; the claim
+  that the third path is what moves coverage rests on the cold-start pair.
 - **Zero errors in the strict arm bounds the error rate, it does not measure it.** 242 of 242
   puts the 95% upper bound near 1.5%, not at 0.
 

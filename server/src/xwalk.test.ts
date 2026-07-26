@@ -4,6 +4,8 @@ import {
   metres, nearestStopOnRoute, mergeRtTrip, resolvePatterns, promotionState,
   xwalkConfidence, usableForDelay, crossRouteAgreement, monotonicityViolations,
   crosswalkedStaticSeqs, corroboratedConfidence, XWALK_MIN_CONFIDENCE,
+  structurallyAmbiguousStops, MIN_VALIDATING_BINDINGS, MIN_VALIDATING_CYCLES,
+  createPatternCreditStore, validationSufficient,
   type RtPattern, type StaticPatternLite, type XwalkEntry,
 } from './xwalk.ts';
 import { dedupeByKey } from './engine.ts';
@@ -234,6 +236,167 @@ test('promotion: one propagated pattern stays candidate, two agreeing patterns c
   assert.equal(promotionState(1, 'geo', 90, false), 'candidate');
   // A conflict overrides everything, at any vote count.
   assert.equal(promotionState(9, 'geo', 5, true), 'conflicted');
+});
+
+// ---------- the second promotion path (DECISIONS §46) ----------
+
+const VALID = { bindings: MIN_VALIDATING_BINDINGS, cycles: MIN_VALIDATING_CYCLES };
+
+test('SECOND PATH: one pattern plus a time-domain-validated pattern confirms', () => {
+  // The first path still needs two patterns; the second needs one pattern whose
+  // assignment surviving bindings have independently corroborated against the schedule.
+  assert.equal(promotionState(1, 'propagated', null, false), 'candidate');
+  assert.equal(promotionState(1, 'propagated', null, false, VALID, false), 'confirmed');
+});
+
+test('SECOND PATH: both thresholds are floors, and either one alone is not enough', () => {
+  const under = (b: number, c: number) =>
+    promotionState(1, 'propagated', null, false, { bindings: b, cycles: c }, false);
+  assert.equal(under(MIN_VALIDATING_BINDINGS - 1, MIN_VALIDATING_CYCLES), 'candidate');
+  assert.equal(under(MIN_VALIDATING_BINDINGS, MIN_VALIDATING_CYCLES - 1), 'candidate');
+  assert.equal(under(MIN_VALIDATING_BINDINGS, MIN_VALIDATING_CYCLES), 'confirmed');
+  // Many bindings inside a single cycle are one line of evidence, not many: the cycle
+  // floor is what stops one busy minute from confirming a whole pattern's stops.
+  assert.equal(under(50, 1), 'candidate');
+});
+
+test('SECOND PATH: no pattern at all is never promoted, however many bindings agree', () => {
+  // distinctPatterns 0 means nothing on the board implies this identity. A binding
+  // validates a PATTERN; with no pattern there is nothing for it to validate.
+  assert.equal(promotionState(0, 'propagated', null, false, { bindings: 99, cycles: 99 }, false), 'candidate');
+});
+
+test('SECOND PATH: THE ADJACENT-PLATFORM CASE — a structurally ambiguous stop refuses', () => {
+  // 1037 and 1036 across the street from each other, both served the same direction. This
+  // is the case DECISIONS §35 refused the whole relaxation over, and it is why the path
+  // carries a structural condition rather than a direction check: measured on the live
+  // board, direction_id separates only 79.19% of adjacent same-route pairs.
+  assert.equal(promotionState(1, 'propagated', null, false, VALID, true), 'candidate');
+  // …and no amount of validation buys past it.
+  assert.equal(promotionState(1, 'propagated', null, false, { bindings: 500, cycles: 500 }, true), 'candidate');
+  // The first two paths are unaffected — they never rested on this argument.
+  assert.equal(promotionState(2, 'propagated', null, false, null, true), 'confirmed');
+  assert.equal(promotionState(1, 'geo', 20, false, null, true), 'confirmed');
+});
+
+test('SECOND PATH: a conflict still overrides validation, as it overrides everything', () => {
+  assert.equal(promotionState(1, 'propagated', null, true, VALID, false), 'conflicted');
+  assert.equal(promotionState(9, 'geo', 5, true, VALID, false), 'conflicted');
+});
+
+test('structurallyAmbiguousStops flags same-direction neighbours and nothing else', () => {
+  const dirs = (m: Record<string, Array<number | null>>): Map<string, Set<number | null>> =>
+    new Map(Object.entries(m).map(([k, v]) => [k, new Set(v)]));
+
+  // Across the street, SAME direction — indistinguishable. Both are flagged.
+  assert.deepEqual(
+    [...structurallyAmbiguousStops(
+      new Map([['R1', [atMetres('s1', 0), atMetres('s2', 25)]]]),
+      dirs({ s1: [0], s2: [0] }),
+    )].sort(),
+    ['s1', 's2'],
+  );
+  // Across the street, OPPOSITE directions — this is the normal pair, and it is safe.
+  assert.equal(
+    structurallyAmbiguousStops(
+      new Map([['R1', [atMetres('s1', 0), atMetres('s2', 25)]]]),
+      dirs({ s1: [0], s2: [1] }),
+    ).size, 0,
+  );
+  // Same direction but a real block apart — not confusable.
+  assert.equal(
+    structurallyAmbiguousStops(
+      new Map([['R1', [atMetres('s1', 0), atMetres('s2', 300)]]]),
+      dirs({ s1: [0], s2: [0] }),
+    ).size, 0,
+  );
+  // A stop served in BOTH directions shares a direction with each neighbour, so a
+  // terminal loop where one platform does both ways is correctly flagged.
+  assert.equal(
+    structurallyAmbiguousStops(
+      new Map([['R1', [atMetres('s1', 0), atMetres('s2', 25)]]]),
+      dirs({ s1: [0, 1], s2: [1] }),
+    ).size, 2,
+  );
+  // Different routes never make each other ambiguous, however close they are.
+  assert.equal(
+    structurallyAmbiguousStops(
+      new Map([['R1', [atMetres('s1', 0)]], ['R2', [atMetres('s2', 25)]]]),
+      dirs({ s1: [0], s2: [0] }),
+    ).size, 0,
+  );
+});
+
+// ---------- the credit store: three rules that were wrong in the first draft ----------
+
+test('CREDIT: two bindings across two cycles validate; either alone does not', () => {
+  const s = createPatternCreditStore();
+  s.credit('P', 't1', 1);
+  assert.equal(validationSufficient(s.validation(['P'])), false, 'one binding, one cycle');
+  s.credit('P', 't2', 1);
+  assert.equal(validationSufficient(s.validation(['P'])), false, 'two bindings, still ONE cycle');
+  s.credit('P', 't2', 2);
+  assert.equal(validationSufficient(s.validation(['P'])), true);
+});
+
+test('CREDIT: a voided binding takes its CYCLES with it, not just its count', () => {
+  // The first draft counted cycles per pattern, so cycles contributed by a binding the
+  // audits later threw out kept propping up the two-cycle floor. Here t1 supplies both
+  // cycles and is then voided; t2 and t3 arrive together in a single later cycle. Two
+  // surviving bindings, but only one cycle between them — that must not validate.
+  const s = createPatternCreditStore();
+  s.credit('P', 't1', 1);
+  s.credit('P', 't1', 2);
+  s.retractTrip('P', 't1');
+  s.credit('P', 't2', 7);
+  s.credit('P', 't3', 7);
+  assert.deepEqual(s.validation(['P']), { bindings: 2, cycles: 1 });
+  assert.equal(validationSufficient(s.validation(['P'])), false);
+});
+
+test('CREDIT: a distrusted pattern can never be credited again, in any order', () => {
+  // The consistency gate fires mid-pass; sibling bindings on the same pattern are settled
+  // AFTER it in the same loop. Deleting the credit was not enough — they put it back.
+  const s = createPatternCreditStore();
+  s.credit('P', 't1', 1);
+  s.credit('P', 't2', 2);
+  assert.equal(validationSufficient(s.validation(['P'])), true);
+  s.distrust('P');
+  assert.equal(s.validation(['P']), null);
+  s.credit('P', 't3', 3);   // the sibling, reached later in the same settle pass
+  s.credit('P', 't4', 4);
+  assert.equal(s.validation(['P']), null, 'distrust is permanent, not a one-off deletion');
+});
+
+test('CREDIT: validation is read off ONE pattern, never assembled from several', () => {
+  // P has many bindings in one cycle; Q has one binding across many. Neither clears both
+  // floors, and combining their best halves would invent a strength neither has.
+  const s = createPatternCreditStore();
+  s.credit('P', 't1', 1); s.credit('P', 't2', 1); s.credit('P', 't3', 1);
+  s.credit('Q', 'u1', 1); s.credit('Q', 'u1', 2);
+  assert.deepEqual(s.validation(['P']), { bindings: 3, cycles: 1 });
+  assert.deepEqual(s.validation(['Q']), { bindings: 1, cycles: 2 });
+  assert.equal(validationSufficient(s.validation(['P', 'Q'])), false);
+});
+
+test('CREDIT: the per-trip cycle set is capped without changing any verdict', () => {
+  const s = createPatternCreditStore();
+  for (let c = 1; c <= 500; c++) s.credit('P', 't1', c);
+  // One trip can supply at most the floor's worth of cycles, and never more bindings.
+  assert.deepEqual(s.validation(['P']), { bindings: 1, cycles: MIN_VALIDATING_CYCLES });
+  assert.equal(validationSufficient(s.validation(['P'])), false, 'one trip is still one binding');
+});
+
+test('CREDIT: retracting the last binding drops the pattern, and clear() resets distrust', () => {
+  const s = createPatternCreditStore();
+  s.credit('P', 't1', 1);
+  assert.equal(s.size, 1);
+  s.retractTrip('P', 't1');
+  assert.equal(s.size, 0, 'no empty shells left behind');
+  s.distrust('Q');
+  s.clear();
+  s.credit('Q', 't1', 1);
+  assert.notEqual(s.validation(['Q']), null, 'a board or service-day change starts clean');
 });
 
 test('only confirmed entries above the confidence floor may back a delay row', () => {

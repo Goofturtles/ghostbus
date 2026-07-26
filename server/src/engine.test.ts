@@ -246,3 +246,32 @@ test('a restored conflicted entry stays unusable and out of the propagation seed
   assert.equal(e.staticStopFor('a'), null);
   assert.equal(e.getStats().xwalk.conflicted, 1);
 });
+
+// ---------- DECISIONS §46: a restored row may not outlive its evidence ----------
+
+test('a row confirmed by BINDING VALIDATION comes back as a candidate, not confirmed', async () => {
+  // The second promotion path rests on bindings that survived on the implying pattern.
+  // Bindings belong to a service day and are not persisted, so a row that was confirmed
+  // that way has no evidence behind it after a restart. It must re-earn the promotion.
+  // Such a row is recognisable: one pattern, and not a self-confirming geometric anchor.
+  const db = stubDb([xw('a', 'st1', { distinct_patterns: 1, state: 'confirmed', confidence: 0.85 })]);
+  const e = createDelayEngine(db, 'ttc');
+  await e.reloadStatic(BOARD);
+  assert.equal(e.staticStopFor('a'), null, 'restored as candidate, so it cannot back a delay row yet');
+});
+
+test('the two evidence-carrying promotion paths still survive a restart intact', async () => {
+  // Whatever the guard above does, it must not cost a warm start the promotions whose
+  // evidence IS persisted: distinct_patterns >= 2, and a geometric self-confirmation.
+  const db = stubDb([
+    xw('a', 'st1', { distinct_patterns: 2 }),
+    xw('b', 'st2', { distinct_patterns: 1, source: 'geo', geo_resid_m: 20 }),
+    // …and a geometric anchor too far away to self-confirm is NOT evidence.
+    xw('c', 'st3', { distinct_patterns: 1, source: 'geo', geo_resid_m: 75 }),
+  ]);
+  const e = createDelayEngine(db, 'ttc');
+  await e.reloadStatic(BOARD);
+  assert.equal(e.staticStopFor('a'), 'st1');
+  assert.equal(e.staticStopFor('b'), 'st2');
+  assert.equal(e.staticStopFor('c'), null);
+});
