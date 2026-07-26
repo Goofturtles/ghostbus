@@ -1,0 +1,171 @@
+// The single-ride planner's arithmetic — pure, so every claim it makes can be
+// exercised in a plain Node test with no browser and no network around.
+//
+// The server hands back a MENU of real single-ride options (see /api/plan). It cannot
+// rank them, because ranking depends on how fast the rider walks and that preference
+// never leaves their device. This is where the choosing happens.
+//
+// Three honesty rules govern the arithmetic:
+//
+//   1. THE RIDE TIME IS THE AGENCY'S, NOT OURS. `rideSec` is the published scheduled
+//      running time between the two stops. GhostBus does not model how a trip in
+//      progress will run, so it never shortens or pads that number — and the UI says
+//      on its face that this is what the figure is.
+//   2. A DELAYED BOARDING SHIFTS THE WHOLE PLAN. When the boarding departure has a
+//      live prediction or an evidence-backed honest ETA, the plan is built on THAT
+//      instant, not on the timetable. The scheduled running time is then added to it,
+//      which is an assumption — and a disclosed one.
+//   3. AN UNREACHABLE RIDE IS NOT A PLAN. If the rider cannot walk to the boarding
+//      stop before it leaves, that option is marked unreachable and never chosen. If
+//      none can be reached, the caller gets null and says so, rather than printing a
+//      departure nobody can catch.
+
+import type { RideCandidateDto } from '@shared/types';
+import { walkSeconds } from './walk';
+
+export interface WalkLeg {
+  distanceM: number;
+  seconds: number;
+}
+
+export interface RidePlan {
+  candidate: RideCandidateDto;
+  /** the rider's walk to the boarding stop. */
+  toStop: WalkLeg;
+  /** the walk from the alighting stop to the destination. */
+  fromStop: WalkLeg;
+  /** the instant the plan is built on: live prediction, else honest ETA, else schedule. */
+  boardMs: number;
+  /** true when `boardMs` is not simply the timetable — i.e. the plan carries a claim. */
+  boardIsPredicted: boolean;
+  /** the agency's published running time between the two stops, seconds. */
+  rideSec: number;
+  /** seconds spent waiting at the stop having walked straight there. Never negative. */
+  waitSec: number;
+  /** when to leave to arrive at the stop exactly as it departs. */
+  leaveByMs: number;
+  /** when the rider would be standing at their destination. */
+  doorMs: number;
+  /**
+   * Seconds of actually TRAVELLING — walk, ride, walk.
+   *
+   * Deliberately NOT `doorMs - nowMs`. Measured from now, a 25-minute streetcar ride
+   * whose next departure is tomorrow morning reports as a six-hour journey, which is
+   * arithmetically true and completely useless. The wait is not hidden — it is what
+   * `leaveByMs` and the arrival time say out loud, with the service date beside them.
+   */
+  totalSec: number;
+  /** false when the walk to the boarding stop is longer than the time left. */
+  reachable: boolean;
+}
+
+export interface PlanOptions {
+  /** server-corrected now, epoch ms. */
+  nowMs: number;
+  /** the rider's walking speed, metres/second (store.paceMps). */
+  paceMps: number;
+}
+
+/**
+ * The instant a candidate's boarding departure is actually expected.
+ *
+ * Identical precedence to a departure row (`DepartureRow`), deliberately: the same
+ * departure must not read as one time on the board and another in the planner.
+ */
+export function boardingInstant(c: RideCandidateDto): { ms: number; predicted: boolean } {
+  if (c.liveEtaMs != null) return { ms: c.liveEtaMs, predicted: true };
+  if (c.honest.estimateMs != null) return { ms: c.honest.estimateMs, predicted: true };
+  return { ms: c.departureMs, predicted: false };
+}
+
+/** Turn one server candidate into a full door-to-door plan at this rider's pace. */
+export function buildRidePlan(c: RideCandidateDto, opts: PlanOptions): RidePlan {
+  const { nowMs, paceMps } = opts;
+  const toStop: WalkLeg = {
+    distanceM: c.board.distanceM,
+    seconds: walkSeconds(c.board.distanceM, paceMps),
+  };
+  const fromStop: WalkLeg = {
+    distanceM: c.alight.distanceM,
+    seconds: walkSeconds(c.alight.distanceM, paceMps),
+  };
+
+  const board = boardingInstant(c);
+  // The agency's own running time. Guarded rather than trusted blindly: a feed row
+  // whose arrival is not after its departure would otherwise produce a negative ride.
+  const rideSec = Math.max(0, Math.round((c.arrivalMs - c.departureMs) / 1000));
+
+  const leaveByMs = board.ms - toStop.seconds * 1000;
+  const waitSec = Math.max(0, Math.round((leaveByMs - nowMs) / 1000));
+  const doorMs = board.ms + rideSec * 1000 + fromStop.seconds * 1000;
+
+  return {
+    candidate: c,
+    toStop,
+    fromStop,
+    boardMs: board.ms,
+    boardIsPredicted: board.predicted,
+    rideSec,
+    waitSec,
+    leaveByMs,
+    doorMs,
+    // Travel only: leaving-the-door to standing-at-the-destination, which is
+    // walk + ride + walk by construction. See the field's note above for why this
+    // is not measured from `nowMs`.
+    totalSec: Math.max(0, Math.round((doorMs - leaveByMs) / 1000)),
+    // Leaving this very second still counts: the rider is allowed to already be late
+    // enough that the walk exactly consumes the remaining time.
+    reachable: leaveByMs >= nowMs,
+  };
+}
+
+/**
+ * The best plan among the server's candidates, or null when none can be reached.
+ *
+ * "Best" is the earliest the rider is actually standing at their destination — not the
+ * earliest departure, which would happily send them sprinting to a stop to save a
+ * minute they then lose walking from the wrong end.
+ */
+export function pickBestRide(
+  candidates: readonly RideCandidateDto[],
+  opts: PlanOptions,
+): RidePlan | null {
+  let best: RidePlan | null = null;
+  for (const c of candidates) {
+    const plan = buildRidePlan(c, opts);
+    if (!plan.reachable) continue;
+    if (
+      best == null
+      || plan.doorMs < best.doorMs
+      // A dead heat at the door goes to the one that leaves later — the rider gets to
+      // stand around at home rather than at a stop.
+      || (plan.doorMs === best.doorMs && plan.leaveByMs > best.leaveByMs)
+    ) {
+      best = plan;
+    }
+  }
+  return best;
+}
+
+/** Every candidate as a plan, soonest door-arrival first — the "later options" list. */
+export function allRidePlans(
+  candidates: readonly RideCandidateDto[],
+  opts: PlanOptions,
+): RidePlan[] {
+  return candidates
+    .map((c) => buildRidePlan(c, opts))
+    .sort((a, b) => a.doorMs - b.doorMs || a.leaveByMs - b.leaveByMs);
+}
+
+/**
+ * A directions deep link for a journey this tier cannot plan.
+ *
+ * DESTINATION ONLY, deliberately. The rider's own position is exactly the thing this
+ * app promises never to send anywhere, and a maps app already knows where its user is
+ * — so putting a live location into a third-party URL would buy nothing and cost the
+ * one guarantee that matters.
+ */
+export function transitDirectionsUrl(to: { lat: number; lon: number }): string {
+  const dest = `${to.lat.toFixed(6)},${to.lon.toFixed(6)}`;
+  return `https://www.google.com/maps/dir/?api=1&travelmode=transit&destination=${encodeURIComponent(dest)}`;
+}

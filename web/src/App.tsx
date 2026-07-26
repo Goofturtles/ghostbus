@@ -12,7 +12,9 @@ import { SavedPanel } from './components/SavedPlaces';
 import { SettingsSheet } from './components/SettingsSheet';
 import { AboutSheet } from './components/AboutSheet';
 import { CatchView } from './components/CatchView';
-import { RouteIcon, LayersIcon } from './components/icons';
+import { SearchSheet } from './components/SearchSheet';
+import { PlanView } from './components/PlanView';
+import { LayersIcon } from './components/icons';
 
 // The real map (maplibre-gl) is code-split so it never lands in the initial JS
 // budget — it loads after first paint. The styled placeholder is the fallback.
@@ -32,17 +34,34 @@ function MapPlaceholder() {
   );
 }
 
-/** Designed, honest placeholder for tabs that are designed but not yet built. */
-function PlaceholderView({ icon, title, body }: { icon: React.ReactNode; title: string; body: string }) {
-  return (
-    <div className="placeholder-view">
-      <div className="state-card state-placeholder" role="status">
-        <div className="state-glyph" aria-hidden>{icon}</div>
-        <h2 className="state-title">{title}</h2>
-        <p className="state-body">{body}</p>
-      </div>
-    </div>
-  );
+/**
+ * The app-wide search shortcuts the UI advertises.
+ *
+ * The ⌘K hint has been painted in the top bar since Phase 3 with nothing behind it.
+ * This is what makes it true, along with the spec's `/` shortcut.
+ *
+ * Neither fires while the rider is typing somewhere — a `/` inside a text field is a
+ * slash, and stealing it would break searching for "St Clair W / Bathurst".
+ */
+function useSearchShortcuts(): void {
+  useEffect(() => {
+    const typing = (el: EventTarget | null): boolean => {
+      const n = el as HTMLElement | null;
+      if (!n || !n.tagName) return false;
+      return n.tagName === 'INPUT' || n.tagName === 'TEXTAREA' || n.tagName === 'SELECT' || n.isContentEditable;
+    };
+    const onKey = (e: KeyboardEvent) => {
+      const meta = (e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === 'k';
+      const slash = e.key === '/' && !e.metaKey && !e.ctrlKey && !e.altKey && !typing(e.target);
+      if (!meta && !slash) return;
+      // Already open: the sheet owns the keyboard from here (Esc, arrows, Enter).
+      if (useStore.getState().searchMode) return;
+      e.preventDefault();
+      useStore.getState().openSearch('stop');
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 }
 
 export default function App() {
@@ -54,6 +73,7 @@ export default function App() {
   const isDesktop = useMedia(DESKTOP_QUERY);
 
   useEffect(() => start(), [start]);
+  useSearchShortcuts();
 
   // The departure the rider is trying to catch. Identity only — CatchView re-reads
   // the live numbers off the board on every refresh, so this never goes stale.
@@ -93,9 +113,7 @@ export default function App() {
                 </div>
               )}
               {tab === 'plan' && (
-                <div className="reveal">
-                  <PlaceholderView icon={<RouteIcon width={26} height={26} />} title={t('plan.title')} body={t('plan.body')} />
-                </div>
+                <div className="reveal"><PlanView /></div>
               )}
               {tab === 'saved' && (
                 <div className="reveal"><SavedPanel /></div>
@@ -111,6 +129,7 @@ export default function App() {
       </div>
 
       <TabBar />
+      <SearchSheet />
       <SettingsSheet />
       <AboutSheet />
       {catching && <CatchView dep={catching} onClose={closeCatch} />}

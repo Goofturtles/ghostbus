@@ -1,0 +1,782 @@
+{
+  "desktop-dark-en": {
+    "booted": {
+      "bodyTextLen": 877,
+      "stopHeader": "King St West at Spadina Ave West Side",
+      "searchOpen": false,
+      "searchRows": 0,
+      "planLegs": 0,
+      "planTotal": null,
+      "stateTitle": "No departures in the next 90 minutes",
+      "tab": "Nearby"
+    },
+    "nearby": {
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    },
+    "search": {
+      "state": {
+        "bodyTextLen": 1767,
+        "stopHeader": "King St West at Spadina Ave West Side",
+        "searchOpen": true,
+        "searchRows": 14,
+        "planLegs": 0,
+        "planTotal": null,
+        "stateTitle": "No departures in the next 90 minutes",
+        "tab": "Nearby"
+      },
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 1,
+        "hits": [
+          {
+            "el": "main.side-scroll",
+            "scrollH": 810,
+            "clientH": 678,
+            "text": "CURRENT STOP\nKing St West at Spadina Ave"
+          }
+        ]
+      }
+    },
+    "plan": {
+      "state": {
+        "bodyTextLen": 1023,
+        "stopHeader": null,
+        "searchOpen": false,
+        "searchRows": 0,
+        "planLegs": 3,
+        "planTotal": "About 31 min door to door",
+        "stateTitle": null,
+        "tab": "Plan"
+      },
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    }
+  },
+  "desktop-light-en": {
+    "booted": {
+      "bodyTextLen": 877,
+      "stopHeader": "King St West at Spadina Ave West Side",
+      "searchOpen": false,
+      "searchRows": 0,
+      "planLegs": 0,
+      "planTotal": null,
+      "stateTitle": "No departures in the next 90 minutes",
+      "tab": "Nearby"
+    },
+    "nearby": {
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    },
+    "search": {
+      "state": {
+        "bodyTextLen": 1767,
+        "stopHeader": "King St West at Spadina Ave West Side",
+        "searchOpen": true,
+        "searchRows": 14,
+        "planLegs": 0,
+        "planTotal": null,
+        "stateTitle": "No departures in the next 90 minutes",
+        "tab": "Nearby"
+      },
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 1,
+        "hits": [
+          {
+            "el": "main.side-scroll",
+            "scrollH": 810,
+            "clientH": 678,
+            "text": "CURRENT STOP\nKing St West at Spadina Ave"
+          }
+        ]
+      }
+    },
+    "plan": {
+      "state": {
+        "bodyTextLen": 1019,
+        "stopHeader": null,
+        "searchOpen": false,
+        "searchRows": 0,
+        "planLegs": 3,
+        "planTotal": "About 31 min door to door",
+        "stateTitle": null,
+        "tab": "Plan"
+      },
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    }
+  },
+  "desktop-dark-frCA": {
+    "booted": {
+      "bodyTextLen": 1025,
+      "stopHeader": "King St West at Spadina Ave West Side",
+      "searchOpen": false,
+      "searchRows": 0,
+      "planLegs": 0,
+      "planTotal": null,
+      "stateTitle": "Aucun départ dans les 90 prochaines minutes",
+      "tab": "À proximité"
+    },
+    "nearby": {
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    },
+    "search": {
+      "state": {
+        "bodyTextLen": 1908,
+        "stopHeader": "King St West at Spadina Ave West Side",
+        "searchOpen": true,
+        "searchRows": 14,
+        "planLegs": 0,
+        "planTotal": null,
+        "stateTitle": "Aucun départ dans les 90 prochaines minutes",
+        "tab": "À proximité"
+      },
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 1,
+        "hits": [
+          {
+            "el": "main.side-scroll",
+            "scrollH": 876,
+            "clientH": 678,
+            "text": "ARRÊT ACTUEL\nKing St West at Spadina Ave"
+          }
+        ]
+      }
+    },
+    "plan": {
+      "state": {
+        "bodyTextLen": 1190,
+        "stopHeader": null,
+        "searchOpen": false,
+        "searchRows": 0,
+        "planLegs": 3,
+        "planTotal": "Environ 31 min de porte à porte",
+        "stateTitle": null,
+        "tab": "Trajet"
+      },
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    }
+  },
+  "desktop-light-frCA": {
+    "booted": {
+      "bodyTextLen": 1025,
+      "stopHeader": "King St West at Spadina Ave West Side",
+      "searchOpen": false,
+      "searchRows": 0,
+      "planLegs": 0,
+      "planTotal": null,
+      "stateTitle": "Aucun départ dans les 90 prochaines minutes",
+      "tab": "À proximité"
+    },
+    "nearby": {
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    },
+    "search": {
+      "state": {
+        "bodyTextLen": 1908,
+        "stopHeader": "King St West at Spadina Ave West Side",
+        "searchOpen": true,
+        "searchRows": 14,
+        "planLegs": 0,
+        "planTotal": null,
+        "stateTitle": "Aucun départ dans les 90 prochaines minutes",
+        "tab": "À proximité"
+      },
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 1,
+        "hits": [
+          {
+            "el": "main.side-scroll",
+            "scrollH": 876,
+            "clientH": 678,
+            "text": "ARRÊT ACTUEL\nKing St West at Spadina Ave"
+          }
+        ]
+      }
+    },
+    "plan": {
+      "state": {
+        "bodyTextLen": 1190,
+        "stopHeader": null,
+        "searchOpen": false,
+        "searchRows": 0,
+        "planLegs": 3,
+        "planTotal": "Environ 31 min de porte à porte",
+        "stateTitle": null,
+        "tab": "Trajet"
+      },
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    }
+  },
+  "mobile-dark-en": {
+    "booted": {
+      "bodyTextLen": 812,
+      "stopHeader": "King St West at Spadina Ave West Side",
+      "searchOpen": false,
+      "searchRows": 0,
+      "planLegs": 0,
+      "planTotal": null,
+      "stateTitle": "No departures in the next 90 minutes",
+      "tab": "Nearby"
+    },
+    "nearby": {
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    },
+    "search": {
+      "state": {
+        "bodyTextLen": 1702,
+        "stopHeader": "King St West at Spadina Ave West Side",
+        "searchOpen": true,
+        "searchRows": 14,
+        "planLegs": 0,
+        "planTotal": null,
+        "stateTitle": "No departures in the next 90 minutes",
+        "tab": "Nearby"
+      },
+      "overlap": {
+        "trueOverlaps": 42,
+        "top": [
+          {
+            "area": 4692,
+            "a": "h3.state-title \"No departures in the nex\"",
+            "b": "span.search-title \"Atlantic Ave at King St \""
+          },
+          {
+            "area": 4539,
+            "a": "h2.stop-name \"King St West at Spadina \"",
+            "b": "span.search-title \"Bay St at King St West\""
+          },
+          {
+            "area": 3230,
+            "a": "p.state-body \"This stop's live board i\"",
+            "b": "span.search-title \"Bloor St West at South K\""
+          },
+          {
+            "area": 2465,
+            "a": "button.searchfield-input \"Where to?\"",
+            "b": "input.search-input"
+          },
+          {
+            "area": 1951,
+            "a": "button.dep-track \"View route\"",
+            "b": "span.search-title \"Bloor St West at The Kin\""
+          },
+          {
+            "area": 1163,
+            "a": "span.dep-dest \"Dundas West Station\"",
+            "b": "span.search-title \"Bloor St West at The Kin\""
+          },
+          {
+            "area": 1111,
+            "a": "h2.stop-name \"King St West at Spadina \"",
+            "b": "span.search-fact \"1.5 km away\""
+          },
+          {
+            "area": 982,
+            "a": "span.stop-fact \"Stop 15647\"",
+            "b": "span.search-title \"Adelaide St West at Yong\""
+          },
+          {
+            "area": 948,
+            "a": "span.stop-fact \"4 min walk\"",
+            "b": "span.search-title \"Adelaide St West at Yong\""
+          },
+          {
+            "area": 792,
+            "a": "span.pill \"Scheduled\"",
+            "b": "span.search-title \"Bloor St West at The Kin\""
+          }
+        ],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 1,
+        "hits": [
+          {
+            "el": "div.app-body",
+            "scrollH": 970,
+            "clientH": 782,
+            "text": "GhostBus\nLive\nWhere to?\nYou\n4 min walk\n5"
+          }
+        ]
+      }
+    },
+    "plan": {
+      "state": {
+        "bodyTextLen": 784,
+        "stopHeader": null,
+        "searchOpen": false,
+        "searchRows": 0,
+        "planLegs": 3,
+        "planTotal": "About 30 min door to door",
+        "stateTitle": null,
+        "tab": "Plan"
+      },
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    }
+  },
+  "mobile-light-en": {
+    "booted": {
+      "bodyTextLen": 812,
+      "stopHeader": "King St West at Spadina Ave West Side",
+      "searchOpen": false,
+      "searchRows": 0,
+      "planLegs": 0,
+      "planTotal": null,
+      "stateTitle": "No departures in the next 90 minutes",
+      "tab": "Nearby"
+    },
+    "nearby": {
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    },
+    "search": {
+      "state": {
+        "bodyTextLen": 1702,
+        "stopHeader": "King St West at Spadina Ave West Side",
+        "searchOpen": true,
+        "searchRows": 14,
+        "planLegs": 0,
+        "planTotal": null,
+        "stateTitle": "No departures in the next 90 minutes",
+        "tab": "Nearby"
+      },
+      "overlap": {
+        "trueOverlaps": 42,
+        "top": [
+          {
+            "area": 4692,
+            "a": "h3.state-title \"No departures in the nex\"",
+            "b": "span.search-title \"Atlantic Ave at King St \""
+          },
+          {
+            "area": 4539,
+            "a": "h2.stop-name \"King St West at Spadina \"",
+            "b": "span.search-title \"Bay St at King St West\""
+          },
+          {
+            "area": 3230,
+            "a": "p.state-body \"This stop's live board i\"",
+            "b": "span.search-title \"Bloor St West at South K\""
+          },
+          {
+            "area": 2465,
+            "a": "button.searchfield-input \"Where to?\"",
+            "b": "input.search-input"
+          },
+          {
+            "area": 1951,
+            "a": "button.dep-track \"View route\"",
+            "b": "span.search-title \"Bloor St West at The Kin\""
+          },
+          {
+            "area": 1163,
+            "a": "span.dep-dest \"Dundas West Station\"",
+            "b": "span.search-title \"Bloor St West at The Kin\""
+          },
+          {
+            "area": 1111,
+            "a": "h2.stop-name \"King St West at Spadina \"",
+            "b": "span.search-fact \"1.5 km away\""
+          },
+          {
+            "area": 982,
+            "a": "span.stop-fact \"Stop 15647\"",
+            "b": "span.search-title \"Adelaide St West at Yong\""
+          },
+          {
+            "area": 948,
+            "a": "span.stop-fact \"4 min walk\"",
+            "b": "span.search-title \"Adelaide St West at Yong\""
+          },
+          {
+            "area": 792,
+            "a": "span.pill \"Scheduled\"",
+            "b": "span.search-title \"Bloor St West at The Kin\""
+          }
+        ],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 1,
+        "hits": [
+          {
+            "el": "div.app-body",
+            "scrollH": 970,
+            "clientH": 782,
+            "text": "GhostBus\nLive\nWhere to?\nYou\n4 min walk\n5"
+          }
+        ]
+      }
+    },
+    "plan": {
+      "state": {
+        "bodyTextLen": 784,
+        "stopHeader": null,
+        "searchOpen": false,
+        "searchRows": 0,
+        "planLegs": 3,
+        "planTotal": "About 30 min door to door",
+        "stateTitle": null,
+        "tab": "Plan"
+      },
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    }
+  },
+  "mobile-dark-frCA": {
+    "booted": {
+      "bodyTextLen": 958,
+      "stopHeader": "King St West at Spadina Ave West Side",
+      "searchOpen": false,
+      "searchRows": 0,
+      "planLegs": 0,
+      "planTotal": null,
+      "stateTitle": "Aucun départ dans les 90 prochaines minutes",
+      "tab": "À proximité"
+    },
+    "nearby": {
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    },
+    "search": {
+      "state": {
+        "bodyTextLen": 1841,
+        "stopHeader": "King St West at Spadina Ave West Side",
+        "searchOpen": true,
+        "searchRows": 14,
+        "planLegs": 0,
+        "planTotal": null,
+        "stateTitle": "Aucun départ dans les 90 prochaines minutes",
+        "tab": "À proximité"
+      },
+      "overlap": {
+        "trueOverlaps": 43,
+        "top": [
+          {
+            "area": 5165,
+            "a": "h3.state-title \"Aucun départ dans les 90\"",
+            "b": "span.search-title \"Atlantic Ave at King St \""
+          },
+          {
+            "area": 4956,
+            "a": "p.state-body \"Le tableau en direct de \"",
+            "b": "span.search-title \"Bloor St West at South K\""
+          },
+          {
+            "area": 4539,
+            "a": "h2.stop-name \"King St West at Spadina \"",
+            "b": "span.search-title \"Bay St at King St West\""
+          },
+          {
+            "area": 2229,
+            "a": "button.searchfield-input \"Où allez-vous?\"",
+            "b": "input.search-input"
+          },
+          {
+            "area": 1475,
+            "a": "div.dep-next \"Prochain dans 14 min\"",
+            "b": "span \"↑ ↓ naviguer\""
+          },
+          {
+            "area": 1438,
+            "a": "button.dep-track \"Voir la ligne\"",
+            "b": "span.search-title \"Bloor St West at The Kin\""
+          },
+          {
+            "area": 1054,
+            "a": "span.stop-fact \"4 min à pied\"",
+            "b": "span.search-title \"Adelaide St West at Yong\""
+          },
+          {
+            "area": 984,
+            "a": "span.stop-fact \"Arrêt 15647\"",
+            "b": "span.search-title \"Adelaide St West at Yong\""
+          },
+          {
+            "area": 905,
+            "a": "span.dep-num \"4 h 46\"",
+            "b": "span.search-title \"Bloor St West at The Kin\""
+          },
+          {
+            "area": 885,
+            "a": "h3.state-title \"Aucun départ dans les 90\"",
+            "b": "span.search-fact \"Arrêt 14540\""
+          }
+        ],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 1,
+        "hits": [
+          {
+            "el": "div.app-body",
+            "scrollH": 993,
+            "clientH": 782,
+            "text": "GhostBus\nEn direct\nOù allez-vous?\nVous\n4"
+          }
+        ]
+      }
+    },
+    "plan": {
+      "state": {
+        "bodyTextLen": 928,
+        "stopHeader": null,
+        "searchOpen": false,
+        "searchRows": 0,
+        "planLegs": 3,
+        "planTotal": "Environ 30 min de porte à porte",
+        "stateTitle": null,
+        "tab": "Trajet"
+      },
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    }
+  },
+  "mobile-light-frCA": {
+    "booted": {
+      "bodyTextLen": 958,
+      "stopHeader": "King St West at Spadina Ave West Side",
+      "searchOpen": false,
+      "searchRows": 0,
+      "planLegs": 0,
+      "planTotal": null,
+      "stateTitle": "Aucun départ dans les 90 prochaines minutes",
+      "tab": "À proximité"
+    },
+    "nearby": {
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    },
+    "search": {
+      "state": {
+        "bodyTextLen": 1841,
+        "stopHeader": "King St West at Spadina Ave West Side",
+        "searchOpen": true,
+        "searchRows": 14,
+        "planLegs": 0,
+        "planTotal": null,
+        "stateTitle": "Aucun départ dans les 90 prochaines minutes",
+        "tab": "À proximité"
+      },
+      "overlap": {
+        "trueOverlaps": 43,
+        "top": [
+          {
+            "area": 5165,
+            "a": "h3.state-title \"Aucun départ dans les 90\"",
+            "b": "span.search-title \"Atlantic Ave at King St \""
+          },
+          {
+            "area": 4956,
+            "a": "p.state-body \"Le tableau en direct de \"",
+            "b": "span.search-title \"Bloor St West at South K\""
+          },
+          {
+            "area": 4539,
+            "a": "h2.stop-name \"King St West at Spadina \"",
+            "b": "span.search-title \"Bay St at King St West\""
+          },
+          {
+            "area": 2229,
+            "a": "button.searchfield-input \"Où allez-vous?\"",
+            "b": "input.search-input"
+          },
+          {
+            "area": 1475,
+            "a": "div.dep-next \"Prochain dans 14 min\"",
+            "b": "span \"↑ ↓ naviguer\""
+          },
+          {
+            "area": 1438,
+            "a": "button.dep-track \"Voir la ligne\"",
+            "b": "span.search-title \"Bloor St West at The Kin\""
+          },
+          {
+            "area": 1054,
+            "a": "span.stop-fact \"4 min à pied\"",
+            "b": "span.search-title \"Adelaide St West at Yong\""
+          },
+          {
+            "area": 984,
+            "a": "span.stop-fact \"Arrêt 15647\"",
+            "b": "span.search-title \"Adelaide St West at Yong\""
+          },
+          {
+            "area": 905,
+            "a": "span.dep-num \"4 h 46\"",
+            "b": "span.search-title \"Bloor St West at The Kin\""
+          },
+          {
+            "area": 885,
+            "a": "h3.state-title \"Aucun départ dans les 90\"",
+            "b": "span.search-fact \"Arrêt 14540\""
+          }
+        ],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 1,
+        "hits": [
+          {
+            "el": "div.app-body",
+            "scrollH": 993,
+            "clientH": 782,
+            "text": "GhostBus\nEn direct\nOù allez-vous?\nVous\n4"
+          }
+        ]
+      }
+    },
+    "plan": {
+      "state": {
+        "bodyTextLen": 928,
+        "stopHeader": null,
+        "searchOpen": false,
+        "searchRows": 0,
+        "planLegs": 3,
+        "planTotal": "Environ 30 min de porte à porte",
+        "stateTitle": null,
+        "tab": "Trajet"
+      },
+      "overlap": {
+        "trueOverlaps": 0,
+        "top": [],
+        "hScroll": false
+      },
+      "clip": {
+        "clipHits": 0,
+        "hits": []
+      }
+    }
+  }
+}

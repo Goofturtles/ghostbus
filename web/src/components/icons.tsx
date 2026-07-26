@@ -60,6 +60,13 @@ export const WarningIcon = (p: P) => (
   <svg {...base(p)}><path d="M12 4 3 19h18L12 4Z" /><path d="M12 10v4M12 17h.01" /></svg>
 );
 export const ChevronIcon = (p: P) => (<svg {...base(p)}><path d="m9 6 6 6-6 6" /></svg>);
+export const CloseIcon = (p: P) => (<svg {...base(p)}><path d="M6 6l12 12M18 6 6 18" /></svg>);
+export const ArrowRightIcon = (p: P) => (
+  <svg {...base(p)}><path d="M4 12h15" /><path d="m13 6 6 6-6 6" /></svg>
+);
+export const FlagIcon = (p: P) => (
+  <svg {...base(p)}><path d="M6 21V4" /><path d="M6 5h10.5l-1.8 3.5L16.5 12H6" /></svg>
+);
 export const HomeIcon = (p: P) => (
   <svg {...base(p)}><path d="M4 11 12 4l8 7" /><path d="M6 10v9h12v-9" /></svg>
 );

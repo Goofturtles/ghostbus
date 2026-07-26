@@ -1,0 +1,90 @@
+{
+  "desktop-dark-search": {
+    "bodyTextLen": 1485,
+    "stopHeader": "King St West at Spadina Ave West Side",
+    "searchOpen": true,
+    "searchRows": 9,
+    "planLegs": 0,
+    "planTotal": null,
+    "stateTitle": "No departures in the next 90 minutes",
+    "tab": "Nearby"
+  },
+  "desktop-dark-select": {
+    "chosen": "Dundas West Station - Westbound Platform",
+    "after": {
+      "bodyTextLen": 725,
+      "stopHeader": "Dundas West Station - Westbound Platform",
+      "searchOpen": false,
+      "searchRows": 0,
+      "planLegs": 0,
+      "planTotal": null,
+      "stateTitle": "No departures in the next 90 minutes",
+      "tab": "Nearby"
+    }
+  },
+  "desktop-dark-plan": {
+    "bodyTextLen": 1019,
+    "stopHeader": null,
+    "searchOpen": false,
+    "searchRows": 0,
+    "planLegs": 3,
+    "planTotal": "About 31 min door to door",
+    "stateTitle": null,
+    "tab": "Plan"
+  },
+  "desktop-dark-transfer": {
+    "bodyTextLen": 764,
+    "stopHeader": null,
+    "searchOpen": false,
+    "searchRows": 0,
+    "planLegs": 0,
+    "planTotal": null,
+    "stateTitle": "This trip needs a transfer",
+    "tab": "Plan"
+  },
+  "desktop-dark-errors": [],
+  "mobile-light-search": {
+    "bodyTextLen": 1420,
+    "stopHeader": "King St West at Spadina Ave West Side",
+    "searchOpen": true,
+    "searchRows": 9,
+    "planLegs": 0,
+    "planTotal": null,
+    "stateTitle": "No departures in the next 90 minutes",
+    "tab": "Nearby"
+  },
+  "mobile-light-select": {
+    "chosen": "Dundas West Station - Westbound Platform",
+    "after": {
+      "bodyTextLen": 688,
+      "stopHeader": "Dundas West Station - Westbound Platform",
+      "searchOpen": false,
+      "searchRows": 0,
+      "planLegs": 0,
+      "planTotal": null,
+      "stateTitle": "No departures in the next 90 minutes",
+      "tab": "Nearby"
+    }
+  },
+  "mobile-light-plan": {
+    "bodyTextLen": 784,
+    "stopHeader": null,
+    "searchOpen": false,
+    "searchRows": 0,
+    "planLegs": 3,
+    "planTotal": "About 30 min door to door",
+    "stateTitle": null,
+    "tab": "Plan"
+  },
+  "mobile-light-transfer": {
+    "bodyTextLen": 563,
+    "stopHeader": null,
+    "searchOpen": false,
+    "searchRows": 0,
+    "planLegs": 0,
+    "planTotal": null,
+    "stateTitle": "This trip needs a transfer",
+    "tab": "Plan"
+  },
+  "mobile-light-errors": []
+}

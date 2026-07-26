@@ -3,16 +3,33 @@ import { Wordmark, StatusPill } from './Primitives';
 import { SearchIcon, SlidersIcon, PersonIcon } from './icons';
 import { useStore } from '@/store';
 
-/** Presentational search field. Non-functional this phase (Plan/search lands
- *  later) — hidden from assistive tech so it never reads as a live control. */
-function SearchDisplay({ hint }: { hint?: boolean }) {
+/**
+ * The search trigger.
+ *
+ * It was a `<div aria-hidden="true">` with a fake placeholder inside it — a control
+ * that looked live and did nothing, which is the exact class of dishonesty this app
+ * argues against. It is a real button now: it opens the real search sheet, it carries
+ * its own accessible name, and the ⌘K hint it renders is a shortcut that genuinely
+ * works (see the global key handler in App.tsx).
+ *
+ * The field itself lives in the sheet rather than here so there is ONE input, one
+ * focus trap and one listbox at every breakpoint, instead of a phone copy and a
+ * desktop copy that can drift apart.
+ */
+function SearchTrigger({ hint }: { hint?: boolean }) {
   const { t } = useTranslation();
+  const openSearch = useStore((s) => s.openSearch);
   return (
-    <div className="searchfield-input" aria-hidden="true">
-      <SearchIcon width={18} height={18} />
+    <button
+      className="searchfield-input searchfield-trigger"
+      aria-haspopup="dialog"
+      aria-label={t('search.open')}
+      onClick={() => openSearch('stop')}
+    >
+      <SearchIcon width={18} height={18} aria-hidden />
       <span className="sf-placeholder truncate">{t('search.placeholder')}</span>
-      {hint && <kbd className="sf-kbd">{t('search.hint')}</kbd>}
-    </div>
+      {hint && <kbd className="sf-kbd" aria-hidden>{t('search.hint')}</kbd>}
+    </button>
   );
 }
 
@@ -50,7 +67,7 @@ export function TopBar() {
       </div>
       <div className="topbar-center">
         <div className="searchfield sf-bar">
-          <SearchDisplay hint />
+          <SearchTrigger hint />
         </div>
       </div>
       <div className="topbar-right">
@@ -71,7 +88,7 @@ export function MobileTopStrip() {
         <StatusPill compact />
       </div>
       <div className="searchfield sf-mobile">
-        <SearchDisplay />
+        <SearchTrigger />
         <ProfileButton glyph="sliders" />
       </div>
     </header>

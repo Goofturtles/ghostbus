@@ -10,6 +10,13 @@
   --ease-in: cubic-bezier(0.4, 0, 1, 1);
   --dur-micro: 240ms;
   --dur-reveal: 720ms;
+  /* Drawers and sheets: long enough to read as a surface arriving, short enough
+     that a rider who opened it on purpose is not waiting for it. */
+  --dur-sheet: 500ms;
+  /* Staggered list entry. One base delay, one per-item step, declared here so
+     every staggered list in the app cascades at the same rate. */
+  --stagger-base: 150ms;
+  --stagger-step: 70ms;
 
   /* Brand + status — meaning-locked, one job per color. */
   --brand: #8944ab;         /* wordmark + the app accent (selection, Catch, walk path) */

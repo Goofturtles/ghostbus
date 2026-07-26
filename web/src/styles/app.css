@@ -138,6 +138,13 @@
 .sp-stale { background: rgba(255, 176, 32, 0.16); color: var(--warn-text); }
 .sp-sched { background: var(--surface-2); color: var(--text-2); }
 .sp-offline { background: rgba(255, 69, 58, 0.15); color: var(--danger-text); }
+/* OUR OWN trouble — the app's accent blue, NOT the red it used to borrow from
+   `sp-offline`. Red said "something is broken"; this state is the app throttling or
+   restarting itself and already recovering, and the colour should not overstate it.
+   See DECISIONS §45. */
+.sp-catchup { background: rgba(52, 120, 246, 0.16); color: var(--accent); }
+/* A RECORDING — amber, the same family as the DEMO badge in the banner. */
+.sp-demo { background: rgba(255, 176, 32, 0.2); color: var(--warn-text); font-weight: 700; letter-spacing: 0.04em; }
 .sp-dot {
   width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto;
   background: var(--live);
@@ -459,6 +466,28 @@
 .loc-note svg, .feed-banner svg { flex: 0 0 auto; }
 .loc-note:active { transform: scale(0.99); }
 .feed-banner { background: rgba(255, 176, 32, 0.14); color: var(--warn-text); }
+
+/* THE THREE ATTRIBUTION BANNERS, and they are deliberately three different colours —
+   a rider should be able to tell "this is us" from "this is the TTC" without reading.
+   See DECISIONS §45. Only ONE of these can render at a time (NearbyPanel gates them
+   mutually), so they never stack and never compete for the same slot.
+
+   OURS — blue, the app's own accent family. It reads as informational rather than as
+   an alarm, because it is: we are already retrying and the rider need do nothing. */
+.feed-banner-ours { background: rgba(52, 120, 246, 0.14); color: var(--accent); }
+
+/* A RECORDING — amber, matching the DEMO badge it carries. */
+.feed-banner-demo { background: rgba(255, 176, 32, 0.16); color: var(--warn-text); }
+.demo-badge {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--warn-text);
+  color: var(--bg);
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em;
+  /* Digits and caps only, so line-height 1.25 is still clear of any descender. */
+  line-height: 1.25;
+}
 
 /* ============================ current stop ============================ */
 .stop-head {
@@ -1119,6 +1148,351 @@
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes sheet-up { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
 
+/* ============================ search sheet ============================ */
+/* A Spotlight-shaped surface: it arrives from the top, sits on a fading scrim, and
+   is the one place in the app that is genuinely LIQUID GLASS — translucent fill,
+   heavy backdrop blur, hairline rim. Everything under it keeps showing through,
+   which is what tells a rider they have not left the screen they were on.
+
+   The scrim also LOCKS the scroll behind it (see [data-modal] at the foot of this
+   block): a sheet you can scroll the page behind reads as an overlay, not a mode. */
+.search-scrim {
+  align-items: flex-start;
+  justify-content: center;
+  padding: max(env(safe-area-inset-top, 0px), var(--s3)) var(--s3) var(--s3);
+  /* Backdrop scrim fades in BEHIND the surface rather than appearing with it. */
+  background: rgba(0, 0, 0, 0.34);
+  -webkit-backdrop-filter: saturate(115%) blur(2px);
+  backdrop-filter: saturate(115%) blur(2px);
+  animation: fade var(--dur-micro) var(--ease-out) both;
+}
+
+.search-sheet {
+  width: 100%;
+  max-width: 560px;
+  max-height: min(88vh, 720px);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-radius: var(--r-lg);
+  padding: var(--s3) var(--s3) var(--s2);
+  /* The hairline rim that makes a glass surface read as a pane of something rather
+     than as a lighter patch of the page. */
+  box-shadow: var(--shadow-float), var(--inner-top), 0 0 0 1px var(--hairline-2);
+  animation: sheet-drop var(--dur-sheet) var(--ease-out) both;
+}
+
+/* The field. A REAL input — see the note at the top of SearchSheet.tsx. */
+.search-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
+  padding: var(--s1) var(--s1) var(--s3);
+}
+.search-glyphs {
+  position: relative;
+  flex: 0 0 auto;
+  width: 22px; height: 22px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--text-3);
+}
+/* Icon state swap: the two glyphs cross-fade while rotating and scaling, so the
+   field never hard-cuts between two different pictures. Compositor-only. */
+.search-glyph {
+  position: absolute;
+  inset: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition:
+    opacity var(--dur-micro) var(--ease-out),
+    transform var(--dur-micro) var(--ease-spring);
+}
+.glyph-on { opacity: 1; transform: rotate(0deg) scale(1); }
+.glyph-off { opacity: 0; transform: rotate(90deg) scale(0.5); }
+
+.search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 40px;
+  border: 0;
+  background: none;
+  outline: none;
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text);
+}
+.search-input::placeholder { color: var(--text-3); font-weight: 500; }
+.search-clear,
+.search-close {
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding: 7px 13px;
+  border-radius: var(--r-pill);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.search-clear { color: var(--text-2); }
+.search-clear:hover { color: var(--text); }
+
+.search-results {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 var(--s1) var(--s2);
+}
+.search-section + .search-section { margin-top: var(--s4); }
+.search-section-head { padding: 0 var(--s3) var(--s2); }
+.search-rows { display: flex; flex-direction: column; gap: 2px; }
+
+.search-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  min-width: 0;
+  min-height: 56px;
+  padding: var(--s2) var(--s3);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background var(--dur-micro) var(--ease-out);
+}
+/* One highlight, driven by aria-selected's own source of truth — keyboard and
+   pointer land on exactly the same visual state, so the two can never disagree. */
+.search-row-active { background: var(--brand-soft); }
+.search-row:active { background: rgba(137, 68, 171, 0.22); }
+
+.search-tile {
+  flex: 0 0 auto;
+  width: 34px; height: 34px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text-2);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+}
+.search-row-active .search-tile { background: var(--brand); color: var(--on-brand); box-shadow: none; }
+
+.search-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.search-title {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  font-size: 14.5px; font-weight: 700; line-height: 1.35; color: var(--text);
+  min-width: 0; overflow-wrap: anywhere;
+}
+.search-route-dest { min-width: 0; overflow-wrap: anywhere; }
+.search-sub { font-size: 12px; color: var(--text-3); line-height: 1.45; min-width: 0; }
+/* Each fact is atomic and carries its own separator, so a wrap can never leave a
+   dangling "·" or split "230 m" across two lines. Same rule as .stop-fact. */
+.search-fact { white-space: nowrap; }
+.search-fact + .search-fact::before {
+  content: '·';
+  content: '·' / '';
+  margin: 0 6px;
+  color: var(--text-3);
+}
+
+/* The next-departure chip — present only when a real board answered. */
+.search-chip {
+  flex: 0 0 auto;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 8px;
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  max-width: 46%;
+}
+.search-chip-live { background: rgba(52, 199, 89, 0.16); }
+.search-chip-time {
+  font-size: 12px; font-weight: 700; line-height: 1.5; color: var(--text-2);
+  white-space: nowrap;
+}
+.search-chip-live .search-chip-time { color: var(--live-text); }
+.search-go { flex: 0 0 auto; color: var(--text-3); display: inline-flex; }
+
+.search-note {
+  margin: 0;
+  padding: var(--s3) var(--s3) var(--s2);
+  font-size: 13px; line-height: 1.55; color: var(--text-2);
+}
+.search-note-quiet { color: var(--text-3); font-size: 12px; }
+.search-empty { padding: var(--s2) 0 0; }
+.search-empty-title {
+  margin: 0;
+  padding: 0 var(--s3);
+  font-size: 15px; font-weight: 700; line-height: 1.45; color: var(--text);
+  overflow-wrap: anywhere;
+}
+.search-empty + .search-note { padding-top: var(--s1); }
+.search-skeletons { padding: var(--s2) var(--s3) 0; }
+.search-skeleton { height: 56px; border-radius: 12px; }
+
+.search-hints {
+  flex: 0 0 auto;
+  margin: 0;
+  display: flex; flex-wrap: wrap; gap: var(--s2) var(--s4);
+  padding: var(--s2) var(--s3) var(--s2);
+  font-size: 11px; line-height: 1.6; color: var(--text-3);
+  box-shadow: inset 0 1px 0 var(--hairline);
+}
+.search-hints span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.search-hints kbd {
+  font: inherit; font-weight: 700;
+  padding: 1px 5px; border-radius: 5px;
+  background: var(--surface-2); color: var(--text-2);
+  line-height: 1.5;
+}
+
+/* The search trigger is a BUTTON now, not a decorative div. It keeps the field's
+   look and gains the affordances a control has to have. */
+.searchfield-trigger {
+  text-align: left;
+  transition: background var(--dur-micro) var(--ease-out), transform var(--dur-micro) var(--ease-spring);
+}
+.searchfield-trigger:hover { background: var(--surface-2); }
+.searchfield-trigger:active { transform: scale(0.99); }
+
+/* ============================ plan tab ============================ */
+.plan-panel { display: flex; flex-direction: column; gap: var(--s4); }
+.plan-head { display: flex; flex-direction: column; gap: 4px; }
+.plan-title { margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.3; }
+.plan-sub { margin: 0; font-size: 14px; line-height: 1.5; color: var(--text-2); max-width: 42ch; }
+
+.plan-dest { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
+.plan-dest-btn {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex; align-items: center; gap: var(--s3);
+  min-height: 52px;
+  padding: 0 var(--s3) 0 var(--s4);
+  border-radius: 14px;
+  background: var(--field);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+  text-align: left;
+  transition: background var(--dur-micro) var(--ease-out), transform var(--dur-micro) var(--ease-spring);
+}
+.plan-dest-btn:hover { background: var(--surface-2); }
+.plan-dest-btn:active { transform: scale(0.995); }
+.plan-dest-glyph { flex: 0 0 auto; display: inline-flex; color: var(--accent); }
+.plan-dest-text { flex: 1 1 auto; min-width: 0; font-size: 15px; font-weight: 600; line-height: 1.4; }
+.plan-dest-btn svg:last-child { flex: 0 0 auto; color: var(--text-3); }
+.plan-dest-clear {
+  flex: 0 0 auto;
+  width: 44px; height: 44px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  color: var(--text-3);
+  transition: color var(--dur-micro) var(--ease-out), transform var(--dur-micro) var(--ease-spring);
+}
+.plan-dest-clear:hover { color: var(--danger-text); }
+.plan-dest-clear:active { transform: scale(0.92); }
+
+.plan-cta { margin-top: var(--s2); }
+.plan-maps { margin-top: var(--s3); }
+.plan-recents { margin-bottom: calc(var(--s2) * -1); }
+.plan-skeleton { height: 84px; border-radius: var(--r-md); }
+
+.plan-result { display: flex; flex-direction: column; gap: var(--s4); }
+.plan-summary {
+  display: flex; flex-direction: column; gap: 3px;
+  padding: var(--s4);
+  border-radius: var(--r-md);
+  background: linear-gradient(170deg, var(--brand-soft), transparent 70%), var(--surface);
+  box-shadow: var(--shadow-card), var(--inner-top);
+}
+.plan-total {
+  margin: 2px 0 0;
+  font-size: 27px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.25;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.plan-arrive { margin: 0; font-size: 14px; line-height: 1.5; color: var(--text-2); overflow-wrap: anywhere; }
+.plan-date { color: var(--accent); font-weight: 600; }
+
+.plan-legs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s3); }
+.plan-leg {
+  display: flex; align-items: flex-start; gap: var(--s3);
+  padding: var(--s3) var(--s4);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-card), var(--inner-top);
+  min-width: 0;
+}
+.plan-leg-glyph {
+  flex: 0 0 auto;
+  width: 34px; height: 34px; border-radius: var(--r-sm);
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--surface-2); color: var(--text-2);
+}
+/* The ride is the leg that matters; the two walks are the connective tissue. */
+.plan-leg-glyph-ride { background: var(--brand-soft); color: var(--accent); }
+.plan-leg-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+/* Wrapping, never truncating: every line here is part of a claim. */
+.plan-leg-line { margin: 0; font-size: 14.5px; font-weight: 700; line-height: 1.45; color: var(--text); overflow-wrap: anywhere; }
+.plan-ride-id { display: flex; align-items: center; flex-wrap: wrap; gap: 6px var(--s2); }
+.plan-ride-dest { min-width: 0; overflow-wrap: anywhere; }
+.plan-leg-sub { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--text-2); overflow-wrap: anywhere; }
+.plan-leg-evidence {
+  margin: 4px 0 0;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px var(--s2);
+  min-width: 0;
+}
+.plan-basis { margin: 0; font-size: 12px; line-height: 1.6; color: var(--text-3); }
+.plan-fineprint { margin: var(--s2) 0 0; font-size: 12px; line-height: 1.55; color: var(--text-3); }
+
+/* ============================ staggered reveals ============================ */
+/* Lists enter with translate + opacity only, so the whole cascade stays on the
+   compositor. nth-child rather than an inline custom property, matching the
+   .dep-list rule above — and because a React row that survives a re-render keeps
+   its DOM node and therefore does not replay. */
+.search-row,
+.plan-legs > .plan-leg {
+  animation: reveal-row var(--dur-sheet) var(--ease-out) both;
+}
+.search-rows > .search-row:nth-child(1),
+.plan-legs > .plan-leg:nth-child(1) { animation-delay: var(--stagger-base); }
+.search-rows > .search-row:nth-child(2),
+.plan-legs > .plan-leg:nth-child(2) { animation-delay: calc(var(--stagger-base) + var(--stagger-step)); }
+.search-rows > .search-row:nth-child(3),
+.plan-legs > .plan-leg:nth-child(3) { animation-delay: calc(var(--stagger-base) + 2 * var(--stagger-step)); }
+.search-rows > .search-row:nth-child(4) { animation-delay: calc(var(--stagger-base) + 3 * var(--stagger-step)); }
+.search-rows > .search-row:nth-child(5) { animation-delay: calc(var(--stagger-base) + 4 * var(--stagger-step)); }
+/* Capped: past the sixth row the cascade stops growing, so a long result list
+   never leaves its tail waiting a second to appear. */
+.search-rows > .search-row:nth-child(n + 6) { animation-delay: calc(var(--stagger-base) + 5 * var(--stagger-step)); }
+
+.plan-summary { animation: reveal-row var(--dur-sheet) var(--ease-out) both; }
+
+@keyframes reveal-row {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes sheet-drop {
+  from { opacity: 0; transform: translateY(-18px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+
+/* NOTE ON SCROLL LOCKING. There is deliberately no `overflow: hidden` lock here.
+   The scrim is `position: fixed; inset: 0`, and `body` is already `overflow: hidden`
+   (global.css) — so a wheel or touch gesture over the scrim finds nothing scrollable
+   anywhere in its ancestor chain and the page behind simply cannot move. Adding a
+   lock on top of that bought nothing and cost something real: it turned .app-body
+   (phone) and .side-scroll (desktop) into `overflow: hidden` boxes whose content
+   overflows, which is precisely what the §D5 clipping audit exists to flag. Measured
+   both ways — see .data/feat_behaviour.cjs, which scrolls the regions directly. */
+
+/* prefers-reduced-motion: global.css already collapses every duration to ~0, which
+   renders the FINAL state of each of the above rather than suppressing it. The
+   delays have to be flattened too, or a staggered row would simply be invisible
+   for its delay and then appear — which is the flicker the setting exists to stop. */
+@media (prefers-reduced-motion: reduce) {
+  .search-row,
+  .plan-legs > .plan-leg,
+  .plan-summary,
+  .search-rows > .search-row:nth-child(n) { animation-delay: 0ms !important; }
+}
+
 /* ======================================================================== */
 /* ============================ DESKTOP SPLIT ============================= */
 /* ======================================================================== */
@@ -1268,6 +1642,14 @@
 
   .alerts-title { font-size: 21px; }
   .placeholder-view { min-height: 32vh; }
+
+  /* The search sheet clears the window chrome instead of covering it, so the
+     wordmark and the Live pill stay readable behind the glass — which is the whole
+     point of a translucent surface. */
+  .search-scrim { padding-top: calc(var(--topbar-h) + var(--s3)); }
+  .search-sheet { max-height: min(76vh, 640px); }
+  .plan-title { font-size: 21px; }
+  .plan-total { font-size: 25px; }
 }
 
 /* ======================================================================== */
@@ -1329,6 +1711,52 @@
 
   /* (The map control stack's phone placement lives in map/map.css — that file is
      injected after this one and is the owner of everything under `.map-card`.) */
+
+  /* ---- a full-screen sheet is the screen, and has to behave like one ----------
+     MEASURED (§F probe, 390x844, search sheet open): 42 true overlaps in en and 43
+     in fr-CA, every one of them a line of sheet text sitting on a line of app text
+     showing THROUGH the glass — "No departures in the next 90 minutes" reading
+     straight through the results list. That is the user's original complaint,
+     verbatim, reintroduced by a translucent surface at a width where it covers
+     everything.
+
+     Glass earns its keep on the desktop panel, which is 560px wide and genuinely has
+     a map around it to show through. At 390px there is nothing behind the sheet worth
+     seeing, so the fill goes opaque and the app behind it steps out of the picture
+     entirely: not painted, not reachable by a screen reader, and not something sheet
+     text can be read on top of. The map is left alone — hiding a live WebGL canvas to
+     satisfy a DOM probe would be a real risk taken for a cosmetic reason, and the
+     probe already excludes map internals. */
+  .search-scrim { padding: 0; align-items: stretch; background: var(--bg); }
+  .search-sheet {
+    max-width: none;
+    max-height: none;
+    height: 100%;
+    border-radius: 0;
+    box-shadow: none;
+    background: var(--surface-solid);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    padding: calc(env(safe-area-inset-top, 0px) + var(--s3)) var(--s3)
+             calc(env(safe-area-inset-bottom, 0px) + var(--s1));
+  }
+  :root[data-modal] .mobile-top,
+  :root[data-modal] .pane-side,
+  :root[data-modal] .tabbar { visibility: hidden; }
+
+  /* The next-departure chip takes its OWN line on a phone.
+     Beside a wrapping stop name in a 390px sheet it squeezed "Dundas West Station -
+     Eastbound Platform" onto four lines — and since only the HIGHLIGHTED row carries
+     a chip, arrowing down the list made each row swell and collapse as the highlight
+     passed over it. A full-width line costs one row of height and removes the reflow
+     outright. Indented to the text column so it still reads as part of the row. */
+  .search-row { flex-wrap: wrap; }
+  .search-chip {
+    flex: 1 0 100%;
+    max-width: none;
+    justify-content: flex-start;
+    margin-left: calc(34px + var(--s3));
+  }
 
   /* Keep the 44px hit target, draw a 36px ring: the reference's save control is a
      ~35px circle with a quiet ring, and a full 44px purple ring outweighed it. */
