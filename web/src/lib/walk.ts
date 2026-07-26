@@ -10,3 +10,40 @@ export function walkSeconds(metres: number, mps: number, routeFactor = 1.25): nu
   if (!Number.isFinite(metres) || metres <= 0 || !Number.isFinite(mps) || mps <= 0) return 0;
   return Math.round((metres / mps) * routeFactor);
 }
+
+/**
+ * How a walk's distance was arrived at. The distinction is not cosmetic: it decides
+ * both the arithmetic below and the wording on screen.
+ *
+ *   'routed' — measured along a real line of ways this device has the geometry for.
+ *              The one the map draws.
+ *   'direct' — the straight line between the two points, because no walkable line
+ *              could be found. An estimate, and every surface that prints it must
+ *              say so.
+ */
+export type WalkKind = 'routed' | 'direct';
+
+/** A walk with its provenance attached, as produced by the map's routing pass. */
+export interface MeasuredWalk {
+  kind: WalkKind;
+  /** metres along `kind === 'routed'` geometry, else straight-line metres. */
+  distanceM: number;
+  seconds: number;
+  /** the boarding stop this walk ends at — how a consumer knows it is theirs. */
+  stopId: string;
+}
+
+/**
+ * Seconds for a walk of a known kind.
+ *
+ * THE ROUTE FACTOR IS AN APOLOGY FOR NOT KNOWING THE ROUTE. 1.25 was a documented
+ * guess at how much longer the real pavement is than the crow's flight — the best
+ * this app could do while it drew walks as straight lines. Once the walk has been
+ * measured along actual ways, applying it again would inflate a real number by a
+ * correction for an error that is no longer being made: a routed 620 m would be
+ * billed as 775 m. So a routed walk is timed at face value, and only the straight-
+ * line fallback keeps the factor — where it still means what it always meant.
+ */
+export function walkLegSeconds(kind: WalkKind, metres: number, mps: number): number {
+  return walkSeconds(metres, mps, kind === 'routed' ? 1 : 1.25);
+}
