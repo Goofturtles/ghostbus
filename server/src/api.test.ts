@@ -327,6 +327,8 @@ const fakePoller: PollerHandle = {
   getMode: () => ({
     mode: 'live',
     agency: 'ttc',
+    // Live: the board it reads and the namespace it writes are the same agency.
+    staticAgency: 'ttc',
     dataNowMs: Date.now(),
     wallNowMs: Date.now(),
     demo: null,
@@ -570,7 +572,8 @@ test('/api/health on a DEMO poller reports demo, and its provenance survives the
     ...fakePoller,
     now: () => provenance.captureStartMs,
     getMode: () => ({
-      mode: 'demo', agency: 'ttc-demo',
+      // THE SEAM, stated: observations under 'ttc-demo', the published board under 'ttc'.
+      mode: 'demo', agency: 'ttc-demo', staticAgency: 'ttc',
       dataNowMs: provenance.captureStartMs, wallNowMs: Date.now(), demo: provenance,
     }),
   };
@@ -623,7 +626,7 @@ function seamSideOf(sql: string): 'static' | 'observation' | null {
 
 const demoPoller: PollerHandle = {
   ...fakePoller,
-  getMode: () => ({ mode: 'demo', agency: 'ttc-demo', dataNowMs: Date.now(), wallNowMs: Date.now(), demo: null }),
+  getMode: () => ({ mode: 'demo', agency: 'ttc-demo', staticAgency: 'ttc', dataNowMs: Date.now(), wallNowMs: Date.now(), demo: null }),
 };
 
 test('DEMO MODE reads the static schedule under "ttc" and observations under "ttc-demo"', async () => {
@@ -1157,4 +1160,64 @@ test('/api/plan keeps a departure inside the window and drops one outside it', a
   } finally {
     await app.close();
   }
+});
+
+// ---------------------------------------------------------------------------------
+// MULTI-AGENCY: the read path refuses to under-serve rather than silently halving coverage
+// ---------------------------------------------------------------------------------
+//
+// Phase 0 made the WRITE side multi-agency (a poller per agency, per-agency seeds and
+// aggregation). The READ side still binds one staticAgency and one modeAgency per request.
+// Booting in between would poll, store and aggregate every agency while serving only the
+// first — a rider in Mississauga getting the TTC's honest "no stops within 800 m" card
+// while MiWay's board sat in the database, unqueried. That is a quiet zero, so it is a
+// hard failure with an actionable message until the union queries land.
+
+function withAgencies(value: string | undefined, fn: () => Promise<void>): Promise<void> {
+  const prev = process.env.GHOSTBUS_AGENCIES;
+  if (value === undefined) delete process.env.GHOSTBUS_AGENCIES;
+  else process.env.GHOSTBUS_AGENCIES = value;
+  return fn().finally(() => {
+    if (prev === undefined) delete process.env.GHOSTBUS_AGENCIES;
+    else process.env.GHOSTBUS_AGENCIES = prev;
+  });
+}
+
+test('buildApi REFUSES to boot live with more agencies than it can serve', async () => {
+  await withAgencies('ttc,miway', async () => {
+    const db = fakeDb([{ when: 'FROM routes', rows: ROUTE_ROWS }]);
+    await assert.rejects(
+      () => buildApi({ db, poller: fakePoller }),
+      // The message must name the agencies AND the remedy — an operator reading only this
+      // line has to know what to do.
+      (e: Error) => /GHOSTBUS_AGENCIES lists 2 agencies \(ttc, miway\)/.test(e.message)
+        && /coverage silently halved/.test(e.message)
+        && /single agency/.test(e.message),
+      'a two-agency live boot must fail loudly, not serve half the coverage',
+    );
+  });
+});
+
+test('one agency boots normally — the refusal is not a blanket block', async () => {
+  await withAgencies('ttc', async () => {
+    const db = fakeDb([{ when: 'FROM routes', rows: ROUTE_ROWS }]);
+    const app = await buildApi({ db, poller: fakePoller });
+    try {
+      const res = await app.inject({ method: 'GET', url: '/api/health' });
+      assert.equal(res.statusCode, 200);
+    } finally { await app.close(); }
+  });
+});
+
+test('a DEMO instance is exempt: a fixture replays one agency by construction', async () => {
+  // The demo poller is pinned to the fixture's own agency in server.ts, so the multi-agency
+  // ambiguity cannot arise and refusing would only break Demo Mode.
+  await withAgencies('ttc,miway', async () => {
+    const db = fakeDb([{ when: 'FROM routes', rows: ROUTE_ROWS }]);
+    const app = await buildApi({ db, poller: demoPoller });
+    try {
+      const res = await app.inject({ method: 'GET', url: '/api/health' });
+      assert.equal(res.statusCode, 200);
+    } finally { await app.close(); }
+  });
 });

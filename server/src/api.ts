@@ -15,7 +15,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Db } from './db.ts';
-import { STATIC_AGENCY, type PollerHandle } from './poller.ts';
+import { type PollerHandle, type FeedRuntime } from './poller.ts';
+import { enabledAgencies } from './agencies.ts';
 import { parseBbox, pointInBbox } from './bbox.ts';
 import { selectEvidence, type Agg } from './eta.ts';
 import { WINDOW_DAYS } from './aggregate.ts';
@@ -81,6 +82,15 @@ const FORECAST_REFRESH_MS = 30 * 60_000; // the denominator query is heavy; twic
 interface RouteMeta { shortName: string | null; longName: string | null; routeType: number | null; color: string | null }
 
 /** Tasteful livery fallback when routes.color is blank, by GTFS route_type. */
+/**
+ * Composite cache key for anything scoped to (agency, id). U+001F never appears in a GTFS
+ * id, so two different pairs can never collide by concatenation — the same reasoning as
+ * `dedupeByKey` in engine.ts.
+ */
+function metaKey(agencyId: string, id: string): string {
+  return `${agencyId}${String.fromCharCode(31)}${id}`;
+}
+
 function colorFor(meta: RouteMeta | undefined): string {
   const raw = meta?.color?.trim();
   if (raw && /^[0-9a-fA-F]{6}$/.test(raw)) return raw.toUpperCase();
@@ -388,8 +398,37 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
    *   bug — and it is why `staticAgency` and `modeAgency` are now separate names that
    *   cannot be typo'd into each other.
    */
-  const staticAgency = STATIC_AGENCY;
+  // Read off the poller rather than a module constant, so the two names stay the two facts
+  // §48 established: which board is published, and whose observations these are. A second
+  // agency changes the first of those, and a demo replay changes the second.
+  const staticAgency = poller.getMode().staticAgency;
   const modeAgency = poller.getMode().agency;
+
+  /**
+   * THE READ PATH IS STILL SINGLE-AGENCY, AND IT SAYS SO OUT LOUD RATHER THAN UNDER-SERVING.
+   *
+   * Phase 0 made the WRITE side multi-agency: `server.ts` runs one poller per enabled
+   * agency, the seeder loads per-agency boards, and aggregation loops every agency. The
+   * READ side has not caught up — every query in this file binds one `staticAgency` and one
+   * `modeAgency`, so with two agencies enabled the API would poll, seed and aggregate both
+   * while serving only the first. A rider in Mississauga would get the TTC's honest
+   * "no stops within 800 m" card while MiWay data sat in the database, unqueried.
+   *
+   * That is a quiet zero — coverage silently halved — and it is precisely what this project
+   * refuses to ship. So multi-agency reads are not "coming soon" behind a half-working
+   * screen: booting in that state is a hard failure with an actionable message, until
+   * Phase 1 lands the union queries (`/api/stops`, `/nearby`, the nearest-stop fallback,
+   * arrivals, shape, plan, alerts, the ghosts-feed join and `/api/stats`) and removes this.
+   */
+  const enabled = enabledAgencies();
+  if (enabled.length > 1 && poller.getMode().mode === 'live') {
+    throw new Error(
+      `GHOSTBUS_AGENCIES lists ${enabled.length} agencies (${enabled.map((a) => a.id).join(', ')}), ` +
+      `but the API read path still serves exactly one ('${staticAgency}'). Booting would poll and ` +
+      `store every agency while showing riders only the first — coverage silently halved. ` +
+      `Run with a single agency until the Phase 1 union queries land.`,
+    );
+  }
 
   /**
    * The DATA clock. Live it is the wall clock; on a recording it is the capture instant of
@@ -404,22 +443,74 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
   const dataNow = (): number => poller.now();
 
   // ----- static caches loaded once (small, read-only) -----
+
+  /**
+   * KEYED BY (agency, route_id), NOT BY route_id.
+   *
+   * A bare `route_id` key is unique only WITHIN an agency, and measurement says the
+   * collisions are not hypothetical: across the GTA feeds, Brampton shares 45 route_ids
+   * with the TTC, MiWay 56, YRT 56. Keyed on the bare id, a Brampton bus would be rendered
+   * with a TTC route's short name and brand colour — a confident, wrong label, which is
+   * exactly the class of output this project exists not to produce.
+   *
+   * The composite key is built through `metaKey` so the delimiter is stated once. U+001F
+   * never appears in a GTFS id, matching `dedupeByKey` in engine.ts and the SEP in
+   * aggregate.ts.
+   */
   const routeMeta = new Map<string, RouteMeta>();
   for (const r of (await db.query<{ route_id: string; short_name: string | null; long_name: string | null; route_type: number | null; color: string | null }>(
     'SELECT route_id, short_name, long_name, route_type, color FROM routes WHERE agency=$1', [staticAgency])).rows) {
-    routeMeta.set(r.route_id, { shortName: r.short_name, longName: r.long_name, routeType: r.route_type == null ? null : Number(r.route_type), color: r.color });
+    routeMeta.set(metaKey(staticAgency, r.route_id), { shortName: r.short_name, longName: r.long_name, routeType: r.route_type == null ? null : Number(r.route_type), color: r.color });
   }
+  /** Route metadata for an id belonging to a named agency. */
+  const routeMetaFor = (agencyId: string, routeId: string | null | undefined): RouteMeta | undefined =>
+    routeId == null ? undefined : routeMeta.get(metaKey(agencyId, routeId));
 
-  const calendar: CalendarRow[] = (await db.query<{ service_id: string; mon: boolean; tue: boolean; wed: boolean; thu: boolean; fri: boolean; sat: boolean; sun: boolean; start_date: number; end_date: number }>(
-    'SELECT service_id, mon, tue, wed, thu, fri, sat, sun, start_date, end_date FROM calendar WHERE agency=$1', [staticAgency])).rows
-    .map((r) => ({ service_id: r.service_id, days: [r.mon, r.tue, r.wed, r.thu, r.fri, r.sat, r.sun], start_date: Number(r.start_date), end_date: Number(r.end_date) }));
-  const calendarDates: CalendarDateRow[] = (await db.query<{ service_id: string; date: number; exception_type: number }>(
-    'SELECT service_id, date, exception_type FROM calendar_dates WHERE agency=$1', [staticAgency])).rows
-    .map((r) => ({ service_id: r.service_id, date: Number(r.date), exception_type: Number(r.exception_type) }));
-  const activeSvcCache = new Map<number, string[]>();
-  function activeServicesFor(ymd: number, dow: number): string[] {
-    let s = activeSvcCache.get(ymd);
-    if (!s) { s = [...activeServiceIds(calendar, calendarDates, [{ ymd, dow }])]; activeSvcCache.set(ymd, s); }
+  /**
+   * Per-agency calendars. A `Map` rather than two bare arrays for the reason spelled out
+   * over `activeServicesFor` below: one blended calendar is a silently-wrong board.
+   */
+  interface AgencyCalendar { calendar: CalendarRow[]; calendarDates: CalendarDateRow[] }
+  const calendars = new Map<string, AgencyCalendar>();
+  for (const agencyId of [staticAgency]) {
+    const calendar: CalendarRow[] = (await db.query<{ service_id: string; mon: boolean; tue: boolean; wed: boolean; thu: boolean; fri: boolean; sat: boolean; sun: boolean; start_date: number; end_date: number }>(
+      'SELECT service_id, mon, tue, wed, thu, fri, sat, sun, start_date, end_date FROM calendar WHERE agency=$1', [agencyId])).rows
+      .map((r) => ({ service_id: r.service_id, days: [r.mon, r.tue, r.wed, r.thu, r.fri, r.sat, r.sun] as CalendarRow['days'], start_date: Number(r.start_date), end_date: Number(r.end_date) }));
+    const calendarDates: CalendarDateRow[] = (await db.query<{ service_id: string; date: number; exception_type: number }>(
+      'SELECT service_id, date, exception_type FROM calendar_dates WHERE agency=$1', [agencyId])).rows
+      .map((r) => ({ service_id: r.service_id, date: Number(r.date), exception_type: Number(r.exception_type) }));
+    calendars.set(agencyId, { calendar, calendarDates });
+  }
+  const EMPTY_CALENDAR: AgencyCalendar = { calendar: [], calendarDates: [] };
+  const calendarFor = (agencyId: string): AgencyCalendar => calendars.get(agencyId) ?? EMPTY_CALENDAR;
+  /**
+   * SERVICE IDS ARE ONLY UNIQUE WITHIN AN AGENCY, SO THIS CACHE IS KEYED BY BOTH.
+   *
+   * The result of this function is bound straight into the arrivals query as
+   * `t.service_id = ANY($3)` alongside `st.agency=$1`. If the calendar it resolves against
+   * ever held more than one agency's rows, `$3` would be a blended set — and the agency
+   * filter on `$1` does NOT protect against that, because it constrains which table rows
+   * are considered, not which service ids are plausible. A service id active for agency B
+   * on a Saturday would then activate agency A's identically-named service, and agency A's
+   * board would render a full, confident arrivals list for a day those trips do not run.
+   *
+   * Measured across all ten GTA/GTHA feeds on 2026-07-26, service_id collision is currently
+   * ZERO in every pair — the feeds use distinctive namespaces (TTC `1`,`2`,`501`; MiWay
+   * `26AU03-CPBlock-Weekday-11`; DRT `Weekday`; GO `20260722`). So this is not a live bug.
+   * It is also not something we control: ten independent organisations republish these on
+   * their own schedules, and DRT's `Weekday` is exactly the kind of id another agency could
+   * mint tomorrow. Taking the agency as an argument makes the blended call impossible to
+   * write rather than merely unlikely, and costs nothing.
+   */
+  const activeSvcCache = new Map<string, string[]>();
+  function activeServicesFor(agencyId: string, ymd: number, dow: number): string[] {
+    const key = metaKey(agencyId, String(ymd));
+    let s = activeSvcCache.get(key);
+    if (!s) {
+      const cal = calendarFor(agencyId);
+      s = [...activeServiceIds(cal.calendar, cal.calendarDates, [{ ymd, dow }])];
+      activeSvcCache.set(key, s);
+    }
     return s;
   }
   function midnightFor(ymd: number): number {
@@ -475,7 +566,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       const d = torontoDay(now - i * 86_400_000);
       if (seen.has(d.ymd)) continue;
       seen.add(d.ymd);
-      days.push({ ymd: d.ymd, midnightMs: midnightFor(d.ymd), serviceIds: activeServicesFor(d.ymd, d.dow) });
+      days.push({ ymd: d.ymd, midnightMs: midnightFor(d.ymd), serviceIds: activeServicesFor(staticAgency, d.ymd, d.dow) });
     }
 
     // 4. Numerator: confirmed no-shows only. A cancellation is an announced absence, not
@@ -671,11 +762,22 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
   // ---------- /api/health ----------
   app.get('/api/health', async (_req, reply) => {
     const h = poller.getFeedHealth();
-    const feeds = {} as HealthResponse['feeds'];
-    for (const key of Object.keys(h.feeds) as FeedId[]) {
-      feeds[key] = { status: h.feeds[key].status, lastOkMs: h.feeds[key].lastOkMs, sinceMs: h.feeds[key].sinceMs };
+    // Only the feeds this agency publishes appear, so an agency without (say) an alerts
+    // feed reports no alerts key rather than a permanently-`down` one.
+    const feeds: HealthResponse['feeds'] = {};
+    for (const [key, st] of Object.entries(h.feeds) as Array<[FeedId, FeedRuntime | undefined]>) {
+      if (!st) continue;
+      feeds[key] = { status: st.status, lastOkMs: st.lastOkMs, sinceMs: st.sinceMs };
     }
-    const ok = Object.values(feeds).some((f) => f.status === 'ok');
+    /**
+     * `ok` means "the realtime we depend on is arriving". For an agency that publishes NO
+     * realtime (Oakville), there is nothing to arrive and nothing is wrong — so an empty
+     * feed set is `ok: true`, not a permanent red. The client keys "the agency's feed is
+     * down" off this flag, and reporting an outage for a feed that never existed is the
+     * §45 attribution bug one level up from the one CatchView already fixed.
+     */
+    const feedIds = Object.keys(feeds) as FeedId[];
+    const ok = feedIds.length === 0 || feedIds.some((k) => feeds[k]?.status === 'ok');
     // The one response that has to state what it IS as well as what it says. `mode` and
     // `demo` are the client's only honest source for the amber DEMO badge; without them
     // a recording and a live feed are indistinguishable on the wire, which is exactly
@@ -699,7 +801,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     const vehicles: VehicleDto[] = [];
     for (const v of poller.getVehicleStates()) {
       if (!pointInBbox(v.lat, v.lon, b)) continue;
-      const meta = v.routeId ? routeMeta.get(v.routeId) : undefined;
+      const meta = routeMetaFor(staticAgency, v.routeId);
       vehicles.push({
         id: v.id, routeId: v.routeId, shortName: meta?.shortName ?? null, routeType: meta?.routeType ?? null,
         color: colorFor(meta), lat: v.lat, lon: v.lon, heading: v.heading, speedMs: v.speedMs, isGhost: false, ts: v.ts,
@@ -846,7 +948,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     interface Raw { tripId: string; stopSequence: number; dep: number; routeId: string | null; headsign: string | null; directionId: number | null; scheduledMs: number }
     const raws: Raw[] = [];
     for (const day of dayList) {
-      const svc = activeServicesFor(day.ymd, day.dow);
+      const svc = activeServicesFor(staticAgency, day.ymd, day.dow);
       if (svc.length === 0) continue;
       const midnight = midnightFor(day.ymd);
       const loSec = Math.floor((atMs - midnight) / 1000);
@@ -887,7 +989,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
 
     const attachLive = Math.abs(atMs - now) < LIVE_ETA_MAX_SKEW_MS;
     const departures: DepartureDto[] = trimmed.map((r) => {
-      const meta = r.routeId ? routeMeta.get(r.routeId) : undefined;
+      const meta = routeMetaFor(staticAgency, r.routeId);
       const how = hourOfWeek(r.scheduledMs);
       const sAgg = r.routeId ? stopAgg.get(`${r.routeId}|${how}`) ?? null : null;
       const rAgg = r.routeId ? routeAgg.get(`${r.routeId}|${how}`) ?? null : null;
@@ -1038,7 +1140,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     const raw: RawRide[] = [];
 
     for (const day of dayList) {
-      const svc = activeServicesFor(day.ymd, day.dow);
+      const svc = activeServicesFor(staticAgency, day.ymd, day.dow);
       if (svc.length === 0) continue;
       const midnight = midnightFor(day.ymd);
       const loSec = Math.floor((atMs - midnight) / 1000);
@@ -1138,7 +1240,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     }
 
     const candidates: RideCandidateDto[] = ranked.map((r) => {
-      const meta = r.routeId ? routeMeta.get(r.routeId) : undefined;
+      const meta = routeMetaFor(staticAgency, r.routeId);
       const how = hourOfWeek(r.departureMs);
       const sAgg = r.routeId ? stopAgg.get(`${r.boardStopId}|${r.routeId}|${how}`) ?? null : null;
       const rAgg = r.routeId ? routeAgg.get(`${r.routeId}|${how}`) ?? null : null;
@@ -1229,7 +1331,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
 
     const body: RouteShapeResponse = {
       routeId, directionId: rep.direction_id == null ? null : Number(rep.direction_id),
-      shapeId: rep.shape_id, color: colorFor(routeMeta.get(routeId)), coordinates, stops,
+      shapeId: rep.shape_id, color: colorFor(routeMetaFor(staticAgency, routeId)), coordinates, stops,
     };
     return reply.send(body);
   });
@@ -1286,7 +1388,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
           const routeId = blank(e.routeId as string | null);
           return {
             routeId,
-            routeShortName: routeId ? routeMeta.get(routeId)?.shortName ?? null : null,
+            routeShortName: routeMetaFor(staticAgency, routeId)?.shortName ?? null,
             stopId: blank(e.stopId as string | null),
             tripId: blank(e.tripId as string | null),
           };
@@ -1305,7 +1407,10 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     const publishesActivePeriod = alerts.some((a) => a.activeStartMs != null || a.activeEndMs != null);
     const body: AlertsResponse = {
       alerts, count: alerts.length,
-      feedUpdatedMs: poller.getFeedHealth().feeds.alerts.lastOkMs,
+      // `?? null` because an agency may publish NO alerts feed at all (YRT), in which case
+      // there is no such thing as "when the alerts feed last updated". This used to
+      // dereference `.alerts` unconditionally and would have thrown for such an agency.
+      feedUpdatedMs: poller.getFeedHealth().feeds.alerts?.lastOkMs ?? null,
       serverNowMs: now,
       meta: { ordering: publishesActivePeriod ? 'active-start' : 'stable-id', publishesActivePeriod },
     };
@@ -1374,7 +1479,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       const scheduledStartMs = ms(r.scheduled_start);
       const detectedAtMs = ms(r.detected_at);
       if (!Number.isFinite(scheduledStartMs) || !Number.isFinite(detectedAtMs)) continue;
-      const meta = r.route_id ? routeMeta.get(r.route_id) : undefined;
+      const meta = routeMetaFor(staticAgency, r.route_id);
       events.push({
         tripId: r.trip_id,
         kind: (r.kind === 'cancelled' ? 'cancelled' : 'ghost') satisfies GhostKind,
