@@ -6,6 +6,25 @@
     <meta name="theme-color" content="#0B0E1A" media="(prefers-color-scheme: dark)" />
     <meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)" />
     <meta name="description" content="GhostBus — an accountability engine with a transit app attached. It knows when the bus won't come." />
+    <!-- The voxel city is built out of OpenFreeMap's vector tiles, so the first
+         building cannot be drawn until a brand-new origin has been resolved,
+         TLS-negotiated, and asked for its TileJSON. Measured on the shipped build,
+         that whole chain sat on the critical path AFTER the lazy map chunk had
+         parsed. Starting the handshake at HTML-parse time instead moves it off:
+         nothing here fetches anything, it only warms the connection the map is
+         certain to need. Same origin serves the tiles and the glyphs. -->
+    <link rel="preconnect" href="https://tiles.openfreemap.org" crossorigin />
+    <link rel="dns-prefetch" href="https://tiles.openfreemap.org" />
+    <!-- And then fetch the vector source's TileJSON here, rather than waiting for
+         MapLibre to ask for it. Measured on the shipped build, the gap between the
+         style being applied and the first building tile being parsed was ~690 ms, and
+         a full round-trip of that is this one document: no tile can be REQUESTED
+         until it has arrived, because it is what names the tile URL template. Started
+         at HTML-parse time it overlaps the JS bundle instead of queueing behind it.
+         `crossorigin` (anonymous) matches the credentials mode MapLibre's own fetch
+         uses for a cross-origin URL, which is what lets the preload be reused rather
+         than duplicated. -->
+    <link rel="preload" as="fetch" href="https://tiles.openfreemap.org/planet" crossorigin />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon-180.png" />
     <link rel="manifest" href="/manifest.webmanifest" />
