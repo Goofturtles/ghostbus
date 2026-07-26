@@ -22,6 +22,7 @@ import {
   nearestStopOnRoute, mergeRtTrip, resolvePatterns, promotionState,
   crossRouteAgreement, monotonicityViolations, crosswalkedStaticSeqs, corroboratedConfidence,
   structurallyAmbiguousStops, GEO_SELF_CONFIRM_M, createPatternCreditStore, validationSufficient,
+  XWALK_MIN_CONFIDENCE,
   type RtPattern, type StaticPatternLite, type XwalkEntry, type PatternState,
   type PatternValidation, type XwalkState,
 } from './xwalk.ts';
@@ -59,7 +60,12 @@ const ANCHOR_MAX_AGE_S = 120;
 const BIRTH_EXPIRY_S = 3600;
 /** How many recent bindings the board-agreement gate looks at. */
 const BOARD_AGREEMENT_WINDOW = 200;
-const XWALK_MIN_CONF = 0.60;
+/**
+ * Re-exported rather than redeclared: a second literal here could drift from the promotion
+ * module's floor, and every coverage number and usability test in this file is measured
+ * against it.
+ */
+const XWALK_MIN_CONF = XWALK_MIN_CONFIDENCE;
 
 // ---------- inputs the poller hands us ----------
 

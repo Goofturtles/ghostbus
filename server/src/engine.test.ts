@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { createDelayEngine } from './engine.ts';
 import type { Db, Params, Result } from './db.ts';
 import type { EngineCycleInput, EngineVehicle, EngineTripUpdate } from './engine.ts';
+import { serviceEpochSeconds } from './tz.ts';
 
 // ---------- a synthetic board ----------
 //
@@ -21,6 +22,10 @@ import type { EngineCycleInput, EngineVehicle, EngineTripUpdate } from './engine
 // PROPAGATED-ONLY — the class the promotion and confidence rules are actually about.
 
 const BOARD = '20260726..20260905';
+const SERVICE_DATE = 20260726;
+/** Scheduled departure of the first run of pattern PA, seconds past service midnight. */
+const FIRST_DEP_S = 36_000;
+const HEADWAY_S = 600;
 const LAT0 = 43.70, LON0 = -79.40;
 const at = (metresNorth: number): number => LAT0 + metresNorth / 111_320;
 const STOP_LAT: Record<string, number> = {
@@ -47,14 +52,20 @@ interface Captured { sql: string; params: unknown[] }
 /** A Db that serves the synthetic board and records every write. */
 function stubDb(xwalkRows: XwRow[]): Db & { writes: Captured[] } {
   const writes: Captured[] = [];
-  const tripStops = (tripId: string, stops: string[]) => stops.map((stopId, i) => ({
+  const tripStops = (tripId: string, stops: string[], baseS = FIRST_DEP_S) => stops.map((stopId, i) => ({
     trip_id: tripId, route_id: 'R1', direction_id: 0, service_id: 'S1',
     stop_sequence: i + 1, stop_id: stopId,
-    arrival_s: 36_000 + i * 300, departure_s: 36_000 + i * 300,
+    arrival_s: baseS + i * 300, departure_s: baseS + i * 300,
   }));
   const stopTimeRows = [
     ...tripStops('T1', ['st1', 'st2', 'st3', 'st4', 'st6']),
     ...tripStops('T2', ['st1', 'st2', 'st3', 'st5']),
+    // Two more runs of pattern PA, ten minutes apart. Three slots is the minimum
+    // `medianHeadwayForSlots` will compute a headway from, and without a headway
+    // `originLock` refuses the whole pattern (`refused_headway_band`) — so without these
+    // the binding half of this engine cannot be exercised by a test at all.
+    ...tripStops('T1b', ['st1', 'st2', 'st3', 'st4', 'st6'], FIRST_DEP_S + HEADWAY_S),
+    ...tripStops('T1c', ['st1', 'st2', 'st3', 'st4', 'st6'], FIRST_DEP_S + 2 * HEADWAY_S),
   ];
   const geometryRows = Object.entries(STOP_LAT).map(([stop_id, lat]) => ({ route_id: 'R1', stop_id, lat, lon: LON0 }));
 
@@ -101,7 +112,7 @@ function tripUpdate(rtTripId: string, rtStops: string[]): EngineTripUpdate {
 function cycle(over: Partial<EngineCycleInput> = {}): EngineCycleInput {
   return {
     nowMs: 1_800_000_000_000,
-    serviceDate: 20260726,
+    serviceDate: SERVICE_DATE,
     vehicles: [],
     tripUpdates: [tripUpdate('RT1', ['a', 'b', 'c', 'd', 'f']), tripUpdate('RT2', ['a', 'b', 'c', 'x'])],
     activeServices: new Set<string>(),   // board inactive: coverage is still measured
@@ -258,6 +269,79 @@ test('a row confirmed by BINDING VALIDATION comes back as a candidate, not confi
   const e = createDelayEngine(db, 'ttc');
   await e.reloadStatic(BOARD);
   assert.equal(e.staticStopFor('a'), null, 'restored as candidate, so it cannot back a delay row yet');
+});
+
+test('DEFECT 3: a validation-confirmed entry is demoted IN-PROCESS when its evidence is withdrawn', async () => {
+  // The third promotion path confirms a one-pattern identity on the strength of bindings
+  // that survived on the implying pattern. That evidence is retractable — and the promotion
+  // loop only rewrites entries the CURRENT cycle re-proposed, while a stop stops being
+  // proposed the moment its RT pattern is quarantined. So without `demoteUnvalidated()` an
+  // entry keeps backing delay rows on evidence that no longer exists anywhere: exactly the
+  // "evidence outliving its retraction" class this work was about, left open inside one
+  // process even after the warm-start guard closed it across a restart.
+  //
+  // 'd' is the stop under test: it sits on pattern PA only, so it has one agreeing pattern
+  // and can never reach `confirmed` by the two-pattern path. Everything else is seeded at
+  // two patterns so it is confirmed and usable, which is what lets a binding form at all.
+  const db = stubDb([
+    xw('a', 'st1'), xw('b', 'st2'), xw('c', 'st3'), xw('f', 'st6'), xw('x', 'st5'),
+    xw('d', 'st4', { distinct_patterns: 1 }),
+  ]);
+  const e = createDelayEngine(db, 'ttc');
+  await e.reloadStatic(BOARD);
+
+  const dayStart = serviceEpochSeconds(SERVICE_DATE, 0);
+  const bound = (over: Partial<EngineCycleInput> = {}): EngineCycleInput => ({
+    nowMs: (dayStart + FIRST_DEP_S - 240) * 1000,   // before every predicted departure
+    serviceDate: SERVICE_DATE,
+    vehicles: [],                                    // no geo anchors: 'd' must not self-confirm
+    tripUpdates: [],
+    activeServices: new Set(['S1']),
+    ...over,
+  });
+  /** A newborn trip whose first prediction sits 60 s after `schedS` — inside the origin band. */
+  const newborn = (rtTripId: string, schedS: number, stops: string[]): EngineTripUpdate => ({
+    rtTripId, routeId: 'R1', scheduleRelationship: null,
+    stops: stops.map((rtStopId, i) => ({
+      stopSequence: i + 1, rtStopId,
+      epochS: dayStart + schedS + 60 + i * 300, kind: 'departure' as const, noData: false,
+    })),
+  });
+  const PA_STOPS = ['a', 'b', 'c', 'd', 'f'];
+
+  // Cycle 1: RT1 is born and locks onto T1. One binding, one cycle — not enough.
+  await e.runCycle(bound({ tripUpdates: [newborn('RT1', FIRST_DEP_S, PA_STOPS)] }));
+  assert.equal(e.getStats().bindings.locked, 1, 'the fixture must actually bind, or this test proves nothing');
+  assert.equal(e.staticStopFor('d'), null, 'one binding in one cycle must not confirm');
+
+  // Cycle 2: RT3 locks onto T1b. Now two distinct bindings across two distinct cycles.
+  await e.runCycle(bound({
+    tripUpdates: [newborn('RT1', FIRST_DEP_S, PA_STOPS), newborn('RT3', FIRST_DEP_S + HEADWAY_S, PA_STOPS)],
+  }));
+  assert.equal(e.getStats().bindings.locked, 2);
+
+  // Cycle 3: promotion reads the credit accumulated in cycles 1-2 and confirms 'd'.
+  await e.runCycle(bound({ tripUpdates: [newborn('RT1', FIRST_DEP_S, PA_STOPS)] }));
+  assert.equal(e.staticStopFor('d'), 'st4', 'the third promotion path should have confirmed it by now');
+
+  // Cycle 4: RT1 now reports 'x' at sequence 4. The crosswalk says 'x' is st5; the bound
+  // trip's pattern has st4 there. That contradiction is what the per-trip consistency gate
+  // exists to catch — it quarantines the RT pattern and distrusts the static one.
+  await e.runCycle(bound({ tripUpdates: [newborn('RT1', FIRST_DEP_S, ['a', 'b', 'c', 'x'])] }));
+
+  // Cycle 5: time has moved past those predictions and RT1 has left the feed, so its stops
+  // settle and the gate fires.
+  await e.runCycle(bound({ nowMs: (dayStart + FIRST_DEP_S + 3600) * 1000 }));
+
+  // Cycle 6: 'd' is no longer proposed by anything — its pattern is quarantined, and it has
+  // no geometric anchor — so only the sweep can still take its confirmation away.
+  await e.runCycle(bound({ nowMs: (dayStart + FIRST_DEP_S + 3600) * 1000 }));
+  // Pin the mechanism, not just the outcome: `staticStopFor` would also read null if the
+  // drift breaker had retracted the credit instead. It cannot fire here (|resid| 60 s is well
+  // inside half the 600 s headway), and this asserts the consistency gate is what ran.
+  assert.equal(e.getStats().patterns.quarantined, 1, 'the consistency gate must be what withdrew it');
+  assert.equal(e.staticStopFor('d'), null,
+    'validation was withdrawn, so the entry must stop backing delay rows');
 });
 
 test('the two evidence-carrying promotion paths still survive a restart intact', async () => {

@@ -38,11 +38,17 @@ export interface GateResult {
 }
 
 /**
- * TODAY this returns publish=false on `boardActive`, and that is the correct product
- * state: the loaded board covers 20260726..20260905 and the machine date is 2026-07-24.
- * The reason string names the window, so the UI can distinguish "we hold no schedule for
- * today" from "no data yet" and from "0 min delay" — three very different statements that
- * a naive implementation renders identically.
+ * ORDER IS PART OF THE CONTRACT. Each gate is checked before the symptoms it would cause,
+ * so the reason string names the cause rather than a downstream effect: an inactive board
+ * would also read as zero coverage, and a board with no seeded trips would also read as
+ * zero ghosts. `boardActive` and `boardIntegrity` therefore come first.
+ *
+ * Until 2026-07-26 this returned publish=false on `boardActive` for every call, because the
+ * loaded board covered 20260726..20260905 and had not started. That is no longer the live
+ * case and the comment is not left implying it is — but the reason string still names the
+ * window, so the UI can distinguish "we hold no schedule for today" from "no data yet" and
+ * from "0 min delay", which are three very different statements a naive implementation
+ * renders identically.
  */
 export function evaluateGates(i: GateInput): GateResult {
   const fail = (failed: string, reason: string): GateResult => ({ publish: false, reason, failed });

@@ -3709,10 +3709,27 @@ its retraction — and all invisible to a passing coverage number:
    only accumulates and are never swept.
 
 The bookkeeping moved into `xwalk.ts` as `createPatternCreditStore`, per this engine's own rule
-that everything algorithmic lives in the pure modules, and each of the three failures is now a
-named regression test. **The point is not that three bugs were found. It is that all three would
-have quietly promoted stop identities on withdrawn evidence, and none of them would have shown
-up as anything except coverage going up** — which is the outcome this work was trying to produce.
+that everything algorithmic lives in the pure modules. Each of the three failures is now a named
+regression test: defects 1 and 2 in `xwalk.test.ts` against the credit store directly (*"a voided
+binding takes its CYCLES with it, not just its count"*, *"a distrusted pattern can never be
+credited again, in any order"*), and defect 3 in `engine.test.ts` (*"a validation-confirmed entry
+is demoted IN-PROCESS when its evidence is withdrawn"*), which drives the real engine through six
+cycles: two bindings lock onto pattern PA and confirm a one-pattern stop, the per-trip consistency
+gate then quarantines the pattern, and the sweep must take the confirmation away.
+
+**A spec-fidelity reviewer caught that claim before it was true.** This paragraph originally
+asserted three named tests when only two existed — defect 3, the in-process sweep, had none, and
+its two nearest neighbours in `engine.test.ts` cover the cold-boot restore guard, a different
+path. Writing it required the fixture's first binding-capable board (three slots on one pattern,
+so `medianHeadwayForSlots` has a headway to return and `originLock` stops refusing), which is
+also the first engine-level test of the binding half at all. It was then checked the only way a
+regression test can honestly be checked: with `demoteUnvalidated()` commented out it fails on
+exactly the closing assertion, and passes with it restored.
+
+**The point is not that three bugs were found. It is that all three would have quietly promoted
+stop identities on withdrawn evidence, and none of them would have shown up as anything except
+coverage going up** — which is the outcome this work was trying to produce. The fourth, in this
+paragraph, was a claim about test coverage that was easier to write than to earn.
 
 ### What this measurement does not cover
 
