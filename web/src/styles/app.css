@@ -1120,6 +1120,9 @@
 .abt-built { margin: 0; font-size: 15px; font-weight: 700; color: var(--text); line-height: 1.5; }
 .abt-warn { display: flex; align-items: flex-start; gap: 6px; color: var(--warn-text); }
 .abt-warn svg { flex: 0 0 auto; margin-top: 3px; }
+/* Semantic list, visual no-op: the credits keep the section's own vertical rhythm. */
+.abt-credits { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: var(--s2); }
+.abt-credits li { display: flex; flex-direction: column; gap: var(--s2); }
 .abt-attrib {
   margin: 0; padding: 10px var(--s4);
   border-radius: var(--r-sm);

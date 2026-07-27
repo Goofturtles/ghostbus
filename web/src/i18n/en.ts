@@ -321,6 +321,37 @@ const en = {
     miwayName: 'MiWay GTFS and GTFS-Realtime',
     miwayVia: 'City of Mississauga Open Data · City of Mississauga Terms of Use',
     miwayAttribution: 'Contains information made available by the City of Mississauga.',
+    // The GTA agencies, same contract as miway*: each block renders only when /api/health
+    // names the agency, and each *Attribution is the descriptor's licence.attribution
+    // (server/src/agencies.ts) verbatim — sourced from the licence terms read 2026-07-27
+    // and recorded in .data/r5gta-plan.md §1.6.
+    yrtName: 'YRT/Viva GTFS and GTFS-Realtime',
+    yrtVia: 'York Region Transit Open Data · YRT Open Data Licence Agreement',
+    yrtAttribution: "Contains public transit Information made available under YRT's Open Data Licence",
+    burlingtonName: 'Burlington Transit GTFS and GTFS-Realtime',
+    burlingtonVia: 'City of Burlington Open Data · Terms of Use for Open Data Burlington',
+    burlingtonAttribution: 'Includes datasets made available by the City of Burlington under its Open Data Terms of Use (https://opendata.burlington.ca/opendata-terms-of-use/City%20of%20Burlington%20-%20Open%20Data%20Terms%20of%20Use.pdf).',
+    drtName: 'Durham Region Transit GTFS and GTFS-Realtime',
+    drtVia: 'Durham Region Open Data · Region of Durham Open Data Licence v.1.0',
+    drtAttribution: "Contains public sector information made available under The Regional Municipality of Durham's Open Data Licence",
+    bramptonName: 'Brampton Transit GTFS and GTFS-Realtime',
+    bramptonVia: 'City of Brampton Open Data · CC BY',
+    bramptonAttribution: 'Contains information licensed under CC BY, provided by the City of Brampton.',
+    oakvilleName: 'Oakville Transit GTFS',
+    oakvilleVia: 'Town of Oakville Open Data · Open Government Licence — Town of Oakville',
+    oakvilleAttribution: 'Contains information licensed under the Open Government Licence — Town of Oakville.',
+    miltonName: 'Milton Transit GTFS',
+    miltonVia: 'Discover Milton Open Data · Open Government Licence – Milton',
+    miltonAttribution: 'Contains information licensed under the Open Government Licence – Milton.',
+    goName: 'GO Transit GTFS',
+    goVia: 'Metrolinx Open Data · Metrolinx Access and Use Agreement',
+    goAttribution: 'Data used in this product or service is provided with the permission of Metrolinx.',
+    upexpressName: 'UP Express GTFS',
+    upexpressVia: 'Metrolinx Open Data · Metrolinx Access and Use Agreement',
+    upexpressAttribution: 'Data used in this product or service is provided with the permission of Metrolinx.',
+    // One neutral line covering every agency at once. Metrolinx's agreement (§3-4) forbids
+    // any suggestion of official status, and the same is simply true of every other feed.
+    agencyDisclaimer: 'GhostBus is an independent project. It is not affiliated with, sponsored by, or endorsed by the TTC, Metrolinx, or any other transit agency whose data it uses.',
     mapName: 'Map tiles',
     mapCredit: 'OpenFreeMap · OpenMapTiles · © OpenStreetMap contributors',
     mapLicence: 'Tiles from OpenFreeMap (MIT), built to the OpenMapTiles schema. The underlying data is © OpenStreetMap contributors, licensed under the ODbL.',
