@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { evaluateGates, patternHealthy, type GateInput } from './gates.ts';
+import {
+  evaluateGates, patternHealthy,
+  MIN_IDENTITY_MEMBERSHIP, MIN_IDENTITY_GEO_AGREEMENT, MIN_IDENTITY_GEO_SAMPLES,
+  type GateInput,
+} from './gates.ts';
 import { crosswalkedStaticSeqs, monotonicityViolations, type XwalkEntry } from './xwalk.ts';
 
 function gi(over: Partial<GateInput> = {}): GateInput {
@@ -10,6 +14,9 @@ function gi(over: Partial<GateInput> = {}): GateInput {
     serviceDate: 20260803,
     activeServiceTripCount: 29_870,
     boardAgreementMedianResidS: 20,
+    // The default is a LEARNED agency (the TTC): the identity gate does not apply, and
+    // every pre-identity test below is exercising exactly the evaluation it always did.
+    identity: null,
     xwalkOccurrenceCoverage: 0.7,
     crossRouteAgreement: 0.95,
     monotonicityViolationRate: 0.01,
@@ -135,6 +142,80 @@ test('REGRESSION (BLOCKERS 17): a bad crosswalk trips the monotonicity gate end 
 
   // And the clean crosswalk must still publish, or the gate is merely noisy.
   assert.equal(monotonicityViolations(trips(0, 20)).violations, 0);
+});
+
+// ---------------------------------------------------------------------------------
+// identityVerified — the gate ADDED for identity-namespace agencies. Gates are a ratchet:
+// adding one is permitted, weakening one is not, and these constants are pinned here for
+// the same reason agencies.test.ts pins the original five.
+// ---------------------------------------------------------------------------------
+
+test('GUARD: the identityVerified constants are unchanged', () => {
+  assert.equal(MIN_IDENTITY_MEMBERSHIP, 0.95, 'identity membership floor moved');
+  assert.equal(MIN_IDENTITY_GEO_AGREEMENT, 0.85, 'identity geometric-agreement floor moved');
+  assert.equal(MIN_IDENTITY_GEO_SAMPLES, 3, 'identity geometric sample floor moved');
+});
+
+/** A fully-verified identity input: full membership, ample agreeing geometry. */
+const verified = { membershipRate: 1.0, geoAgree: 10, geoTotal: 10 };
+
+test('identityVerified: a learned agency (identity: null) is never judged by this gate', () => {
+  // gi() defaults identity to null and the healthy case publishes — asserted at the top of
+  // this file. What must ALSO hold: no identity failure string can ever name a learned run.
+  const r = evaluateGates(gi({ identity: null, xwalkOccurrenceCoverage: 0.49 }));
+  assert.equal(r.failed, 'xwalkOccurrenceCoverage', 'a learned agency fails its own gates, never identity');
+});
+
+test('identityVerified: a verified identity agency publishes', () => {
+  const r = evaluateGates(gi({ identity: verified }));
+  assert.equal(r.publish, true);
+  assert.equal(r.failed, null);
+});
+
+test('identityVerified: membership below the floor names the namespace, not a symptom', () => {
+  // 0.593 is the TTC's measured COINCIDENTAL global id overlap (METHODS §3.2) — exactly
+  // the rate a feed that silently changed namespace could still reach by numeric accident,
+  // and exactly what the 0.95 floor exists to exclude.
+  const r = evaluateGates(gi({ identity: { ...verified, membershipRate: 0.593 } }));
+  assert.equal(r.publish, false);
+  assert.equal(r.failed, 'identityVerified');
+  assert.match(r.reason ?? '', /namespace/);
+  assert.equal(evaluateGates(gi({ identity: { ...verified, membershipRate: 0.94 } })).publish, false);
+  assert.equal(evaluateGates(gi({ identity: { ...verified, membershipRate: 0.95 } })).publish, true);
+});
+
+test('identityVerified: no occurrences yet is unverified, never verified-by-vacuum', () => {
+  const r = evaluateGates(gi({ identity: { membershipRate: null, geoAgree: 10, geoTotal: 10 } }));
+  assert.equal(r.publish, false);
+  assert.equal(r.failed, 'identityVerified');
+});
+
+test('identityVerified: the geometric audit must have run, and it must agree', () => {
+  // Too few anchors checked: the claim is not yet earned, whatever the membership says.
+  const thin = evaluateGates(gi({ identity: { membershipRate: 1.0, geoAgree: 2, geoTotal: 2 } }));
+  assert.equal(thin.publish, false);
+  assert.equal(thin.failed, 'identityVerified');
+  assert.match(thin.reason ?? '', /still verifying/);
+  // Enough anchors, but they contradict the claim: 2 of 3 agreeing is 66.7%, under 85%.
+  const contradicted = evaluateGates(gi({ identity: { membershipRate: 1.0, geoAgree: 2, geoTotal: 3 } }));
+  assert.equal(contradicted.publish, false);
+  assert.equal(contradicted.failed, 'identityVerified');
+  assert.match(contradicted.reason ?? '', /contradict/);
+  // Exactly at both floors publishes: 3 of 3 is 100%.
+  assert.equal(evaluateGates(gi({ identity: { membershipRate: 1.0, geoAgree: 3, geoTotal: 3 } })).publish, true);
+});
+
+test('identityVerified sits after boardIntegrity and before the coverage symptom it causes', () => {
+  const bad = { membershipRate: 0.1, geoAgree: 0, geoTotal: 0 };
+  // A board hole is the root cause and wins the reason string...
+  assert.equal(
+    evaluateGates(gi({ activeServiceTripCount: 0, identity: bad })).failed,
+    'boardIntegrity');
+  // ...and a failed identity assumption ALSO reads as zero coverage, so it must be the
+  // gate that names itself first.
+  assert.equal(
+    evaluateGates(gi({ identity: bad, xwalkOccurrenceCoverage: 0 })).failed,
+    'identityVerified');
 });
 
 test('per-pattern breaker voids only patterns that drifted half a headway', () => {

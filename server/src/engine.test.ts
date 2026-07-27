@@ -121,15 +121,16 @@ function cycle(over: Partial<EngineCycleInput> = {}): EngineCycleInput {
 }
 
 /** The rows persistCrosswalk wrote to rt_stop_xwalk, keyed by rt stop id. */
-function persistedXwalk(writes: Captured[]): Map<string, { votes: number; state: string; confidence: number; stopId: string }> {
+function persistedXwalk(writes: Captured[]): Map<string, { votes: number; state: string; confidence: number; stopId: string; source: string }> {
   const COLS = 10;   // agency, rt_stop_id, board_tag, stop_id, votes, distinct, resid, source, state, confidence
-  const out = new Map<string, { votes: number; state: string; confidence: number; stopId: string }>();
+  const out = new Map<string, { votes: number; state: string; confidence: number; stopId: string; source: string }>();
   for (const w of writes) {
     if (!/INSERT INTO rt_stop_xwalk /.test(w.sql)) continue;
     for (let i = 0; i + COLS <= w.params.length; i += COLS) {
       out.set(String(w.params[i + 1]), {
         stopId: String(w.params[i + 3]),
         votes: Number(w.params[i + 4]),
+        source: String(w.params[i + 7]),
         state: String(w.params[i + 8]),
         confidence: Number(w.params[i + 9]),
       });
@@ -342,6 +343,125 @@ test('DEFECT 3: a validation-confirmed entry is demoted IN-PROCESS when its evid
   assert.equal(e.getStats().patterns.quarantined, 1, 'the consistency gate must be what withdrew it');
   assert.equal(e.staticStopFor('d'), null,
     'validation was withdrawn, so the entry must stop backing delay rows');
+});
+
+// ---------- plan §2.7: the identity crosswalk, earned and audited ----------
+//
+// An identity-namespace agency's realtime stops ARE its static stops, so these tests feed
+// trip updates whose rt stop ids are the synthetic board's own st1..st6 — the MiWay shape.
+// The load-bearing contrast: the SAME feed under a learned agency (the TTC) mints nothing,
+// because a numeric match there is the 59.3% coincidence METHODS §3.2 measured.
+
+/** A MiWay-shaped trip update: realtime ids are the static ids. */
+const IDENTITY_STOPS = ['st1', 'st2', 'st3', 'st4', 'st6'];
+
+test('identity: a board-member rt stop is confirmed at once; the same id under the TTC is not', async () => {
+  const db = stubDb([]);
+  const mi = createDelayEngine(db, 'miway', undefined, 'identity');
+  await mi.reloadStatic(BOARD);
+  await mi.runCycle(cycle({ tripUpdates: [tripUpdate('RT1', IDENTITY_STOPS)] }));
+  assert.equal(mi.staticStopFor('st1'), 'st1', 'cycle 1, no anchors, no warm-up: the id is the stop');
+  assert.equal(mi.staticStopFor('st6'), 'st6');
+  assert.equal(mi.getStats().xwalk.occurrenceCoverage, 1, 'identity coverage is ~100% from the first cycle');
+  assert.equal(mi.getStats().identity?.membershipRate, 1);
+  const row = persistedXwalk(db.writes).get('st1');
+  assert.equal(row?.source, 'identity');
+  assert.equal(row?.state, 'confirmed');
+  assert.equal(row?.confidence, 1);
+
+  // The very same feed shape under a LEARNED agency must mint nothing: rt ids that happen
+  // to equal static ids are exactly the coincidence the learned crosswalk exists to refuse.
+  const ttc = createDelayEngine(stubDb([]), 'ttc');
+  await ttc.reloadStatic(BOARD);
+  await ttc.runCycle(cycle({ tripUpdates: [tripUpdate('RT1', IDENTITY_STOPS)] }));
+  assert.equal(ttc.staticStopFor('st1'), null, 'a learned agency earns identities geometrically or not at all');
+  assert.equal(ttc.getStats().identity, null, 'and it is never judged by the identity gate');
+});
+
+test('identity entries are minted ONLY for stops the loaded board holds', async () => {
+  const e = createDelayEngine(stubDb([]), 'miway', undefined, 'identity');
+  await e.reloadStatic(BOARD);
+  await e.runCycle(cycle({ tripUpdates: [tripUpdate('RT1', ['st1', 'st2', 'zz9'])] }));
+  assert.equal(e.staticStopFor('st1'), 'st1');
+  assert.equal(e.staticStopFor('zz9'), null, 'an id the board does not hold is counted, never minted');
+  const s = e.getStats().identity;
+  assert.ok(s && s.membershipRate != null && Math.abs(s.membershipRate - 2 / 3) < 1e-9,
+    `membership must count the miss: got ${s?.membershipRate}`);
+});
+
+test('identity: a geometric anchor that contradicts the claim falsifies it, stop by stop', async () => {
+  const e = createDelayEngine(stubDb([]), 'miway', undefined, 'identity');
+  await e.reloadStatic(BOARD);
+  // A vehicle dwells ON st2 while reporting rt stop id 'st1': measurement against claim.
+  const atSt2: EngineVehicle = {
+    vehicleId: 'V1', routeId: 'R1', rtTripId: 'RT1', rtStopId: 'st1',
+    currentStatus: 1, lat: STOP_LAT.st2, lon: LON0, tsS: 1_800_000_000,
+  };
+  await e.runCycle(cycle({ vehicles: [atSt2], tripUpdates: [tripUpdate('RT1', IDENTITY_STOPS)] }));
+  assert.equal(e.staticStopFor('st1'), null, 'a contested identity may not back a delay row');
+  assert.equal(e.staticStopFor('st2'), 'st2', 'the uncontested stops are untouched');
+  const s = e.getStats().identity;
+  assert.ok(s && s.geoTotal >= 1 && s.geoAgree < s.geoTotal, 'the audit tally must record the disagreement');
+});
+
+test('identity: a stop that leaves the feed stays identity-confirmed, not downgraded to votes', async () => {
+  // The stops delay rows are WRITTEN for are exactly the ones that just left the trip
+  // update (settled and dropped). If the learned propagation loop re-derives such a stop
+  // and overwrites its identity entry at votes-based confidence, it falls under the 0.60
+  // usability floor for ~8 cycles — a warm-up the identity design exists to remove.
+  const db = stubDb([]);
+  const e = createDelayEngine(db, 'miway', undefined, 'identity');
+  await e.reloadStatic(BOARD);
+  // Anchors on st3/st4 resolve the pattern, so propagation re-derives every stop on it.
+  const corroborating: EngineVehicle[] = [dwellingAt('VC', 'st3', 200), dwellingAt('VD', 'st4', 300)];
+  await e.runCycle(cycle({ vehicles: corroborating, tripUpdates: [tripUpdate('RT1', IDENTITY_STOPS)] }));
+  assert.equal(e.staticStopFor('st1'), 'st1');
+
+  // Cycle 2: st1 has been passed and dropped from the update — the remaining stops keep
+  // their ORIGINAL sequences, as real feeds do. The pattern still resolves, so the
+  // propagation loop proposes st1 again; agreement must corroborate, never downgrade.
+  const tail: EngineTripUpdate = {
+    rtTripId: 'RT1', routeId: 'R1', scheduleRelationship: null,
+    stops: ['st2', 'st3', 'st4', 'st6'].map((rtStopId, i) => ({
+      stopSequence: i + 2, rtStopId, epochS: 1_800_000_300 + i * 300,
+      kind: 'departure' as const, noData: false,
+    })),
+  };
+  await e.runCycle(cycle({ vehicles: corroborating, tripUpdates: [tail] }));
+  assert.equal(e.staticStopFor('st1'), 'st1', 'absence from the current minute is not counter-evidence');
+  assert.equal(persistedXwalk(db.writes).get('st1')?.source, 'identity',
+    'the persisted row must not oscillate identity -> propagated');
+});
+
+test('identity: a persisted identity row re-earns membership on restart, never inherits it', async () => {
+  // loadCrosswalk restores it as a candidate (its evidence is not in the row), and the
+  // first cycle its id appears re-checks board membership and re-confirms — instantly,
+  // which is the identity path's whole advantage over the learned warm-up.
+  const db = stubDb([xw('st1', 'st1', { source: 'identity', distinct_patterns: 0, votes: 3, confidence: 1 })]);
+  const e = createDelayEngine(db, 'miway', undefined, 'identity');
+  await e.reloadStatic(BOARD);
+  assert.equal(e.staticStopFor('st1'), null, 'restored as candidate: membership is re-checked, not trusted');
+  await e.runCycle(cycle({ tripUpdates: [tripUpdate('RT1', IDENTITY_STOPS)] }));
+  assert.equal(e.staticStopFor('st1'), 'st1', 're-earned on the first cycle its id appears');
+});
+
+test('identity: the gate refuses until the geometric audit has run, then publishes', async () => {
+  const e = createDelayEngine(stubDb([]), 'miway', undefined, 'identity');
+  await e.reloadStatic(BOARD);
+  const active = new Set(['S1']);
+  // Full membership, but no STOPPED_AT vehicle has corroborated any mapping yet.
+  const r1 = await e.runCycle(cycle({ activeServices: active, tripUpdates: [tripUpdate('RT1', IDENTITY_STOPS)] }));
+  assert.equal(r1.gate.publish, false);
+  assert.equal(r1.gate.failed, 'identityVerified', 'unaudited identity must not publish');
+  // Three dwelling vehicles corroborate three identity mappings — the audit clears.
+  const corroborating: EngineVehicle[] = [
+    dwellingAt('V1', 'st3', 200), dwellingAt('V2', 'st4', 300), dwellingAt('V3', 'st5', 800),
+  ];
+  const r2 = await e.runCycle(cycle({
+    activeServices: active, vehicles: corroborating, tripUpdates: [tripUpdate('RT1', IDENTITY_STOPS)],
+  }));
+  assert.equal(r2.gate.publish, true,
+    `verified identity must publish, got ${r2.gate.failed}: ${r2.gate.reason}`);
 });
 
 test('the two evidence-carrying promotion paths still survive a restart intact', async () => {

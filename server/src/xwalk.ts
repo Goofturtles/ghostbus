@@ -360,7 +360,16 @@ export interface XwalkEntry {
   votes: number;
   distinctPatterns: number;
   geoResidM: number | null;
-  source: 'geo' | 'propagated';
+  /**
+   * 'geo' and 'propagated' are the LEARNED sources this module derives. 'identity' is
+   * minted by the engine for an agency whose realtime ids ARE its static ids (MiWay et
+   * al, measured at 99.6-100% direct correspondence) — only ever for an rt_stop_id the
+   * loaded static board actually holds, and falsifiable per stop: a geometric anchor
+   * naming a different stop conflicts it out. Separately, the `identityVerified` gate
+   * refuses to WRITE delay rows until the membership rate and the geometric audit both
+   * clear in aggregate. Nothing in THIS module creates one.
+   */
+  source: 'geo' | 'propagated' | 'identity';
   state: XwalkState;
   confidence: number;
 }

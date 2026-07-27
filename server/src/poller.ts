@@ -299,7 +299,9 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
   // binding, and every delay row written. The poller feeds it decoded feeds and asks it
   // which static trips are present.
   // Static reads under this agency's own board, every learned/observed row under `agency`.
-  const engine = createDelayEngine(db, staticAgency, agency);
+  // The descriptor's namespace claim rides along: 'identity' turns on the earned-and-
+  // audited identity crosswalk and its gate, 'learned' (the TTC) changes nothing.
+  const engine = createDelayEngine(db, staticAgency, agency, descriptor.rtNamespace);
 
   // Ghost confirmation/retraction state (keyed `${tripId}|${startEpoch}`):
   const ghostMissStreak = new Map<string, number>();   // consecutive cycles a due trip has been absent

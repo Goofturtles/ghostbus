@@ -14,6 +14,30 @@ export const MIN_CROSS_ROUTE_AGREEMENT = 0.85;
 export const MAX_MONOTONICITY_VIOLATION_RATE = 0.05;
 export const MAX_BOARD_AGREEMENT_RESID_S = 300;
 
+/**
+ * The `identityVerified` gate — for agencies whose descriptor claims realtime ids ARE
+ * their static ids (`rtNamespace: 'identity'`). The claim is verified, never assumed:
+ * METHODS §4.6 is the record of what trusting one feed-supplied value cost (314,742
+ * observations of a protobuf default), and the TTC's 59.3% coincidental global id overlap
+ * is exactly what an unverified identity assumption would quietly publish through.
+ *
+ * MIN_IDENTITY_MEMBERSHIP: share of realtime stop OCCURRENCES naming a stop the loaded
+ * board actually holds. Identity agencies measured 99.6-100% (plan §1.4), so 0.95 leaves
+ * headroom for feed noise while sitting far above the 59.3% a changed namespace can reach
+ * by numeric coincidence. A falling rate is the signal the feed changed namespace.
+ *
+ * MIN_IDENTITY_GEO_AGREEMENT / MIN_IDENTITY_GEO_SAMPLES: the geometric anchor path keeps
+ * running as an AUDIT. For a true identity feed, a STOPPED_AT vehicle's position resolves
+ * to the very stop its rt id names (~100%); for a false one it almost never does (TTC
+ * control: 0 of 55 within 100 m). 0.85 mirrors MIN_CROSS_ROUTE_AGREEMENT — the same
+ * "the crosswalk may not disagree with itself" bar reached by a different road — and at
+ * least 3 independent anchors are required before the audit can be said to have run at
+ * all: publishing on zero corroborations would be verification by vacuum.
+ */
+export const MIN_IDENTITY_MEMBERSHIP = 0.95;
+export const MIN_IDENTITY_GEO_AGREEMENT = 0.85;
+export const MIN_IDENTITY_GEO_SAMPLES = 3;
+
 export interface GateInput {
   /** any calendar-active service_id for this service date. */
   boardActive: boolean;
@@ -27,6 +51,18 @@ export interface GateInput {
   xwalkOccurrenceCoverage: number;
   crossRouteAgreement: number | null;
   monotonicityViolationRate: number | null;
+  /**
+   * Identity-crosswalk verification. `null` means the agency is `'learned'` (the TTC) and
+   * this gate does not apply — which is a different statement from "verified", and the
+   * two never read alike because a learned agency's evidence is judged by every OTHER
+   * gate instead. `membershipRate` is null when this cycle carried no realtime stop
+   * occurrences to measure, which is unverified, not vacuously verified.
+   */
+  identity: {
+    membershipRate: number | null;
+    geoAgree: number;
+    geoTotal: number;
+  } | null;
 }
 
 export interface GateResult {
@@ -70,6 +106,33 @@ export function evaluateGates(i: GateInput): GateResult {
       `the calendar activates service for ${i.serviceDate}, but the loaded board (${i.boardTag}) ` +
       `holds no trips for it — that date was not seeded, so silence here would mean missing data, ` +
       `not an on-time service`);
+  }
+  // IDENTITY VERIFICATION, immediately after boardIntegrity and before every coverage
+  // symptom it would cause: a failed identity assumption would ALSO read as low occurrence
+  // coverage, and the reason string must name the cause, not the effect.
+  if (i.identity != null) {
+    const { membershipRate, geoAgree, geoTotal } = i.identity;
+    if (membershipRate == null) {
+      return fail('identityVerified',
+        'this agency claims its realtime ids are its static ids, but no realtime stop ' +
+        'occurrences have arrived yet to check that claim against the loaded board');
+    }
+    if (membershipRate < MIN_IDENTITY_MEMBERSHIP) {
+      return fail('identityVerified',
+        `only ${(membershipRate * 100).toFixed(1)}% of realtime stop occurrences name a stop the loaded board ` +
+        `holds (need ${(MIN_IDENTITY_MEMBERSHIP * 100).toFixed(0)}%) — the feed may have changed namespace, and ` +
+        `identity cannot be assumed`);
+    }
+    if (geoTotal < MIN_IDENTITY_GEO_SAMPLES) {
+      return fail('identityVerified',
+        `the geometric audit has checked only ${geoTotal} identity mapping${geoTotal === 1 ? '' : 's'} against ` +
+        `vehicle positions (need ${MIN_IDENTITY_GEO_SAMPLES}); still verifying`);
+    }
+    if (geoAgree / geoTotal < MIN_IDENTITY_GEO_AGREEMENT) {
+      return fail('identityVerified',
+        `vehicle positions contradict the identity claim: only ${((geoAgree / geoTotal) * 100).toFixed(1)}% of ` +
+        `geometrically-anchored identity stops agree (need ${(MIN_IDENTITY_GEO_AGREEMENT * 100).toFixed(0)}%)`);
+    }
   }
   if (i.xwalkOccurrenceCoverage < MIN_XWALK_OCCURRENCE_COVERAGE) {
     return fail('xwalkOccurrenceCoverage',

@@ -130,6 +130,12 @@ export interface DelayEngineStats {
     medianFirstStopResidS: number | null; boardAgreementOk: boolean;
   };
   obs: SettleCounters & { droppedNoBinding: number; suppressedByGate: number };
+  /**
+   * Identity-crosswalk verification, `null` for a `'learned'` agency. `membershipRate` is
+   * this cycle's share of realtime stop occurrences naming a stop the loaded board holds;
+   * `geoAgree`/`geoTotal` is the cumulative geometric audit (see mintIdentityCrosswalk).
+   */
+  identity: { membershipRate: number | null; geoAgree: number; geoTotal: number } | null;
   suppressionReason: string | null;
   suppressionGate: string | null;
 }
@@ -189,8 +195,19 @@ export interface DelayEngine {
  * That makes the spec's "never blend demo and live data" rule a property of the primary
  * keys rather than of anyone's discipline: every read here is already agency-filtered, so
  * neither mode can see the other's rows even by accident.
+ *
+ * `rtNamespace` is the descriptor's claim about the realtime feed (agencies.ts). It
+ * defaults to `'learned'` — the TTC's pathology, and the conservative assumption — so
+ * every existing caller and test is byte-for-byte unchanged. `'identity'` switches ON the
+ * identity crosswalk (mintIdentityCrosswalk) and the `identityVerified` gate; it switches
+ * OFF nothing: the geometric/propagation machinery keeps running as the audit.
  */
-export function createDelayEngine(db: Db, agency: string, writeAgency: string = agency): DelayEngine {
+export function createDelayEngine(
+  db: Db,
+  agency: string,
+  writeAgency: string = agency,
+  rtNamespace: 'learned' | 'identity' = 'learned',
+): DelayEngine {
   let index: PatternIndex = emptyPatternIndex();
   let boardTag = '?..?';
   let ready = false;
@@ -236,6 +253,12 @@ export function createDelayEngine(db: Db, agency: string, writeAgency: string = 
    * per pattern-index load; the second promotion path refuses on every stop in here.
    */
   let ambiguousStops = new Set<string>();
+  /**
+   * Every stop id the loaded static board holds (union of the pattern index's stop
+   * lists). This is the MEMBERSHIP an identity entry must earn: an rt_stop_id outside it
+   * is counted against the membership rate and never minted. Recomputed with the index.
+   */
+  let boardStopIds = new Set<string>();
   const conflictedStops = new Set<string>();
   const rtPatterns: RtPattern[] = [];
   const rtPatternByTrip = new Map<string, RtPattern>();
@@ -277,6 +300,7 @@ export function createDelayEngine(db: Db, agency: string, writeAgency: string = 
         doubleBookRejected: 0, medianFirstStopResidS: null, boardAgreementOk: true,
       },
       obs: { ...emptyCounters(), droppedNoBinding: 0, suppressedByGate: 0 },
+      identity: null,
       suppressionReason: null, suppressionGate: null,
     };
   }
@@ -330,6 +354,19 @@ export function createDelayEngine(db: Db, agency: string, writeAgency: string = 
     boardTag = newBoardTag;
     ready = true;
     recomputeAmbiguousStops();
+    boardStopIds = new Set<string>();
+    for (const p of index.patterns.values()) for (const s of p.stops) boardStopIds.add(s);
+    // Identity evidence IS membership in this board, so it is re-checked the moment the
+    // board is: an entry for a stop the refreshed index no longer holds loses its
+    // promotion. This is the same-tag/changed-fingerprint case — a full tag change is
+    // handled below by clearing the crosswalk outright. Not `conflicted`: the feed said
+    // nothing wrong, the board moved.
+    for (const e of xwalk.values()) {
+      if (e.source === 'identity' && !boardStopIds.has(e.stopId)) {
+        e.state = 'candidate';
+        e.confidence = 0;
+      }
+    }
     if (boardChanged) {
       // A new board is a new set of stop identities. Carrying the old crosswalk across
       // would silently map realtime stops onto a schedule they were never learned from.
@@ -415,6 +452,11 @@ export function createDelayEngine(db: Db, agency: string, writeAgency: string = 
   function demoteUnvalidated(): void {
     for (const e of xwalk.values()) {
       if (e.state !== 'confirmed' || e.distinctPatterns >= 2) continue;
+      // An identity entry's evidence is board membership, which does not expire between
+      // cycles — its withdrawal paths are the conflict machinery (a geometric anchor
+      // naming a different stop) and the identityVerified gate, not this sweep. Sweeping
+      // it would demote every identity stop absent from the current minute's feed.
+      if (e.source === 'identity') continue;
       if (e.source === 'geo' && e.geoResidM != null && e.geoResidM <= GEO_SELF_CONFIRM_M) continue;
       if (validationSufficient(validationFor(e.rtStopId))) continue;
       e.state = 'candidate';
@@ -479,7 +521,7 @@ export function createDelayEngine(db: Db, agency: string, writeAgency: string = 
           votes: Number(r.votes),
           distinctPatterns: Number(r.distinct_patterns),
           geoResidM: r.geo_resid_m == null ? null : Number(r.geo_resid_m),
-          source: r.source === 'geo' ? 'geo' : 'propagated',
+          source: r.source === 'geo' ? 'geo' : r.source === 'identity' ? 'identity' : 'propagated',
           state,
           confidence,
         });
@@ -634,6 +676,21 @@ export function createDelayEngine(db: Db, agency: string, writeAgency: string = 
       const hasConflict = conflictedStops.has(rtStop) || seen.size > 1;
       if (hasConflict) conflictedStops.add(rtStop);
       const distinctPatterns = accumulateAgreement(rtStop, agreeingPatterns.get(rtStop));
+      const prior = xwalk.get(rtStop);
+      if (rtNamespace === 'identity' && prior?.source === 'identity' && !hasConflict) {
+        // A learned re-derivation that AGREES with an identity entry — and inside
+        // !hasConflict it can only agree, because a different stop would have made the
+        // proposal set size 2 above — is corroboration, never a downgrade. Without this,
+        // every identity stop on a resolved pattern was rewritten each cycle at
+        // votes-based confidence, and a stop that had just LEFT the feed (exactly the
+        // settled stops delay rows are written for) fell under the usability floor until
+        // the votes climbed back: a warm-up the identity design exists to remove.
+        xwalk.set(rtStop, {
+          ...prior, votes, distinctPatterns,
+          geoResidM: prop.resid ?? prior.geoResidM,
+        });
+        continue;
+      }
       const source = prop.geo ? 'geo' : 'propagated';
       xwalk.set(rtStop, {
         rtStopId: rtStop, stopId: prop.stop, votes, distinctPatterns, geoResidM: prop.resid,
@@ -693,6 +750,82 @@ export function createDelayEngine(db: Db, agency: string, writeAgency: string = 
     if (thisCycle) for (const sp of thisCycle) all.add(sp);
     // A restored entry brings the count it was promoted on; it cannot bring the set.
     return Math.max(all.size, xwalkDistinctFloor.get(rtStop) ?? 0);
+  }
+
+  /**
+   * THE IDENTITY CROSSWALK (rtNamespace 'identity' only) — plan §2.7, and the reason the
+   * MiWay pipeline needs no warm-up: its realtime ids ARE its static ids, verified live at
+   * 99.6-100%. Runs AFTER resolveAndPromote so the learned machinery has already had its
+   * say, and its entries win over low-vote geometric ones — but only where the two AGREE.
+   *
+   * Three rules, all load-bearing:
+   *
+   *  1. EARNED, NOT DECLARED. An entry is minted only for an rt_stop_id the loaded board
+   *     actually holds (`boardStopIds`). The ones it does not hold are counted, and the
+   *     resulting membership rate feeds the `identityVerified` gate: a falling rate is
+   *     the signal the feed changed namespace.
+   *  2. FALSIFIABLE PER STOP. The identity claim is registered in `xwalkProposals` like
+   *     any other source, so a geometric anchor naming a DIFFERENT static stop makes the
+   *     proposal set size 2 and the stop conflicted — the identity entry does not survive
+   *     measurement that contradicts it, exactly as a propagated one would not.
+   *  3. AUDITED IN AGGREGATE. Every geometric anchor for a board-member rt stop is a
+   *     check of the identity claim: agreement corroborates, disagreement accuses. The
+   *     cumulative tally goes to the gate, which refuses to publish until it has both
+   *     enough checks and enough agreement (gates.ts has the thresholds and the numbers).
+   *
+   * Confidence is 1.0 by construction — the mapping is not inferred, it is the feed's own
+   * id checked against the board — and that is what drives occurrence coverage to ~100%
+   * without moving any gate constant: better evidence, not a lower bar.
+   */
+  function mintIdentityCrosswalk(inp: EngineCycleInput): void {
+    let seenOcc = 0;
+    let memberOcc = 0;
+    for (const tu of inp.tripUpdates) {
+      for (const s of tu.stops) {
+        if (!s.rtStopId) continue;
+        seenOcc++;
+        if (!boardStopIds.has(s.rtStopId)) continue;   // counted, never minted (rule 1)
+        memberOcc++;
+        const rtStop = s.rtStopId;
+        let proposed = xwalkProposals.get(rtStop);
+        if (!proposed) { proposed = new Set(); xwalkProposals.set(rtStop, proposed); }
+        proposed.add(rtStop);                          // the identity claim, as a proposal (rule 2)
+        if (conflictedStops.has(rtStop) || proposed.size > 1) {
+          conflictedStops.add(rtStop);
+          const e = xwalk.get(rtStop);
+          if (e) { e.state = 'conflicted'; e.confidence = 0; }
+          continue;
+        }
+        // Votes, distinct patterns and the geometric residual are whatever the learned
+        // machinery has genuinely accumulated — carried, never invented.
+        const prior = xwalk.get(rtStop);
+        xwalk.set(rtStop, {
+          rtStopId: rtStop,
+          stopId: rtStop,
+          votes: prior?.votes ?? 0,
+          distinctPatterns: prior?.distinctPatterns ?? 0,
+          geoResidM: prior?.geoResidM ?? null,
+          source: 'identity',
+          state: 'confirmed',
+          confidence: 1.0,
+        });
+      }
+    }
+    // The audit tally (rule 3), over the CUMULATIVE anchor set: every geometrically
+    // resolved board-member rt stop either agrees with its own id or contradicts it.
+    let geoAgree = 0;
+    let geoTotal = 0;
+    for (const [key, stop] of geoAnchors) {
+      const rtStop = rtStopOfKey(key);
+      if (!boardStopIds.has(rtStop)) continue;
+      geoTotal++;
+      if (stop === rtStop) geoAgree++;
+    }
+    stats.identity = {
+      membershipRate: seenOcc > 0 ? memberOcc / seenOcc : null,
+      geoAgree,
+      geoTotal,
+    };
   }
 
   // ---------- (d) births and origin lock ----------
@@ -1256,6 +1389,9 @@ export function createDelayEngine(db: Db, agency: string, writeAgency: string = 
     resolveGeoAnchors();
     clusterPatterns(inp.tripUpdates);
     resolveAndPromote();
+    // After the learned machinery, so identity entries overwrite low-vote geometric ones
+    // where the two agree — and never before the conflict sweep that would catch them.
+    if (rtNamespace === 'identity') mintIdentityCrosswalk(inp);
 
     // Crosswalk health.
     let confirmed = 0;
@@ -1315,6 +1451,9 @@ export function createDelayEngine(db: Db, agency: string, writeAgency: string = 
       serviceDate: inp.serviceDate,
       activeServiceTripCount,
       boardAgreementMedianResidS: boardMedian,
+      // Null for a learned agency: mintIdentityCrosswalk never runs there, so the gate
+      // never applies and the TTC's evaluation is exactly what it was.
+      identity: stats.identity,
       xwalkOccurrenceCoverage: stats.xwalk.occurrenceCoverage,
       crossRouteAgreement: cra.rate,
       monotonicityViolationRate: mono.rate,
@@ -1355,6 +1494,7 @@ export function createDelayEngine(db: Db, agency: string, writeAgency: string = 
         patterns: { ...stats.patterns },
         bindings: { ...stats.bindings },
         obs: { ...stats.obs },
+        identity: stats.identity ? { ...stats.identity } : null,
       };
     },
     getPresentStaticTrips() {
