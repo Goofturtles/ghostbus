@@ -4678,3 +4678,74 @@ is the wrong direction for a number a rider uses to decide whether to run.
 * **The alighting leg is not routed.** It happens at the far end of a ride, in tiles this
   device has no reason to have loaded. It stays the estimate it has always been and is
   marked as one, rather than quietly borrowing the first leg's credibility.
+
+## §52 — The GTA joins the board: eight agencies, every licence read first, and two seeded dark on purpose
+
+The user stood somewhere in the GTA and the app told them, honestly, that it covered
+nothing within 800 m. Phase 0/1 built the machinery (registry, union reads, identity
+crosswalk, per-agency everything); this wave uses it: **YRT/Viva, Burlington Transit,
+Durham Region Transit, Brampton Transit, Oakville Transit, Milton Transit, GO Transit and
+UP Express join TTC and MiWay** — ten agencies, ~8.7M stop_times, the whole GTA. Adding an
+agency was, as designed, a descriptor plus a seed run: no engine, gate, poller or API code
+changed in this wave.
+
+### 1. No licence, no seed — and both former blockers dissolved when actually read
+
+The plan's rule ("shipping an unread licence is indefensible") held: every one of the six
+new publishers' terms was retrieved and read before its seed ran, and the verbatim
+attribution strings live in the descriptors (`agencies.ts`) and the About sheet, per
+locale. DRT's "unretrievable" licence turned out to be the Region of Durham Open Data
+Licence v.1.0, quoted in full on durham.ca; Milton's "thin" disclaimer turned out to be a
+complete OGL-shaped licence embedded in a JS-rendered ArcGIS Hub page, extracted via the
+Hub item's data API. Both permit redistribution, adaptation and commercial use with
+attribution. The full record, with retrieval provenance, is the dated addendum in
+`.data/r5gta-plan.md` §1.6. One human obligation remains open and is flagged in the
+operator's report: YRT asks users to accept its licence via a web form — a compliance
+formality the operator must click, not something a builder submits on their behalf.
+
+### 2. Milton is seeded dark, and that is a feature refusing to be a bug
+
+Milton publishes realtime — through a shared feed carrying **fourteen other operators**:
+35 of 137 TripUpdate entities and 384 of 1,551 stop_ids are Milton's (measured 2026-07-26).
+Wiring it unfiltered would put Belleville buses on a Milton map, and the identity gate's
+0.95 membership floor would (correctly) refuse the whole feed at 24.8%. So Milton's
+descriptor carries `rt: {}` — *GhostBus does not observe Milton's realtime* — and its
+boards are schedule-only and say so, exactly the §4.1 degradation Oakville exercises for
+the simpler reason that no Oakville feed exists at all. Milton RT needs prefix-filter
+machinery; that is its own wave, not a corner cut in this one.
+
+### 3. GO and UP Express: static-only under an agreement with teeth
+
+The Metrolinx static zips are open; the realtime API wants a key that takes up to ten
+business days, so both agencies ship schedule-only now — when the key arrives, RT is a
+descriptor edit, and GO's `rtNamespace` stays `'learned'` until the namespace is
+*measured*, because it is the one GTA feed nobody has been able to verify. The GO API
+agreement itself binds more than the feed, and the constraints are recorded in §1.6's
+addendum: no Metrolinx/GO/UP branding or lookalike styling anywhere (agency labels stay
+plain factual text), no public announcement referencing GO Transit (README/DEVPOST/
+VIDEO_SCRIPT swept — the three existing mentions are factual naming-collision
+explanations, which is what the clause permits), the licence is revocable at will, and —
+the clause that shapes architecture — **§7a: no redistributing the Data within our own
+API or feed.**
+
+**The §7a position, stated so it stays true:** GhostBus's `/api` is the app's own
+first-party backend serving its own frontend with *transformed* data — delay percentiles,
+evidence-gated ETAs, boards windowed and joined — rate-limited, undocumented for third
+parties, and not offered as a feed. That is what makes it a product surface rather than a
+redistribution channel, and it must stay that way: anyone turning `/api` into a public
+data service has changed the app's legal footing with Metrolinx, not just its ops load.
+
+The About sheet also gained one sentence covering every agency at once — GhostBus is
+independent, not affiliated, sponsored or endorsed — because Metrolinx requires never
+implying official status and it was already true of everyone else.
+
+### 4. One doc-contract widening instead of one convenient lie
+
+`AgencyLicence.attribution` was documented as "the sentence the publisher REQUIRES,
+verbatim, or null". The ten real licences are less tidy: YRT *suggests* a credit without
+requiring one, Brampton's CC BY mandates attribution but not its wording, Burlington's
+terms want their URL travelling with the data. Declaring YRT's credit "required" would
+have been false; declaring it `null` would have hidden a credit the publisher asked for
+politely. The field's doc now names the four real cases and each descriptor's comment
+says which it is — the same move as §45: when the truth has more cases than the type
+comment, fix the comment, never round the truth to fit it.
