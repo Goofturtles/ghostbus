@@ -256,12 +256,14 @@ export default function MapCard() {
    * rides an actual live vehicle (see `badgeVehicle`), so an empty board still shows
    * no badge.
    */
-  const focusRoute = useMemo<{ routeId: string; dir: number | null } | null>(() => {
-    if (selected?.routeId) return { routeId: selected.routeId, dir: null };
+  // The agency rides along with the route id: with several agencies seeded a bare
+  // route_id is ambiguous on the wire, and every source here already carries its own.
+  const focusRoute = useMemo<{ agency: string; routeId: string; dir: number | null } | null>(() => {
+    if (selected?.routeId) return { agency: selected.agency, routeId: selected.routeId, dir: null };
     const d = arrivals?.departures?.[0];
-    if (d?.routeId) return { routeId: d.routeId, dir: d.directionId };
+    if (d?.routeId) return { agency: d.agency, routeId: d.routeId, dir: d.directionId };
     const s = nextService?.departures?.[0];
-    if (s?.routeId) return { routeId: s.routeId, dir: s.directionId };
+    if (s?.routeId) return { agency: s.agency, routeId: s.routeId, dir: s.directionId };
     return null;
   }, [selected, arrivals, nextService]);
   // Read from the rAF loop and from `badgeVehicle()`, both of which were registered
@@ -1517,14 +1519,14 @@ export default function MapCard() {
   useEffect(() => {
     let alive = true;
     if (!focusRoute) { routeGeoRef.current = null; const m = mapRef.current; if (m?.getSource('route-shape')) applyRoute(m); return; }
-    api.routeShape(focusRoute.routeId, focusRoute.dir)
+    api.routeShape(focusRoute.routeId, focusRoute.dir, focusRoute.agency)
       // applyRoute only calls source.setData (safe whenever the source exists); do NOT
       // gate on isStyleLoaded(), which flips false transiently while tiles reload.
       .then((r) => { if (!alive) return; routeGeoRef.current = r; const m = mapRef.current; if (m) applyRoute(m); })
       .catch(() => { if (alive) { routeGeoRef.current = null; } });
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusRoute?.routeId, focusRoute?.dir]);
+  }, [focusRoute?.routeId, focusRoute?.dir, focusRoute?.agency]);
 
   function applyRoute(map: maplibregl.Map) {
     const line = map.getSource('route-shape') as maplibregl.GeoJSONSource | undefined;

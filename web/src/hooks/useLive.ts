@@ -354,14 +354,19 @@ export const useLive = create<LiveState>((set, get) => ({
     const seq = ++arrivalsSeq;
     const current = () => seq === arrivalsSeq && useStore.getState().selectedStopId === stopId;
     set({ arrivalsLoading: get().arrivals == null });
-    api.arrivals(stopId)
+    // The selected stop's own agency, carried from the row that selected it (nearby list
+    // or a search pick) — with several agencies seeded a bare stop id is ambiguous and
+    // the server refuses to guess. Undefined only when neither source knows the stop,
+    // which a single-agency deployment still answers.
+    const agency = selectedNearbyStop()?.agency;
+    api.arrivals(stopId, { agency })
       .then((arrivals) => {
         noteOk();
         if (!current()) return;
         set({ arrivals, arrivalsError: false, arrivalsLoading: false, skewMs: arrivals.serverNowMs - Date.now() });
         // No live departures right now → surface the next real scheduled service.
         if (arrivals.departures.length === 0) {
-          void probeNextService(stopId, current, set);
+          void probeNextService(stopId, agency, current, set);
         } else {
           set({ nextService: null });
         }
@@ -403,6 +408,7 @@ export const useLive = create<LiveState>((set, get) => ({
  *  first hit wins; aborts if the rider switches stops mid-walk. */
 async function probeNextService(
   stopId: string,
+  agency: string | undefined,
   current: () => boolean,
   set: (p: Partial<LiveState>) => void,
 ): Promise<void> {
@@ -422,7 +428,7 @@ async function probeNextService(
     // undid the backoff and hid the reason for it. It now yields, and reports.
     if (isBackedOff()) return;
     try {
-      const res = await api.arrivals(stopId, { atMs: base + d * 86_400_000, windowMin: NEXT_SERVICE_WINDOW_MIN });
+      const res = await api.arrivals(stopId, { agency, atMs: base + d * 86_400_000, windowMin: NEXT_SERVICE_WINDOW_MIN });
       if (!current()) return;
       if (res.departures.length > 0) { set({ nextService: res }); return; }
     } catch (e) {

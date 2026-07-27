@@ -151,8 +151,16 @@ export const api = {
   nearby: (lat: number, lon: number, radiusM: number, signal?: AbortSignal) =>
     j<StopsResponse>(`/api/stops/nearby?lat=${lat}&lon=${lon}&radius=${radiusM}`, signal),
 
-  arrivals: (stopId: string, opts: { atMs?: number; windowMin?: number } = {}, signal?: AbortSignal) => {
+  /**
+   * `agency` on the two id-bearing endpoints (this and routeShape): a stop or route id is
+   * unique only WITHIN an agency, so with more than one seeded the server refuses a bare
+   * id (400) rather than guess a different city's stop into the rider's board. Callers
+   * pass the agency the id came WITH — every DTO carries it — and omit it only where it
+   * is genuinely unknown, which a single-agency server still answers.
+   */
+  arrivals: (stopId: string, opts: { agency?: string; atMs?: number; windowMin?: number } = {}, signal?: AbortSignal) => {
     const p = new URLSearchParams();
+    if (opts.agency != null) p.set('agency', opts.agency);
     if (opts.atMs != null) p.set('at', String(Math.round(opts.atMs)));
     if (opts.windowMin != null) p.set('windowMin', String(opts.windowMin));
     const qs = p.toString();
@@ -184,9 +192,14 @@ export const api = {
   vehicles: (bbox: Bbox, signal?: AbortSignal) =>
     j<VehiclesResponse>(`/api/vehicles?bbox=${bbox.join(',')}`, signal),
 
-  routeShape: (routeId: string, dir: number | null, signal?: AbortSignal) =>
-    j<RouteShapeResponse>(
-      `/api/routes/${encodeURIComponent(routeId)}/shape${dir == null ? '' : `?dir=${dir}`}`, signal),
+  /** See the note on `arrivals` for why `agency` rides along with the route id. */
+  routeShape: (routeId: string, dir: number | null, agency?: string, signal?: AbortSignal) => {
+    const p = new URLSearchParams();
+    if (agency != null) p.set('agency', agency);
+    if (dir != null) p.set('dir', String(dir));
+    const qs = p.toString();
+    return j<RouteShapeResponse>(`/api/routes/${encodeURIComponent(routeId)}/shape${qs ? `?${qs}` : ''}`, signal);
+  },
 
   alerts: (limit?: number, signal?: AbortSignal) =>
     j<AlertsResponse>(`/api/alerts${limit == null ? '' : `?limit=${limit}`}`, signal),

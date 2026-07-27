@@ -201,22 +201,26 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
   useEffect(() => { setActive(0); }, [q]);
 
   // ---------------- next-departure chip for the highlighted row ----------------
+  // Cache and request are both keyed (agency, stopId): two agencies can carry the same
+  // stop id, and a bare-id key would hand one agency's board to the other's row.
   const [peek, setPeek] = useState<Record<string, DepartureDto | null>>({});
-  const peekStopId = activeOpt?.kind === 'route'
+  const peekTarget = activeOpt == null || activeOpt.kind === 'route'
     ? null
-    : activeOpt?.kind === 'stop' ? activeOpt.row.stopId
-      : activeOpt?.kind === 'recent' ? activeOpt.row.stopId : null;
+    : { agency: activeOpt.row.agency, stopId: activeOpt.row.stopId };
+  const peekKey = peekTarget ? `${peekTarget.agency}|${peekTarget.stopId}` : null;
   useEffect(() => {
-    if (!peekStopId || peekStopId in peek) return;
+    if (!peekTarget || !peekKey || peekKey in peek) return;
     const ctrl = new AbortController();
     const timer = window.setTimeout(() => {
-      api.arrivals(peekStopId, { windowMin: PEEK_WINDOW_MIN }, ctrl.signal)
-        .then((arr) => setPeek((p) => ({ ...p, [peekStopId]: firstDeparture(arr) })))
+      api.arrivals(peekTarget.stopId, { agency: peekTarget.agency, windowMin: PEEK_WINDOW_MIN }, ctrl.signal)
+        .then((arr) => setPeek((p) => ({ ...p, [peekKey]: firstDeparture(arr) })))
         // A stop we could not read simply has no chip. Nothing is guessed into it.
-        .catch(() => { if (!ctrl.signal.aborted) setPeek((p) => ({ ...p, [peekStopId]: null })); });
+        .catch(() => { if (!ctrl.signal.aborted) setPeek((p) => ({ ...p, [peekKey]: null })); });
     }, PEEK_DEBOUNCE_MS);
     return () => { window.clearTimeout(timer); ctrl.abort(); };
-  }, [peekStopId, peek]);
+    // peekKey IS peekTarget's identity, so the target cannot be stale while the key matches.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [peekKey, peek]);
 
   // ---------------- choosing ----------------
   const chooseStop = useCallback(async (place: { agency: string; stopId: string; name: string; lat: number | null; lon: number | null; wheelchairBoarding?: number | null }) => {
@@ -329,8 +333,8 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
   const imperial = useStore((s) => s.units) === 'imperial';
   const now = liveNow();
 
-  const chipFor = (stopId: string) => {
-    const d = peek[stopId];
+  const chipFor = (agency: string, stopId: string) => {
+    const d = peek[`${agency}|${stopId}`];
     if (!d) return null;
     const at = d.liveEtaMs ?? d.scheduledMs;
     const time = sameLocalDay(at, now)
@@ -411,7 +415,7 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
                 {section.options.map((opt) => {
                   const i = flat.indexOf(opt);
                   const isActive = i === activeIdx;
-                  const chip = opt.kind === 'route' ? null : chipFor(opt.row.stopId);
+                  const chip = opt.kind === 'route' ? null : chipFor(opt.row.agency, opt.row.stopId);
                   return (
                     <div
                       key={opt.id}
