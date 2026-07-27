@@ -75,6 +75,121 @@ test('MiWay is an identity-namespace agency with all three feeds', () => {
   assert.match(mi.rt.alerts!, /\/gtfs_rt\/Alerts\//);
 });
 
+test('YRT is identity with exactly two feeds — the absent alerts key IS the fact', () => {
+  // rtu.york.ca/gtfsrealtime/Alerts is a 404: YRT publishes no alerts feed. Two keys is
+  // the honest count; "completing" the set would report a nonexistent feed as down forever.
+  const y = agency('yrt');
+  assert.equal(y.rtNamespace, 'identity');
+  assert.deepEqual(feedIdsFor(y).sort(), ['trips', 'vehicles']);
+  assert.equal(isScheduleOnly(y), false);
+});
+
+test('Burlington is identity with all three feeds on its one host', () => {
+  const b = agency('burlington');
+  assert.equal(b.rtNamespace, 'identity');
+  assert.deepEqual(feedIdsFor(b).sort(), ['alerts', 'trips', 'vehicles']);
+  for (const url of Object.values(b.rt)) assert.match(url!, /opendata\.burlington\.ca\/gtfs-rt\//);
+});
+
+test('DRT: alerts live on a DIFFERENT host than trips/vehicles, deliberately', () => {
+  // TripUpdates/VehiclePositions on drtonline.durhamregiontransit.com; the alerts protobuf
+  // is published beside the static zip on maps.durham.ca. That is where DRT puts it —
+  // "normalising" the host breaks the feed. Pinned exactly like MiWay's lowercase path.
+  const d = agency('drt');
+  assert.equal(d.rtNamespace, 'identity');
+  assert.match(d.rt.trips!, /drtonline\.durhamregiontransit\.com/);
+  assert.match(d.rt.vehicles!, /drtonline\.durhamregiontransit\.com/);
+  assert.match(d.rt.alerts!, /maps\.durham\.ca/);
+  // DRT's required attribution, verbatim from the Region of Durham Open Data Licence v.1.0.
+  assert.equal(d.licence.attribution,
+    "Contains public sector information made available under The Regional Municipality of Durham's Open Data Licence");
+});
+
+test('Brampton: the transitional merged_* NAVINEO paths are pinned as-published', () => {
+  const b = agency('brampton');
+  assert.equal(b.rtNamespace, 'identity');
+  assert.match(b.rt.trips!, /BramptonTransit\/GTFS\/merged_TripUpdate\.pb$/);
+  assert.match(b.rt.vehicles!, /merged_VehiclePosition\.pb$/);
+  assert.match(b.rt.alerts!, /merged_Alert\.pb$/);
+});
+
+test('Oakville and Milton are schedule-only, for two different reasons', () => {
+  // Oakville: no realtime feed exists (searched five ways, 2026-07-26).
+  // Milton: realtime exists but is a shared 15-operator feed (only 384 of 1,551 stop_ids
+  // are Milton's) — unwired ON PURPOSE until filter machinery exists; see the descriptor.
+  // Both carry 'learned' as the inert fail-safe: if a feed appears it must be measured
+  // before anyone claims identity for it.
+  for (const id of ['oakville', 'milton']) {
+    const a = agency(id);
+    assert.equal(isScheduleOnly(a), true, `${id} should be schedule-only`);
+    assert.deepEqual(feedIdsFor(a), []);
+    assert.equal(a.rtNamespace, 'learned', `${id} must stay 'learned' until measured`);
+  }
+});
+
+test('GO and UP Express are static-only until the Metrolinx key arrives, with the required credit', () => {
+  // The static zips are open; the RT API is key-gated and GO's RT namespace is UNVERIFIED
+  // (the key gate blocked measurement) — so 'learned' is the only honest value, and the
+  // Metrolinx Access and Use Agreement's attribution sentence is carried verbatim.
+  for (const id of ['go', 'upexpress']) {
+    const a = agency(id);
+    assert.equal(isScheduleOnly(a), true, `${id} should be schedule-only until the key arrives`);
+    assert.equal(a.rtNamespace, 'learned', `${id} RT namespace is unverified — must stay 'learned'`);
+    assert.match(a.staticSource.kind === 'direct' ? a.staticSource.url : '', /assets\.metrolinx\.com/);
+    assert.equal(a.licence.attribution,
+      'Data used in this product or service is provided with the permission of Metrolinx.');
+  }
+});
+
+test('every registry agency has a credit slot in the About sheet, and its strings exist in every locale', async () => {
+  // Several licences REQUIRE attribution wherever their data is shown. The About sheet
+  // renders credits from CREDITED_AGENCIES (web/src/components/agencyCredits.ts), keyed to
+  // /api/health's seeded list — so a future descriptor added HERE without a slot THERE
+  // would ship coverage without its legally required credit. This test makes that a
+  // failure instead of a launch-day discovery, and it checks the three i18n strings each
+  // slot renders actually exist in every locale, since a missing key renders as its own
+  // name rather than throwing.
+  const { CREDITED_AGENCIES } = await import('../../web/src/components/agencyCredits.ts');
+  const credited = new Set<string>(CREDITED_AGENCIES);
+  for (const a of allAgencies()) {
+    if (a.id === 'ttc') continue; // rendered unconditionally, above the mapped list
+    assert.ok(credited.has(a.id), `agency '${a.id}' has no About-sheet credit slot — add it to CREDITED_AGENCIES and its about.* strings`);
+  }
+  const locales = {
+    en: (await import('../../web/src/i18n/en.ts')).default as unknown as Record<string, Record<string, unknown>>,
+    frCA: (await import('../../web/src/i18n/frCA.ts')).default as unknown as Record<string, Record<string, unknown>>,
+    es: (await import('../../web/src/i18n/es.ts')).default as unknown as Record<string, Record<string, unknown>>,
+  };
+  for (const [loc, dict] of Object.entries(locales)) {
+    const about = dict.about as Record<string, unknown>;
+    for (const id of ['ttc', ...credited]) {
+      for (const suffix of ['Name', 'Via', 'Attribution']) {
+        const key = `${id}${suffix}`;
+        assert.equal(typeof about[key], 'string', `${loc} is missing about.${key}`);
+      }
+    }
+    assert.equal(typeof about.agencyDisclaimer, 'string', `${loc} is missing about.agencyDisclaimer`);
+    // The attribution the rider actually reads is the i18n copy, not the descriptor — so
+    // the two must be BYTE-IDENTICAL in every locale (licence text is never translated).
+    // Without this, a retranslation pass could quietly reword a legally required sentence.
+    for (const a of allAgencies()) {
+      if (a.licence.attribution === null) continue;
+      assert.equal(about[`${a.id}Attribution`], a.licence.attribution,
+        `${loc} about.${a.id}Attribution has drifted from the descriptor's licence.attribution`);
+    }
+  }
+});
+
+test('the verbatim-required attribution sentences match the licences as read', () => {
+  // Recorded from the terms themselves, 2026-07-27 (.data/r5gta-plan.md §1.6 addendum).
+  assert.equal(agency('oakville').licence.attribution,
+    'Contains information licensed under the Open Government Licence — Town of Oakville.');
+  assert.equal(agency('milton').licence.attribution,
+    'Contains information licensed under the Open Government Licence – Milton.');
+  // Burlington's obligation is that the terms' URL travels with the data.
+  assert.match(agency('burlington').licence.attribution!, /opendata\.burlington\.ca\/opendata-terms-of-use/);
+});
+
 test('every descriptor states a licence, and attribution is stated or explicitly none', () => {
   for (const a of allAgencies()) {
     assert.ok(a.licence.name.length > 0, `${a.id} has no licence name`);

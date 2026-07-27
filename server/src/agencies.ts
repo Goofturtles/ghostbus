@@ -72,9 +72,14 @@ export interface AgencyLicence {
   /** Where it comes from and under what licence. */
   via: string;
   /**
-   * The attribution sentence the publisher REQUIRES us to display, verbatim, or null when
-   * the licence demands none. Rendered in the About sheet. A `null` here is a statement
-   * that the terms were read and asked for nothing — never a placeholder for "not checked".
+   * The attribution sentence displayed in the About sheet: the publisher's required
+   * wording verbatim where the licence dictates one (TTC, DRT, Oakville, Milton,
+   * Metrolinx); the publisher's own suggested credit where credit is optional but a form
+   * is offered (YRT); or a constructed sentence naming the source where the licence
+   * requires attribution without fixing the words (Brampton's CC BY) or requires the
+   * terms' URL to travel with the data (Burlington). Null only when the terms were read
+   * and asked for nothing — never a placeholder for "not checked". TTC and MiWay are the
+   * required-verbatim case; each GTA descriptor's comment states which case it is.
    */
   attribution: string | null;
 }
@@ -157,7 +162,239 @@ const MIWAY: AgencyDescriptor = {
   },
 };
 
-const ALL: readonly AgencyDescriptor[] = [TTC, MIWAY];
+/**
+ * YRT/Viva (York Region). Verified 2026-07-26: static zip open, RT ids resolve directly
+ * against YRT's own static board (200/200 stops, 200/200 trips sampled).
+ *
+ * NO ALERTS FEED — `rtu.york.ca/gtfsrealtime/Alerts` is a 404, not an outage. YRT
+ * publishes two feeds, and the absent key here is the statement that the third does not
+ * exist (see the note on `rt` above). Do not "complete" the set.
+ *
+ * Licence (read 2026-07-27): YRT Open Data Licence Agreement — worldwide, royalty-free,
+ * perpetual; commercial use permitted. Credit is NOT required; the attribution below is
+ * the credit form YRT's own licence suggests, displayed voluntarily. YRT also asks users
+ * to accept the licence via forms.yrt.ca/YRT-GTFS-Data — a policy gate, not a technical
+ * one (the feeds answer cold); the operator should complete that form once.
+ */
+const YRT: AgencyDescriptor = {
+  id: 'yrt',
+  name: 'YRT/Viva (York Region)',
+  tz: 'America/Toronto',
+  staticSource: { kind: 'direct', url: 'https://www.yrt.ca/google/google_transit.zip' },
+  rt: {
+    vehicles: 'https://rtu.york.ca/gtfsrealtime/VehiclePositions',
+    trips: 'https://rtu.york.ca/gtfsrealtime/TripUpdates',
+  },
+  rtNamespace: 'identity',
+  licence: {
+    name: 'YRT/Viva GTFS and GTFS-Realtime',
+    via: 'York Region Transit Open Data · YRT Open Data Licence Agreement',
+    attribution: "Contains public transit Information made available under YRT's Open Data Licence",
+  },
+};
+
+/**
+ * Burlington Transit. Verified 2026-07-26: the cleanest feed in the GTA set — RT identity
+ * at 100.0% of 635 stops, all three feeds, exactly 30 s cadence, one host for everything.
+ *
+ * Licence (terms PDF read 2026-07-27): Terms of Use for Open Data Burlington (2011-09-19).
+ * Use/reproduce/modify/distribute for any lawful purpose. Credit optional, but anyone
+ * redistributing the datasets must include a copy of, or the URL for, the Terms of Use —
+ * which is why the attribution line below carries the URL rather than a bare name.
+ */
+const BURLINGTON: AgencyDescriptor = {
+  id: 'burlington',
+  name: 'Burlington Transit',
+  tz: 'America/Toronto',
+  staticSource: { kind: 'direct', url: 'https://opendata.burlington.ca/gtfs-rt/GTFS_Data.zip' },
+  rt: {
+    vehicles: 'https://opendata.burlington.ca/gtfs-rt/GTFS_VehiclePositions.pb',
+    trips: 'https://opendata.burlington.ca/gtfs-rt/GTFS_TripUpdates.pb',
+    alerts: 'https://opendata.burlington.ca/gtfs-rt/GTFS_ServiceAlerts.pb',
+  },
+  rtNamespace: 'identity',
+  licence: {
+    name: 'Burlington Transit GTFS and GTFS-Realtime',
+    via: 'City of Burlington Open Data · Terms of Use for Open Data Burlington',
+    attribution:
+      'Includes datasets made available by the City of Burlington under its Open Data Terms of Use (https://opendata.burlington.ca/opendata-terms-of-use/City%20of%20Burlington%20-%20Open%20Data%20Terms%20of%20Use.pdf).',
+  },
+};
+
+/**
+ * Durham Region Transit. Verified 2026-07-26: RT identity (200/200 stops, 156/156 trips),
+ * exactly 30 s. DRT answers HTTP 403 to an unidentified client — USER_AGENT above exists
+ * in large part for this feed.
+ *
+ * THE ALERTS HOST IS DIFFERENT ON PURPOSE. TripUpdates and VehiclePositions live on
+ * drtonline.durhamregiontransit.com; the alerts protobuf is published on maps.durham.ca
+ * beside the static zip. That is where DRT actually puts it — "fixing" the host breaks it.
+ *
+ * Licence (read 2026-07-27, via durham.ca): Region of Durham Open Data Licence v.1.0 —
+ * copy/publish/distribute/adapt, commercial use permitted, no endorsement implication.
+ * The attribution below is the licence's own required wording, verbatim.
+ */
+const DRT: AgencyDescriptor = {
+  id: 'drt',
+  name: 'Durham Region Transit',
+  tz: 'America/Toronto',
+  staticSource: { kind: 'direct', url: 'https://maps.durham.ca/OpenDataGTFS/GTFS_Durham_TXT.zip' },
+  rt: {
+    vehicles: 'https://drtonline.durhamregiontransit.com/gtfsrealtime/VehiclePositions',
+    trips: 'https://drtonline.durhamregiontransit.com/gtfsrealtime/TripUpdates',
+    alerts: 'https://maps.durham.ca/OpenDataGTFS/alerts.pb',
+  },
+  rtNamespace: 'identity',
+  licence: {
+    name: 'Durham Region Transit GTFS and GTFS-Realtime',
+    via: 'Durham Region Open Data · Region of Durham Open Data Licence v.1.0',
+    attribution:
+      "Contains public sector information made available under The Regional Municipality of Durham's Open Data Licence",
+  },
+};
+
+/**
+ * Brampton Transit. Verified 2026-07-26: RT identity (300/300 stops, 37/37 routes).
+ *
+ * MID-MIGRATION, AND THESE URLS SAY SO. The `merged_*` filenames on the bt-cadavl.com
+ * host are transitional artifacts of Brampton's move to Equans/Ineo NAVINEO, and the old
+ * brampton.ca / nextride URLs the aggregators still list are already dead (404 / refused).
+ * This is the GTA feed most likely to move again — if it 404s, look for the post-NAVINEO
+ * home before assuming an outage. The alerts feed is currently a 15-byte header-only
+ * protobuf: empty is its normal state, not a failure.
+ *
+ * Licence: the City's ArcGIS item (a355aabd…) carries licenseInfo "CC BY", access
+ * "City of Brampton". Attribution is therefore required; CC BY leaves the form flexible.
+ */
+const BRAMPTON: AgencyDescriptor = {
+  id: 'brampton',
+  name: 'Brampton Transit',
+  tz: 'America/Toronto',
+  staticSource: {
+    kind: 'direct',
+    url: 'https://www.arcgis.com/sharing/rest/content/items/a355aabd5a8c490186bdce559c9c75fb/data',
+  },
+  rt: {
+    vehicles: 'https://gtfs-rt-merge.prod.bt-cadavl.com/BramptonTransit/GTFS/merged_VehiclePosition.pb',
+    trips: 'https://gtfs-rt-merge.prod.bt-cadavl.com/BramptonTransit/GTFS/merged_TripUpdate.pb',
+    alerts: 'https://gtfs-rt-merge.prod.bt-cadavl.com/BramptonTransit/GTFS/merged_Alert.pb',
+  },
+  rtNamespace: 'identity',
+  licence: {
+    name: 'Brampton Transit GTFS and GTFS-Realtime',
+    via: 'City of Brampton Open Data · CC BY',
+    attribution: 'Contains information licensed under CC BY, provided by the City of Brampton.',
+  },
+};
+
+/**
+ * Oakville Transit. NO REALTIME FEED EXISTS — searched five ways, 2026-07-26. The empty
+ * `rt` is that fact, not an omission: Oakville is the schedule-only case §4.1 of the GTA
+ * plan describes, and its boards render with bucket:'none' exactly like a demo instance.
+ *
+ * `rtNamespace` is inert with no feeds; 'learned' is the fail-safe default so that if a
+ * feed ever appears it must be measured before anyone claims identity for it.
+ *
+ * Licence (read 2026-07-27): Open Government Licence – Town of Oakville. Attribution
+ * below is the licence's own default statement, verbatim (em dash included).
+ */
+const OAKVILLE: AgencyDescriptor = {
+  id: 'oakville',
+  name: 'Oakville Transit',
+  tz: 'America/Toronto',
+  staticSource: {
+    kind: 'direct',
+    url: 'https://www.arcgis.com/sharing/rest/content/items/d78a1c1ad6a940009de8b68839a8f606/data',
+  },
+  rt: {},
+  rtNamespace: 'learned',
+  licence: {
+    name: 'Oakville Transit GTFS',
+    via: 'Town of Oakville Open Data · Open Government Licence — Town of Oakville',
+    attribution: 'Contains information licensed under the Open Government Licence — Town of Oakville.',
+  },
+};
+
+/**
+ * Milton Transit — STATIC-ONLY, ON PURPOSE, AND NOT FOR LICENCE REASONS.
+ *
+ * Milton's licence is fine (read 2026-07-27: Open Government Licence – Milton, OGL-shaped,
+ * attribution required with the default statement below). Milton also publishes realtime —
+ * but through a SHARED MULTI-OPERATOR feed (metrolinx.tmix.se/gtfs-realtime-milton/…)
+ * carrying 14 other operators: measured 2026-07-26, only 35 of 137 TripUpdate entities and
+ * 384 of 1,551 stop_ids are Milton's. Wiring it unfiltered would put Belleville buses on a
+ * Milton map, and the identityVerified gate's 0.95 membership floor would (correctly)
+ * refuse the whole feed at 24.8%. Observing it requires Milton-prefix filter machinery
+ * that does not exist yet — a separate wave. Until then the empty `rt` means "GhostBus
+ * does not observe Milton's realtime", and the boards are schedule-only and say so.
+ */
+const MILTON: AgencyDescriptor = {
+  id: 'milton',
+  name: 'Milton Transit',
+  tz: 'America/Toronto',
+  staticSource: { kind: 'direct', url: 'https://metrolinx.tmix.se/gtfs/gtfs-milton.zip' },
+  rt: {},
+  rtNamespace: 'learned',
+  licence: {
+    name: 'Milton Transit GTFS',
+    via: 'Discover Milton Open Data · Open Government Licence – Milton',
+    attribution: 'Contains information licensed under the Open Government Licence – Milton.',
+  },
+};
+
+/**
+ * GO Transit — STATIC-ONLY UNTIL THE METROLINX KEY ARRIVES.
+ *
+ * The static zip is open; the realtime API (api.openmetrolinx.com) requires a free key the
+ * operator has requested (up to 10 business days). When it arrives, RT joins as a
+ * descriptor edit here — URLs plus the key's env-var name — not a rebuild. GO's RT
+ * namespace is UNVERIFIED (the key gate blocked measurement), so 'learned' is the only
+ * honest value until it is measured; do not flip it to 'identity' on documentation.
+ *
+ * Licence: Metrolinx Access and Use Agreement. The attribution below is the exact
+ * sentence Metrolinx requires, verbatim.
+ */
+const GO: AgencyDescriptor = {
+  id: 'go',
+  name: 'GO Transit',
+  tz: 'America/Toronto',
+  staticSource: {
+    kind: 'direct',
+    url: 'https://assets.metrolinx.com/raw/upload/Documents/Metrolinx/Open%20Data/GO-GTFS.zip',
+  },
+  rt: {},
+  rtNamespace: 'learned',
+  licence: {
+    name: 'GO Transit GTFS',
+    via: 'Metrolinx Open Data · Metrolinx Access and Use Agreement',
+    attribution: 'Data used in this product or service is provided with the permission of Metrolinx.',
+  },
+};
+
+/**
+ * UP Express. Same publisher, licence and key situation as GO (see above): static-only
+ * until the Metrolinx key arrives, and the same required attribution sentence.
+ */
+const UPEXPRESS: AgencyDescriptor = {
+  id: 'upexpress',
+  name: 'UP Express',
+  tz: 'America/Toronto',
+  staticSource: {
+    kind: 'direct',
+    url: 'https://assets.metrolinx.com/raw/upload/Documents/Metrolinx/Open%20Data/UP-GTFS.zip',
+  },
+  rt: {},
+  rtNamespace: 'learned',
+  licence: {
+    name: 'UP Express GTFS',
+    via: 'Metrolinx Open Data · Metrolinx Access and Use Agreement',
+    attribution: 'Data used in this product or service is provided with the permission of Metrolinx.',
+  },
+};
+
+const ALL: readonly AgencyDescriptor[] = [
+  TTC, MIWAY, YRT, BURLINGTON, DRT, BRAMPTON, OAKVILLE, MILTON, GO, UPEXPRESS,
+];
 const BY_ID = new Map(ALL.map((a) => [a.id, a]));
 
 /**
