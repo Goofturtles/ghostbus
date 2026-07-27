@@ -46,22 +46,6 @@ async function main(): Promise<void> {
   const enabled = enabledAgencies();
 
   /**
-   * REFUSE EARLY, BEFORE ANY WORK. The API read path still serves exactly one agency
-   * (Phase 1 lands the union queries), so booting with several would poll and store every
-   * agency while showing riders only the first — coverage silently halved. `buildApi`
-   * enforces this too, but by then N pollers have started and run their heavy static
-   * loads; failing here keeps the message the first thing that happens.
-   */
-  if (!demo && enabled.length > 1) {
-    throw new Error(
-      `GHOSTBUS_AGENCIES lists ${enabled.length} agencies (${enabled.map((a) => a.id).join(', ')}), ` +
-      `but the API read path still serves exactly one. Booting would poll and store every agency ` +
-      `while showing riders only the first — coverage silently halved. ` +
-      `Run with a single agency until the Phase 1 union queries land.`,
-    );
-  }
-
-  /**
    * A FIXTURE IS A RECORDING OF ONE AGENCY, AND IT DICTATES WHICH ONE.
    *
    * `source.agency` is the demo namespace ('<agency>-demo'), so the board it replays
@@ -97,8 +81,11 @@ async function main(): Promise<void> {
     staggerTimers.push(t);
   });
 
-  // The API is still single-agency on its read path (Phase 1 lands the union queries), so
-  // it is handed the first poller. `buildApi` refuses to boot if that would under-serve.
+  // Static reads are union-aware (agency = ANY over every seeded agency), but the
+  // poller-scoped live bits — getVehicleStates, getLivePredictionMs, feed health — still
+  // come from one poller. Handing the API the first is correct for single-agency and the
+  // known gap for multi: the remaining pollers collect and store, their live surfaces
+  // just aren't served yet (Phase 1 §2.7 follow-up).
   const poller = pollers[0];
 
   // Aggregation rebuilds agg_delay/agg_delay_route for the LIVE agency, so a demo process
