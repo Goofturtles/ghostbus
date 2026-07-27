@@ -760,8 +760,10 @@ Verified on a fresh `GHOSTBUS_DEMO=1` instance replaying
   under `'ttc-demo'`, a namespace `seed_toronto.ts` never writes to, so a demo instance
   returned **zero stops, zero search results, no plan and no route shape** - it told a
   rider standing at King & Spadina there were no stops near them. The correct split is
-  per table: `staticAgency` (`'ttc'`, always) for the published board, `modeAgency` for
-  observations. See `DECISIONS.md` §45 §7 (the overshoot, marked), §48 (the split), §50.
+  per table: the seeded-agency list (`agency = ANY(...)`; the literal `'ttc'` until the
+  R5-GTA multi-agency reshape) for the published board, `modeAgency` for observations. See
+  `DECISIONS.md` §45 §7 (the overshoot, marked), §48 (the split, with its historical-details
+  marker), §50.
 
 Now measured on the demo instance: 25 search hits for "King", a `ride` plan outcome with
 27 candidates, a 119-point route shape with 36 stops, 471 vehicles. The isolation property

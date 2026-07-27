@@ -4099,6 +4099,16 @@ Every number either script prints traces to a parameterized, agency-scoped (`'tt
 > the mechanism**, which was right about the outcome and wrong about the cause for the
 > commonest case. Everything else in §48 — the agency split, the cross-seam join, the
 > `/api`-only scoping and the `%61pi` encoded bypass, all of it measured — stands unchanged.
+>
+> **HISTORICAL DETAILS (2026-07-27).** The R5-GTA multi-agency reshape (commits
+> `857a337`..`b974008`) kept the split's *principle* — schedule reads and observation reads
+> bind different agency names — but made this entry's specifics historical: schedule reads
+> now bind the seeded-agency list (`agency = ANY(...)` over `seeded`), and `staticAgency`
+> is now the poller's own agency id rather than the literal `'ttc'`; the seeder is
+> agency-parameterised, so the `seed_toronto.ts:60` hardcode quoted in §1 no longer exists
+> in that form; `api.ts` no longer imports `STATIC_AGENCY`; and the per-table site counts
+> below are as of 5ba1bbf, not the current tree. The union read path is recorded in
+> `.data/r5gta-plan.md` and its commits.
 
 Two corrections to §45, both found by testers on the build §45 describes, and both in the same
 file. **§45 is left exactly as written** — it records what was decided and why at the time,
