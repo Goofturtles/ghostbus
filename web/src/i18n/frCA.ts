@@ -3,7 +3,7 @@ import type { Dict } from './en';
 
 const frCA: Dict = {
   brand: { ghost: 'Ghost', bus: 'Bus' },
-  tagline: "L'horaire est une promesse. GhostBus vous dit la vérité.",
+  tagline: 'L’horaire est une promesse. GhostBus vous dit la vérité.',
   nav: { nearby: 'À proximité', plan: 'Trajet', saved: 'Enregistrés', alerts: 'Alertes', primary: 'Principal' },
   search: {
     placeholder: 'Où allez-vous?',
