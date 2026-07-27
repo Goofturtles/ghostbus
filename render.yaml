@@ -1,87 +1,115 @@
-# GhostBus — Render Blueprint (one web service, no managed database).
+# GhostBus — Render Blueprint: ONE free web service, NO external database, NO payment.
 #
-# Schema verified against Render's Blueprint spec on 2026-07-24:
-#   https://render.com/docs/blueprint-spec
-#   - `runtime` is the current field name (`env` is supported but discouraged).
-#   - valid `region` values: oregon (default), ohio, virginia, frankfurt, singapore.
-#   - valid `plan` values include `free` for web services.
-#   - `sync: false` is the documented way to declare a secret whose value you enter
-#     in the Render dashboard during Blueprint creation — it is never in this file.
+# Schema verified against Render's Blueprint spec on 2026-07-24 (`runtime` is the current
+# field name; `free` is a valid web-service plan). Deploy shape reworked 2026-07-27.
 #
-# The database is an EXTERNAL Neon Postgres (us-east-2), so there is no `databases:`
-# block here. `region: ohio` is chosen because Ohio is Render's us-east-2 region and
-# keeps the app in the same AWS region as the Neon instance — every request the API
-# makes to Postgres is then intra-region rather than cross-continent.
+# HOW THIS DEPLOY WORKS (free tier):
+#
+#   BUILD  `npm run build:render` (package.json) does everything heavy on Render's
+#          full-speed build machines: npm ci, typecheck + vite build, then
+#          server/src/build_render.ts downloads and seeds EVERY agency in
+#          GHOSTBUS_AGENCIES into an embedded-Postgres directory `.data/pglite-render`
+#          and prebuilds each agency's pattern-index cache blob
+#          (.data/pattern-cache/*.gbpx + the pattern_index_cache table). The bake fails
+#          the build loudly if any agency cannot be seeded or cached.
+#   RUN    `npm start` boots against that baked directory (server/src/db.ts prefers
+#          .data/pglite-render automatically when PGLITE_DIR is unset), binds
+#          HOST:PORT within seconds, and restores each pattern index from the baked
+#          cache instead of rebuilding it — a rebuild would take tens of minutes at the
+#          free runtime's 0.1 CPU; the restore is sub-second per agency at full speed.
+#
+# WHAT THE FREE TIER COSTS, honestly:
+#   - The instance spins down after 15 minutes without traffic; every wake resets the
+#     filesystem to the BUILT IMAGE. The seeded board and index caches are inside the
+#     image, so a wake boots fully covered — but observations accumulated at runtime
+#     (trip_delay_obs, ghosts) reset with it. Delay evidence only accumulates while the
+#     instance stays awake (see README's UptimeRobot /api/health keep-alive).
+#   - A schedule-board update requires a redeploy (Manual Deploy), because the board is
+#     baked at build time.
+#   - MEMORY IS THE OPEN RISK. Measured 2026-07-27 (Windows, production build, ten
+#     agencies / six live pollers, forced-GC steady state): ~800 MiB RSS, of which
+#     ~260 MiB is live JS (pattern indexes + engines), ~260 MiB PGlite's WASM/external,
+#     and the rest runtime overhead. The floor (node + tsx + PGlite, zero agencies)
+#     measured ~500 MiB locally, so no agency subset provably fits 512 MB on this
+#     machine. Linux typically reports lower RSS than Windows for the same workload and
+#     could not be simulated locally (no Docker/WSL) — the deploy attempt itself is the
+#     real test. If the instance OOMs, trim GHOSTBUS_AGENCIES below (it is the config
+#     lever — a redeploy re-bakes automatically); the next real reduction is compiling
+#     the server at build time instead of running tsx at runtime.
 
 services:
   - name: ghostbus
     type: web
     runtime: node
     plan: free
-    region: ohio                      # matches the Neon us-east-2 database
+    region: ohio                      # closest listed region to Toronto riders (us-east-2)
     branch: main
     autoDeployTrigger: commit
 
-    # `npm start` runs the TypeScript server directly via tsx, and `npm run build`
-    # needs vite + typescript — all three are devDependencies. Render sets
-    # NODE_ENV=production at RUNTIME ONLY (verified in Render's default-env-var
-    # docs), so a plain `npm ci` during build would already include devDependencies;
-    # `--include=dev` states the requirement explicitly so it cannot regress.
-    buildCommand: npm ci --include=dev && npm run build
+    # build:render begins with `npm ci --include=dev` — Render's node runtime runs ONLY
+    # this command, so the install must live inside it. Dev deps are required at runtime
+    # too: `npm start` is `node --import tsx …`, so tsx must still be on disk. Do NOT add
+    # a prune step or NPM_CONFIG_PRODUCTION=true.
+    buildCommand: npm run build:render
     startCommand: npm start
 
-    # Do NOT set NPM_CONFIG_PRODUCTION=true or add a prune step: `npm start` is
-    # `node --import tsx ...`, so tsx must still be on disk at runtime even though it
-    # is declared as a devDependency. Pruning it produces "Cannot find module tsx".
-
-    # Liveness, deliberately NOT readiness. /api/health always returns HTTP 200 and
-    # reports upstream feed status in the body (`ok`, `feeds`, `dbDriver`,
-    # `boardCoverage`); it does not query Postgres. That is the right trade for a
-    # deploy gate — a TTC feed outage is not a reason to roll back our deploy — but it
-    # does mean a green health check is NOT proof the database is reachable or seeded.
-    # Check the body, not just the status code.
+    # Liveness, deliberately NOT readiness. /api/health always answers HTTP 200 and does
+    # not query the database; the body (`ok`, `feeds`, `dbDriver`, `agencies`,
+    # `boardCoverage`) carries the real status. After a deploy, check the body: `dbDriver`
+    # must be "pglite" and `agencies` must list every id in GHOSTBUS_AGENCIES.
     healthCheckPath: /api/health
 
     envVars:
-      # ---- secret: set in the Render dashboard, never committed ----
-      # Neon connection string, e.g.
-      #   postgresql://USER:PASSWORD@ep-xxxx.us-east-2.aws.neon.tech/ghostbus?sslmode=require
-      #
-      # WARNING — `sync: false` prompts for a value, it does not enforce one. If you
-      # skip the prompt, server/src/db.ts falls back to embedded PGlite on the
-      # container's ephemeral disk: the service boots, migrations run against an empty
-      # file, the health check goes green, and every deploy silently wipes the data.
-      # After deploying, confirm `dbDriver` is "pg" (not "pglite") in /api/health.
+      # ---- DATABASE_URL: EMPTY ON PURPOSE — this is the whole deploy design ----
+      # server/src/db.ts uses embedded PGlite whenever DATABASE_URL is falsy, and the
+      # build bakes the seeded PGlite directory into the image. THE GOTCHA: the value
+      # must be an EMPTY STRING that EXISTS, not a deleted variable — an empty-but-set
+      # variable also shields the process from any stray .env (Node's loadEnvFile never
+      # overwrites an existing variable, even one set to ''). Reproducing this locally,
+      # beware PowerShell: `$env:DATABASE_URL = ''` DELETES the variable there
+      # (DECISIONS §41) — spawn with an explicit empty-string env instead.
       - key: DATABASE_URL
-        sync: false
+        value: ""
 
       # ---- required for Render to route traffic ----
       # server/src/server.ts defaults HOST to 127.0.0.1, which Render cannot reach.
       # Render's docs: "Every Render web service must bind to a port on host 0.0.0.0".
+      # server.ts reads HOST and PORT from the environment (verified 2026-07-27).
       - key: HOST
         value: 0.0.0.0
 
-      # PORT is injected by Render automatically (default 10000) and server.ts reads
-      # it; it is deliberately NOT set here so Render's value always wins.
+      # PORT is injected by Render automatically (default 10000) and server.ts reads it;
+      # deliberately NOT set here so Render's value always wins.
 
-      # Pinned rather than inherited: Render's default Node for services created on
-      # or after 2026-04-21 is 24.x, and package.json's `engines` range (">=20") is
-      # unbounded, which Render warns resolves to whatever is newest. 24 is the
-      # version the project was actually developed and verified against.
+      # ---- which agencies to bake AND serve ----
+      # Read by BOTH the build (build_render.ts seeds + prebuilds exactly this set) and
+      # the runtime (agencies.ts enabledAgencies). Render provides env vars to builds and
+      # runs alike, so the baked set and the served set cannot diverge within one deploy;
+      # editing this list triggers a redeploy, which re-bakes — the agency set is a
+      # CONFIG, not a code change. An unknown id fails the build/boot loudly rather than
+      # being skipped.
+      - key: GHOSTBUS_AGENCIES
+        value: ttc,miway,yrt,brampton,burlington,drt,oakville,milton,go,upexpress
+
+      # PGLITE_DIR is deliberately NOT set: db.ts prefers .data/pglite-render when the
+      # RENDER env var is present (Render sets it on every build and runtime) and the
+      # directory exists — anchored at the repo root, immune to the process's cwd.
+      # Setting a relative path here would depend on the start command's working
+      # directory, and the RENDER gate keeps a locally-run bake from hijacking dev runs.
+
+      # Pinned rather than inherited: Render's default Node for services created on or
+      # after 2026-04-21 is 24.x and package.json's `engines` range (">=20") is unbounded,
+      # which Render warns resolves to whatever is newest. 24 is the version the project
+      # was actually developed and verified against.
       - key: NODE_VERSION
         value: "24"
 
 # ---------------------------------------------------------------------------
-# After the first deploy the database is EMPTY. Seeding is a one-time operator
-# step, not part of the build (loading 2.1M stop_times would blow the build
-# timeout). Run it once against the same DATABASE_URL, either from your laptop:
+# No post-deploy seeding step. The database ships inside the image, already seeded —
+# the first boot is fully covered, and so is every cold wake after a spin-down.
+# Re-seed = redeploy (Manual Deploy) whenever an agency publishes a new schedule board.
 #
-#     DATABASE_URL='postgresql://...' npm run seed:toronto
-#
-# or from the Render Shell on the deployed service. Re-run it whenever the TTC
-# publishes a new schedule board.
-#
-# Free-tier note: a Free web service spins down after 15 minutes without inbound
-# traffic and takes ~1 minute to wake. That also stops the 45s collector, so the
-# ledger has holes. See README.md for the UptimeRobot /api/health keep-alive.
+# Free-tier keep-alive: a Free web service spins down after 15 minutes without inbound
+# traffic and takes ~1 minute to wake; each wake also resets accumulated observations
+# (see the honesty note at the top). See README.md for the UptimeRobot /api/health ping.
 # ---------------------------------------------------------------------------

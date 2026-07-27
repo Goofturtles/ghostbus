@@ -15,7 +15,7 @@
 
 import { getDb } from './db.ts';
 import { createPoller } from './poller.ts';
-import { enabledAgencies, agency as agencyOf } from './agencies.ts';
+import { enabledAgencies, agency as agencyOf, isScheduleOnly } from './agencies.ts';
 import { demoRequested, bootDemoSource } from './demo.ts';
 import { runAggregationAll } from './aggregate.ts';
 import { buildApi } from './api.ts';
@@ -61,8 +61,62 @@ async function main(): Promise<void> {
   if (demo && source) {
     console.log(`[boot] demo fixture replays agency '${agencies[0].id}' (writes '${source.agency}')`);
   }
-  const pollers = agencies.map((a) => createPoller(db, { source, agency: a }));
-  console.log(`[boot] ${pollers.length} poller(s): ${agencies.map((a) => a.id).join(', ')}`);
+  /**
+   * POLL ONLY THE AGENCIES THAT PUBLISH REALTIME.
+   *
+   * A poller for a schedule-only agency (Oakville, Milton, GO, UP Express — descriptors
+   * with an empty `rt`) has nothing to poll, yet its boot still costs real memory and
+   * real database scans: a full pattern index held for the process lifetime (GO alone is
+   * 54k trip slots, UP Express 28k), a per-trip static-context map, and a fingerprint
+   * pass over every one of the agency's stop_times rows (GO: 1.19M). Dropping the four
+   * dead pollers removes that outright — though measurement (2026-07-27, Windows, ten
+   * agencies) puts the remaining steady RSS at ~800 MiB, dominated by the fixed
+   * node+tsx+PGlite floor plus the six live engines, so this alone does not fit the
+   * 512 MB free instance; see render.yaml's memory note.
+   *
+   * Skipping them changes nothing a rider can observe: their boards are served entirely
+   * from SQL (search, nearby, arrivals with bucket:'none', shapes), and /api/health's
+   * `agencies` list still names them. It is also the honest shape — "we do not watch
+   * this agency's vehicles" (r5gta plan §4.1) is a statement about observation, and a
+   * poller that observes nothing while holding an index was form without substance.
+   * If every enabled agency is schedule-only, the first still gets a poller: the API
+   * needs one handle for health/mode, and its poll loop no-ops exactly as before. That
+   * fallback also covers demo mode by construction — a demo process has exactly one
+   * agency (the fixture's), so even a schedule-only fixture keeps its poller, which is
+   * the source of the replayed bytes.
+   */
+  const observed = agencies.filter((a) => !isScheduleOnly(a));
+  const polled = observed.length > 0 ? observed : [agencies[0]];
+  // Compared by id, not object identity, so this cannot silently misclassify if the
+  // registry ever hands out copies instead of singletons.
+  const polledIds = new Set(polled.map((a) => a.id));
+  const unpolled = agencies.filter((a) => !polledIds.has(a.id));
+  const pollers = polled.map((a) => createPoller(db, { source, agency: a }));
+  console.log(`[boot] ${pollers.length} poller(s): ${polled.map((a) => a.id).join(', ')}` +
+    (unpolled.length > 0 ? ` — schedule-only, not polled: ${unpolled.map((a) => a.id).join(', ')}` : ''));
+
+  // Static reads are union-aware (agency = ANY over every seeded agency), but the
+  // poller-scoped live bits — getVehicleStates, getLivePredictionMs, feed health — still
+  // come from one poller. Handing the API the first is correct for single-agency and the
+  // known gap for multi: the remaining pollers collect and store, their live surfaces
+  // just aren't served yet (Phase 1 §2.7 follow-up).
+  const poller = pollers[0];
+
+  /**
+   * BIND THE PORT BEFORE STARTING THE POLLERS — deploy-critical ordering.
+   *
+   * A poller's first act is `loadStaticContext()`, whose DISTINCT ON join reads every
+   * stop_times row for its agency, and on embedded PGlite every query shares ONE
+   * serialised connection. Starting the pollers first therefore parks that scan (tens of
+   * seconds at full speed, minutes at a free tier's 0.1 CPU) in front of `buildApi`'s own
+   * boot queries, and `app.listen` — and Render fails a deploy whose service never binds
+   * its port in time. Listening first costs nothing: `/api/health` answers without the
+   * database, and every poller-fed surface reports its honest warming-up state until the
+   * background loads land.
+   */
+  const app = await buildApi({ db, poller });
+  await app.listen({ port: PORT, host: HOST });
+  console.log(`GhostBus API listening on http://${HOST}:${PORT}  (GET /api/health)`);
 
   /**
    * STAGGER THE CYCLES. Every poller runs a 45 s loop, and starting them in the same tick
@@ -81,23 +135,12 @@ async function main(): Promise<void> {
     staggerTimers.push(t);
   });
 
-  // Static reads are union-aware (agency = ANY over every seeded agency), but the
-  // poller-scoped live bits — getVehicleStates, getLivePredictionMs, feed health — still
-  // come from one poller. Handing the API the first is correct for single-agency and the
-  // known gap for multi: the remaining pollers collect and store, their live surfaces
-  // just aren't served yet (Phase 1 §2.7 follow-up).
-  const poller = pollers[0];
-
   // Aggregation rebuilds agg_delay/agg_delay_route for the LIVE agency, so a demo process
   // must not run it: it would be a recorded-replay process rewriting live aggregates, and
   // a ten-minute recording could not honestly fill a fourteen-day window anyway. Demo
   // arrivals therefore fall back to schedule-only ETAs with bucket:'none', which is the
   // truthful answer to "what does history say" when there is no history.
   const aggTimer = demo ? null : startAggregation(db);
-
-  const app = await buildApi({ db, poller });
-  await app.listen({ port: PORT, host: HOST });
-  console.log(`GhostBus API listening on http://${HOST}:${PORT}  (GET /api/health)`);
 
   let stopping = false;
   async function shutdown(sig: string): Promise<void> {

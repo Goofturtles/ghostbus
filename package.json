@@ -9,6 +9,7 @@
     "dev:api": "tsx watch server/src/server.ts",
     "dev:web": "vite",
     "build": "tsc -p tsconfig.node.json && vite build",
+    "build:render": "npm ci --include=dev && npm run build && node --import tsx server/src/build_render.ts && node -e \"require('node:fs').accessSync('.data/pglite-render/PG_VERSION')\"",
     "preview": "vite preview",
     "start": "node --import tsx server/src/server.ts",
     "seed:toronto": "tsx server/src/seed_toronto.ts",

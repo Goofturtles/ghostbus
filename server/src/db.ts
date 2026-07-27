@@ -105,7 +105,22 @@ function makePg(connectionString: string): Db {
 }
 
 async function makePglite(dir?: string): Promise<Db> {
-  const dataDir = dir ?? process.env.PGLITE_DIR ?? join(ROOT, '.data', 'pglite');
+  // Precedence: explicit arg > PGLITE_DIR > ON RENDER ONLY, the build-baked deploy
+  // directory if it exists > the dev default. `.data/pglite-render` is produced by
+  // `npm run build:render` (build_render.ts): on Render's free tier it ships inside the
+  // built image, already seeded, so a cold wake boots from it with zero configuration.
+  // Anchored at ROOT rather than read from an env var so it cannot depend on the
+  // process's working directory.
+  //
+  // Gated on RENDER (an env var Render itself sets on every build and runtime) so that a
+  // developer who runs the bake locally does not silently repoint every bare local
+  // process (`npm run dev`, collect, demo) at the baked directory — PGlite is
+  // single-writer, and a dev server holding the dir a re-bake then writes to would be
+  // exactly the corruption DECISIONS §43 warns about. Local behaviour is byte-identical
+  // to before this fallback existed.
+  const baked = join(ROOT, '.data', 'pglite-render');
+  const dataDir = dir ?? process.env.PGLITE_DIR
+    ?? (process.env.RENDER && existsSync(baked) ? baked : join(ROOT, '.data', 'pglite'));
   await mkdir(dataDir, { recursive: true });
   const client = new PGlite(dataDir);
   await client.waitReady;
