@@ -315,6 +315,12 @@ const en = {
     ttcName: 'TTC Routes and Schedules (GTFS) and TTC GTFS-Realtime',
     ttcVia: 'City of Toronto Open Data · Open Government Licence – Toronto',
     ttcAttribution: 'Contains information licensed under the Open Government Licence – Toronto.',
+    // Rendered only when the server's own /api/health agency list names miway, so a
+    // TTC-only deployment never claims a data source it does not use. The attribution
+    // sentence is the descriptor's licence.attribution (server/src/agencies.ts) verbatim.
+    miwayName: 'MiWay GTFS and GTFS-Realtime',
+    miwayVia: 'City of Mississauga Open Data · City of Mississauga Terms of Use',
+    miwayAttribution: 'Contains information made available by the City of Mississauga.',
     mapName: 'Map tiles',
     mapCredit: 'OpenFreeMap · OpenMapTiles · © OpenStreetMap contributors',
     mapLicence: 'Tiles from OpenFreeMap (MIT), built to the OpenMapTiles schema. The underlying data is © OpenStreetMap contributors, licensed under the ODbL.',

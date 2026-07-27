@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { StatsResponse } from '@shared/types';
 import { api } from '@/lib/api';
+import { useLive } from '@/hooks/useLive';
 import { useStore } from '@/store';
 import { fmtClock, fmtNum } from '@/lib/format';
 import { WarningIcon } from './icons';
@@ -37,6 +38,16 @@ export function AboutSheet() {
   const open = useStore((s) => s.aboutOpen);
   const close = () => useStore.getState().openAbout(false);
   const ref = useRef<HTMLDivElement>(null);
+
+  /**
+   * MiWay's licence REQUIRES attribution wherever its data is shown, so its credit block
+   * is keyed to the server's own seeded-agency list — the same list the coverage card is
+   * generated from — rather than hardcoded. A TTC-only deployment must not claim a
+   * Mississauga data source it does not use, and a deployment that serves MiWay must
+   * never open this sheet without the credit. `health` is polled from app start, so it
+   * is present long before a rider can reach this screen.
+   */
+  const servesMiway = useLive((s) => s.health?.agencies.some((a) => a.id === 'miway') ?? false);
 
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [statsError, setStatsError] = useState(false);
@@ -135,6 +146,13 @@ export function AboutSheet() {
             <p className="abt-p"><b className="abt-b">{t('about.ttcName')}</b><br />{t('about.ttcVia')}</p>
             {/* The licence's own required wording, verbatim and untranslated. */}
             <p className="abt-attrib" lang="en">{t('about.ttcAttribution')}</p>
+            {servesMiway && (
+              <>
+                <p className="abt-p"><b className="abt-b">{t('about.miwayName')}</b><br />{t('about.miwayVia')}</p>
+                {/* descriptor.licence.attribution (server/src/agencies.ts), verbatim. */}
+                <p className="abt-attrib" lang="en">{t('about.miwayAttribution')}</p>
+              </>
+            )}
             <p className="abt-p"><b className="abt-b">{t('about.mapName')}</b><br />{t('about.mapLicence')}</p>
             <p className="abt-attrib" lang="en">{t('about.mapCredit')}</p>
           </Section>
