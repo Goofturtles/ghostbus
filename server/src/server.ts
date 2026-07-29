@@ -86,14 +86,29 @@ async function main(): Promise<void> {
    * the source of the replayed bytes.
    */
   const observed = agencies.filter((a) => !isScheduleOnly(a));
-  const polled = observed.length > 0 ? observed : [agencies[0]];
+  /**
+   * GHOSTBUS_POLL_AGENCIES: comma list restricting which agencies get RT pollers — the
+   * memory lever for small instances (each engine holds a pattern index; six of them
+   * measured ~800 MiB total, over Render free's 512 MiB). Agencies excluded here still
+   * seed and serve fully as schedule-only — the app's existing honest degradation —
+   * so coverage (stops, boards, search, plan) is untouched; only live tracking narrows.
+   */
+  const pollFilter = (process.env.GHOSTBUS_POLL_AGENCIES ?? '')
+    .split(',').map((s) => s.trim()).filter(Boolean);
+  const observedWanted = pollFilter.length > 0
+    ? observed.filter((a) => pollFilter.includes(a.id))
+    : observed;
+  for (const id of pollFilter.filter((f) => !observed.some((a) => a.id === f))) {
+    console.warn(`[boot] GHOSTBUS_POLL_AGENCIES entry '${id}' matches no enabled RT agency — ignored (check spelling/case; degradation is safe but silent otherwise)`);
+  }
+  const polled = observedWanted.length > 0 ? observedWanted : [agencies[0]];
   // Compared by id, not object identity, so this cannot silently misclassify if the
   // registry ever hands out copies instead of singletons.
   const polledIds = new Set(polled.map((a) => a.id));
   const unpolled = agencies.filter((a) => !polledIds.has(a.id));
   const pollers = polled.map((a) => createPoller(db, { source, agency: a }));
   console.log(`[boot] ${pollers.length} poller(s): ${polled.map((a) => a.id).join(', ')}` +
-    (unpolled.length > 0 ? ` — schedule-only, not polled: ${unpolled.map((a) => a.id).join(', ')}` : ''));
+    (unpolled.length > 0 ? ` — not polled (schedule-only or filtered): ${unpolled.map((a) => a.id).join(', ')}` : ''));
 
   // Static reads are union-aware (agency = ANY over every seeded agency), but the
   // poller-scoped live bits — getVehicleStates, getLivePredictionMs, feed health — still
