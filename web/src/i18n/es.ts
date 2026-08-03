@@ -426,7 +426,7 @@ const es: Dict = {
   },
   plan: {
     title: 'Planificar un viaje',
-    sub: 'Un solo viaje, de principio a fin. GhostBus planifica trayectos sin trasbordo.',
+    sub: 'Un solo viaje cuando basta, o dos unidos por una caminata corta. Nunca una conexión que GhostBus no pueda verificar.',
     chooseDestination: 'Elegir un destino',
     clearDestination: 'Borrar destino',
     recentTrips: 'Viajes recientes',

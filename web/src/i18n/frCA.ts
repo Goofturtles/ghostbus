@@ -426,7 +426,7 @@ const frCA: Dict = {
   },
   plan: {
     title: 'Planifier un trajet',
-    sub: 'Un seul trajet, d’un bout à l’autre. GhostBus planifie les déplacements sans correspondance.',
+    sub: 'Un seul trajet quand cela suffit, ou deux reliés par une courte marche. Jamais une correspondance que GhostBus ne peut vérifier.',
     chooseDestination: 'Choisir une destination',
     clearDestination: 'Effacer la destination',
     recentTrips: 'Trajets récents',

@@ -473,7 +473,7 @@ const en = {
   },
   plan: {
     title: 'Plan a trip',
-    sub: 'One ride, end to end. GhostBus plans trips you can make without changing vehicles.',
+    sub: 'One ride where one will do, or two joined by a short walk. Never a connection GhostBus cannot check.',
     chooseDestination: 'Choose a destination',
     clearDestination: 'Clear destination',
     recentTrips: 'Recent trips',
