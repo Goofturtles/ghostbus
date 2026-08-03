@@ -4989,3 +4989,61 @@ wrong sequence changes is which scheduled time the trip is measured against, and
 asserted that. It does now, through `first_stop_resid_s` on a window that starts mid-trip.
 The `lockPath` counters are likewise asserted as a partition, so the next silent `continue`
 someone adds fails a test instead of costing a week.
+
+### The corridors that never intersected: same disease, not a second one
+
+Raised in parallel by the UX wave: 156,165 observations had become 62,622 `agg_delay`
+rows, and yet five sampled origin/destination pairs and six downtown TTC boards all came
+back `bucket: 'none'`. The suspicion was a WHERE problem — aggregate keys landing on cells
+riders never query, a crosswalked RT stop id where a static one belongs, an hour-of-week
+skew. It is none of those, and the test that settles it is one endpoint called twice.
+
+**Stop 5299, routes 54 and 954, `/api/stops/5299/arrivals?agency=ttc`:**
+
+| `at` | bucket | n | p50 |
+|---|---|---:|---:|
+| Thu 09:00 EDT | `route-hour` | **136** | −135 s |
+| Thu 07:30 EDT | `route-hour` | **281** | −141 s |
+| Fri 08:00 EDT | `none` | 0 | — |
+| now (Mon 16:00 EDT) | `none` | 0 | — |
+
+Same stop, same routes, same query, same code path. The join works. `stop_id` is the
+STATIC id on both sides (`DelayRow.stopId` is documented as such and the reader keys on it),
+`route_id` is the static id on both sides — it has to be, or `clusterPatterns` could not
+look up `index.byRoute` and no pattern would ever resolve — and `hour_of_week` is computed
+from the SCHEDULED time on both sides, `hourOfWeek(schedEpochS * 1000)` writing and
+`hourOfWeek(r.scheduledMs)` reading.
+
+What is actually missing is **hours**. `hour_of_week` has 168 cells. This deployment has
+ever produced observations in about 29 of them: all of Thursday and Friday up to ~05:00
+EDT, which is exactly the window §53 identified before the five-day `obs=0` stall — and
+then nothing at all until the fixes above. A rider planning on a Monday afternoon is asking
+about a cell that has never had a single observation in it, and `'none'` is the correct and
+honest answer to that question. The corridor did not fail to intersect; there was no
+corridor.
+
+It is closing. Over 25 minutes on the afternoon of the fix, with nothing else changing:
+
+| | 19:52 | 20:17 |
+|---|---:|---:|
+| `trip_delay_obs` | 156,260 | **157,137** |
+| `agg_delay` cells | 62,697 | **63,527** |
+| `agg_delay_route` cells | 2,498 | **2,611** |
+
+113 new route-hour cells in 25 minutes, minted from observations that did not exist before
+the binding fix. The current hour's cells are still under the evidence floors
+(`STOP_HOUR_MIN_N` 8, `ROUTE_HOUR_MIN_N` 20) and will stay there for about an hour: the
+Thursday cells that read n=136–281 took a full day of publishing to get there. Nothing more
+needs to be built for them to fill; they fill by the engine running.
+
+**One thing that will NOT fill, and should not be waited for.** Aggregation requires
+`confidence = 'high'`, and a binding is high-confidence only when its pattern's median
+headway is at least `HIGH_CONFIDENCE_HEADWAY_S`. Sub-300 s headways are refused a binding
+outright. So the most frequent downtown corridors — the ones a rider is most likely to
+sample — produce no aggregatable observation at any throughput, and their boards will read
+`'none'` forever under this design. That is `ORIGIN_BAND_NOTE`'s stance held to, not a
+defect: on a two-minute headway a bus more than half a headway late is shape-identical to
+the next bus on time, and the honest product statement is "too frequent to measure
+reliably". The route-hour cell counts are consistent with roughly half the TTC's routes
+being able to produce evidence at all. Any plan that assumes every board eventually earns a
+grade is wrong for the same reason BLOCKERS 10 was right.
