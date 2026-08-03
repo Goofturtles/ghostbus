@@ -339,7 +339,16 @@ function OptionCard({ o, expanded, onToggle, imperial, destinationName, now }: {
 
   return (
     <li className={`opt-card ${isLive ? 'opt-is-live' : 'opt-is-sched'} ${expanded ? 'opt-open' : ''}`} style={style}>
-      <button type="button" className="opt-main" onClick={onToggle} aria-expanded={expanded}>
+      {/* `aria-current`, NOT `aria-expanded`. Selecting an option is a MOVE within a set,
+          not a disclosure: the map follows the selection, so there is no state in which
+          nothing is selected, and a keyboard user told "expanded" would go looking for a
+          collapse that does not exist. "Current item in a set" is what this actually is. */}
+      <button
+        type="button"
+        className="opt-main"
+        onClick={onToggle}
+        aria-current={expanded ? 'true' : undefined}
+      >
         <span className="opt-rail" aria-hidden />
 
         <span className="opt-body">

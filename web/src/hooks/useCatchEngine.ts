@@ -42,6 +42,11 @@ export interface CatchEngineInput {
   stop: Point | null;
   /** Its id, which is how a walk the map drew is matched to THIS stop and no other. */
   stopId: string | null;
+  /**
+   * And its agency, because the id alone does not identify a stop: 2,824 stop_ids are
+   * shared between the TTC and YRT. The pair is what the board is checked against below.
+   */
+  agency: string | null;
   /** Off by default so the hook costs nothing until a surface actually wants a verdict. */
   enabled?: boolean;
 }
@@ -71,7 +76,7 @@ export interface CatchEngineResult {
 }
 
 export function useCatchEngine(i: CatchEngineInput): CatchEngineResult {
-  const { tripId, routeId, stop, stopId, enabled = true } = i;
+  const { tripId, routeId, stop, stopId, agency, enabled = true } = i;
   useTick(1000);
 
   const arrivals = useLive((s) => s.arrivals);
@@ -119,6 +124,10 @@ export function useCatchEngine(i: CatchEngineInput): CatchEngineResult {
   // can say how old it is instead of silently dropping it.
   const [fix, setFix] = useState<VehicleFix | null>(null);
   const [everSeen, setEverSeen] = useState(false);
+  // A fix belongs to the route it was found for. Both callers hold one route per mount
+  // today, so this never fires — but a retained fix under a changed route would be a
+  // position from a different fleet, and that is not a bug worth waiting to discover.
+  useEffect(() => { setFix(null); setEverSeen(false); }, [routeId]);
   /**
    * KEYED ON THE COORDINATES, NOT ON THE OBJECT — and this is load-bearing.
    *
@@ -168,10 +177,28 @@ export function useCatchEngine(i: CatchEngineInput): CatchEngineResult {
     };
   }, [routeId, atLat, atLon, enabled]);
 
-  // ---------------- the live board row for THIS trip ----------------
-  // Re-found by tripId on every arrivals refresh. When it is no longer there, the run has
-  // left the live board and the verdict degrades to 'gone'.
-  const live = arrivals?.departures.find((d) => d.tripId === tripId) ?? null;
+  /**
+   * ---------------- the live board row for THIS trip, AT THIS STOP ----------------
+   *
+   * Re-found by tripId on every arrivals refresh. When it is no longer there, the run has
+   * left the live board and the verdict degrades to 'gone'.
+   *
+   * THE BOARD IS CHECKED BEFORE IT IS READ, and this is not defensive padding.
+   * `useLive.arrivals` is whatever stop is currently selected — which is not necessarily
+   * the stop this verdict is about, and one trip calls at dozens of stops along its run.
+   * Matching on `tripId` alone would happily find the same bus's arrival at a stop six
+   * kilometres away and render it, under a LIVE pill, as this stop's ETA: a countdown to
+   * the wrong instant wearing the app's strongest truth claim.
+   *
+   * Matched on the PAIR, because a bare stop id is ambiguous across the seeded agencies.
+   * A board that is not this stop's yields no live row at all, which degrades honestly to
+   * the scheduled instant rather than to somebody else's live one.
+   */
+  const boardIsOurs = arrivals != null && stopId != null && agency != null
+    && arrivals.stopId === stopId && arrivals.agency === agency;
+  const live = boardIsOurs
+    ? arrivals.departures.find((d) => d.tripId === tripId) ?? null
+    : null;
   const arrivalMs = live?.liveEtaMs ?? null;
 
   // ---------------- the verdict ----------------

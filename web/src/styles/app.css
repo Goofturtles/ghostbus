@@ -422,7 +422,9 @@
 .map-note { font-size: 14px; font-weight: 600; color: var(--text-2); }
 
 /* ============================ sections ============================ */
-.nearby-panel { display: flex; flex-direction: column; gap: var(--s4); }
+/* Shared column rhythm. Named for the panel that is gone; the plan panel and the
+   stop-board sheet are what use it now. */
+.nearby-panel, .plan-panel { display: flex; flex-direction: column; gap: var(--s4); }
 .gb-section { display: flex; flex-direction: column; }
 
 /* The reference sets its labels TIGHT above their content: 8px, not a full gap. */
@@ -474,7 +476,7 @@
 
 /* THE THREE ATTRIBUTION BANNERS, and they are deliberately three different colours —
    a rider should be able to tell "this is us" from "this is the TTC" without reading.
-   See DECISIONS §45. Only ONE of these can render at a time (NearbyPanel gates them
+   See DECISIONS §45. Only ONE of these can render at a time (FeedBanners gates them
    mutually), so they never stack and never compete for the same slot.
 
    OURS — blue, fill and text from the same family (`--ours-text`, not the brand purple
@@ -1598,7 +1600,7 @@
     background: linear-gradient(to bottom, transparent, var(--side-bg));
   }
 
-  .nearby-panel { gap: var(--s5); }
+  .nearby-panel, .plan-panel { gap: var(--s5); }
   .section-head { margin-bottom: var(--s2); }
 
   /* CURRENT STOP is a card on the sidebar. */

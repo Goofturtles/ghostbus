@@ -53,10 +53,14 @@ export function CatchView({ dep, onClose }: Props) {
   // walk the map drew is matched to this stop, and a position latched without one
   // could be paired with any leg at all.
   const [boardingId, setBoardingId] = useState<string | null>(null);
+  // Latched WITH its agency too: the id alone does not identify a stop, and the engine
+  // checks the pair before it will read a live board as this stop's.
+  const [boardingAgency, setBoardingAgency] = useState<string | null>(null);
   useEffect(() => {
     if (boarding || !arrivals || arrivals.lat == null || arrivals.lon == null) return;
     setBoarding({ lat: arrivals.lat, lon: arrivals.lon });
     setBoardingId(arrivals.stopId);
+    setBoardingAgency(arrivals.agency);
   }, [arrivals, boarding]);
 
   // ---------------- the live machinery ----------------
@@ -64,9 +68,10 @@ export function CatchView({ dep, onClose }: Props) {
   // verdict — lives in useCatchEngine, shared with the in-progress journey view so the two
   // surfaces cannot answer "do I make it?" differently. See that file for why it moved.
   const {
-    verdict: v, live, arrivalMs, fix, everSeen, ourFault, agencyFeedDown, noStop, retryGeo,
+    verdict: v, live, arrivalMs, everSeen, ourFault, agencyFeedDown, noStop, retryGeo,
   } = useCatchEngine({
-    tripId: dep.tripId, routeId: dep.routeId, stop: boarding, stopId: boardingId,
+    tripId: dep.tripId, routeId: dep.routeId, stop: boarding,
+    stopId: boardingId, agency: boardingAgency,
   });
 
   // The next departure of this route that the feed is actually tracking — offered

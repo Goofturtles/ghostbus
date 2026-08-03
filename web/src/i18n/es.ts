@@ -58,7 +58,6 @@ const es: Dict = {
   },
   sections: {
     currentStop: 'Parada actual',
-    nearbyDepartures: 'Salidas cercanas',
     savedPlaces: 'Lugares guardados',
     viewAll: 'Ver todo',
     alerts: 'Alertas',

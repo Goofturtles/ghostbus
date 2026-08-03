@@ -37,7 +37,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { PlanResponse } from '@shared/types';
 import { api } from '@/lib/api';
-import { useLive, liveNow } from '@/hooks/useLive';
+import { useLive, liveNow, isBackedOff, selectedNearbyStop } from '@/hooks/useLive';
 import { useTick } from '@/hooks/useTick';
 import { useStore, paceMps } from '@/store';
 import { fmtDistance } from '@/lib/format';
@@ -56,6 +56,10 @@ const FIRST_WINDOW_MIN = 90;
 /** When nothing runs in the next 90 minutes, one wider request walks forward to the
  *  next real service day rather than eight day-by-day probes. */
 const NEXT_SERVICE_WINDOW_MIN = 4320;
+/** How often a plan on screen is re-asked. Twice the board's 30s cadence, because a plan
+ *  is a much heavier query — and it is what bounds how stale any live mark on the options
+ *  list can be. See the re-plan effect for why once-and-never-again was a defect. */
+const REPLAN_INTERVAL_MS = 60_000;
 
 type Phase =
   | { kind: 'idle' }
@@ -84,6 +88,38 @@ export function PlanView() {
   // Same monotonic guard the rest of the app uses: a slow reply for a destination the
   // rider has since changed must never overwrite the current plan.
   const seqRef = useRef(0);
+  /** Which question the phase currently on screen is the answer to — see the refresh
+   *  note in the fetch effect. Null until the first plan is asked for. */
+  const lastAskedRef = useRef<string | null>(null);
+
+  /**
+   * THE PLAN IS RE-ASKED, because the options list paints LIVE off it.
+   *
+   * This fetched once and never again — which was survivable when the tab rendered one
+   * static summary card, and is not now. `optionIsLive` draws a live arc and a LIVE pill
+   * from `liveEtaMs`, the countdown pins itself at "Due" the moment `boardMs` passes, and
+   * `buildOptions` filters unreachable options against the `nowMs` it was handed. Left on
+   * screen, the list would sit there showing a bus that departed forty minutes ago as
+   * live and due — the app's strongest truth claim, attached to its stalest data.
+   *
+   * The departure board already solved this by refreshing every 30 seconds. A plan is a
+   * heavier query, so it re-asks at 60, which is well inside the planner's own rate limit
+   * and bounds the staleness of every live mark on the list to one minute.
+   *
+   * The shared backoff is honoured: a re-plan is exactly the kind of avoidable request
+   * that must not be fired at a server which has just told us to stop.
+   */
+  const [replanNonce, setReplanNonce] = useState(0);
+  useEffect(() => {
+    if (!target || !geo) return;
+    const bump = () => { if (!document.hidden && !isBackedOff()) setReplanNonce((n) => n + 1); };
+    const timer = window.setInterval(bump, REPLAN_INTERVAL_MS);
+    // Returning to a backgrounded tab is the worst case for staleness — the timer was
+    // throttled or asleep, so the answer on screen may be many minutes old.
+    const onVis = () => { if (!document.hidden) bump(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => { clearInterval(timer); document.removeEventListener('visibilitychange', onVis); };
+  }, [target, geo]);
 
   useEffect(() => {
     if (!target || target.lat == null || target.lon == null || !geo) {
@@ -94,7 +130,22 @@ export function PlanView() {
     const to = { lat: target.lat, lon: target.lon };
     const seq = ++seqRef.current;
     const ctrl = new AbortController();
-    setPhase({ kind: 'loading' });
+    /**
+     * A REFRESH IS NOT A NEW QUESTION — but a NEW QUESTION MUST NEVER KEEP THE OLD ANSWER.
+     *
+     * Dropping to the skeleton on every 60s re-plan would make the answer flicker away and
+     * back under the reader, so a refresh holds what is on screen. Deciding that on
+     * `phase.kind === 'done'` alone would be the worse bug in the other direction: pick a
+     * new destination while an answer is showing and the previous destination's options
+     * would sit there, unlabelled, as though they were the answer to the new question.
+     *
+     * So the two cases are told apart by what the effect is actually running FOR. Same
+     * question, keep the answer; anything else, show that we are working on it.
+     */
+    const key = `${target.agency}/${target.stopId}/${to.lat},${to.lon}/${geo.lat},${geo.lon}`;
+    const isRefresh = lastAskedRef.current === key;
+    lastAskedRef.current = key;
+    setPhase((cur) => (isRefresh && cur.kind === 'done' ? cur : { kind: 'loading' }));
 
     (async () => {
       try {
@@ -116,7 +167,7 @@ export function PlanView() {
     })();
 
     return () => { ctrl.abort(); };
-  }, [target, geo]);
+  }, [target, geo, replanNonce]);
 
   const now = liveNow();
 
@@ -210,16 +261,29 @@ export function PlanView() {
    */
   const settled = phase.kind === 'done' || phase.kind === 'error';
   const nearest = nearby[0] ?? null;
+  /**
+   * A RUNNING JOURNEY OWNS THE SELECTION, and this yields to it.
+   *
+   * PlanView stays mounted underneath GO mode, and both write `selectedStopId`. Every
+   * 60-second re-plan produces fresh candidate objects, so this effect re-runs and would
+   * re-point the board at whatever the list's top option is now — while the journey view,
+   * whose own effect does not re-run, keeps describing the stop the rider is walking to.
+   * The live board would then belong to a different stop than the verdict on screen.
+   */
+  const journeyRunning = useStore((s) => s.journey != null);
   useEffect(() => {
+    if (journeyRunning) return;
     if (boardStop) {
-      if (useStore.getState().selectedStopId === boardStop.stopId) return;
+      // Matched on the PAIR: a bare stop id is ambiguous across the seeded agencies.
+      if (useStore.getState().selectedStopId === boardStop.stopId
+        && selectedNearbyStop()?.agency === boardStop.agency) return;
       useLive.getState().openStop(boardStop);
       return;
     }
     if (!unresolved || !settled || !nearest) return;
     if (useStore.getState().selectedStopId === nearest.stopId) return;
     useLive.getState().openStop(nearest);
-  }, [boardStop, unresolved, settled, nearest]);
+  }, [boardStop, unresolved, settled, nearest, journeyRunning]);
 
   /**
    * `target` is a dependency, and without it this desynced permanently: `setPlanTarget`

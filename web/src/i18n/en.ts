@@ -59,7 +59,6 @@ const en = {
   },
   sections: {
     currentStop: 'Current stop',
-    nearbyDepartures: 'Nearby departures',
     savedPlaces: 'Saved places',
     viewAll: 'View all',
     alerts: 'Alerts',

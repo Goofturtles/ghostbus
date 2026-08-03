@@ -23,8 +23,7 @@
 import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useStore, paceMps } from '@/store';
-import { useLive, liveNow } from '@/hooks/useLive';
-import { useTick } from '@/hooks/useTick';
+import { useLive, liveNow, selectedNearbyStop } from '@/hooks/useLive';
 import { useCatchEngine, nextTrackedOf } from '@/hooks/useCatchEngine';
 import { journeyProgress, type Journey, type JourneyStep, optionLikelihood } from '@/lib/journey';
 import { fmtClock, fmtDistance } from '@/lib/format';
@@ -191,7 +190,8 @@ function StepRow({ step, state, imperial, children }: {
 
 export function JourneyView() {
   const { t } = useTranslation();
-  useTick(1000);
+  // NO useTick HERE. useCatchEngine already ticks at 1000ms and this component renders
+  // from it, so a second timer would double the re-render rate for no extra freshness.
   const j = useStore((s) => s.journey);
   const endJourney = useStore((s) => s.endJourney);
   const pace = useStore((s) => s.pace);
@@ -212,7 +212,12 @@ export function JourneyView() {
   const boardStopId = boardStop?.stopId ?? null;
   useEffect(() => {
     if (!boardStop) return;
-    if (useStore.getState().selectedStopId === boardStop.stopId) return;
+    // Matched on the PAIR. An id-only guard would skip re-opening whenever the currently
+    // selected stop happened to share its id with this one on another agency — 2,824 ids
+    // are shared between the TTC and YRT alone — and the board would stay pointed at a
+    // different city's platform while this screen described ours.
+    if (useStore.getState().selectedStopId === boardStop.stopId
+      && selectedNearbyStop()?.agency === boardStop.agency) return;
     useLive.getState().openStop(boardStop);
   }, [boardStop]);
 
@@ -248,6 +253,7 @@ export function JourneyView() {
     stop: boardStop && boardStop.lat != null && boardStop.lon != null
       ? { lat: boardStop.lat, lon: boardStop.lon } : null,
     stopId: boardStopId,
+    agency: boardStop?.agency ?? null,
     enabled: j != null,
   });
 
@@ -389,10 +395,17 @@ export function JourneyView() {
                 ? 'todo'
                 : i < progress.index ? 'done' : i === progress.index ? 'now' : 'todo';
               const isFirstRide = i === firstRideIndex;
-              // The live prediction for the first ride comes from the board this screen
-              // selected; later rides have no board loaded, so they count down to the
-              // instant the plan was built on and say SCHEDULED.
-              const liveMs = isFirstRide ? engine.arrivalMs : null;
+              /**
+               * The first ride reads the live board this screen selected — and ONLY that,
+               * so a run that has left the board degrades to its scheduled instant rather
+               * than resurrecting the stale prediction the plan was built with.
+               *
+               * A later ride has no board loaded, but the plan response carried its own
+               * `liveEtaMs` if the agency was tracking it, and refusing to say so would
+               * under-claim: the run genuinely is being tracked. Anything without one
+               * counts down to the plan's instant and wears the SCHEDULED chip.
+               */
+              const liveMs = isFirstRide ? engine.arrivalMs : (s.candidate?.liveEtaMs ?? null);
               return (
                 <StepRow key={i} step={s} state={state as 'done' | 'now' | 'todo'} imperial={imperial}>
                   {s.kind === 'ride' && s.startMs > now && (

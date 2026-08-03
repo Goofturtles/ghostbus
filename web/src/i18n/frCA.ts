@@ -58,7 +58,6 @@ const frCA: Dict = {
   },
   sections: {
     currentStop: 'Arrêt actuel',
-    nearbyDepartures: 'Départs à proximité',
     savedPlaces: 'Lieux enregistrés',
     viewAll: 'Tout voir',
     alerts: 'Alertes',
