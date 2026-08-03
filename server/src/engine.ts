@@ -21,7 +21,7 @@ import {
 import {
   nearestStopOnRoute, mergeRtTrip, resolvePatterns, promotionState,
   crossRouteAgreement, monotonicityViolations, crosswalkedStaticSeqs, corroboratedConfidence,
-  structurallyAmbiguousStops, GEO_SELF_CONFIRM_M, createPatternCreditStore, validationSufficient,
+  structurallyAmbiguousStops, GEO_SELF_CONFIRM_M, createPatternCreditStore,
   XWALK_MIN_CONFIDENCE,
   type RtPattern, type StaticPatternLite, type XwalkEntry, type PatternState,
   type PatternValidation, type XwalkState,
@@ -314,7 +314,7 @@ export function createDelayEngine(
   function rtStopOfKey(key: string): string { return key.slice(key.indexOf('|') + 1); }
   function routeOfKey(key: string): string { return key.slice(0, key.indexOf('|')); }
   function fireAndLog(p: Promise<unknown>, what: string): void {
-    p.catch((e) => console.error(`[engine] ${what} failed:`, e instanceof Error ? e.message : e));
+    p.catch((e) => console.error(`[engine:${writeAgency}] ${what} failed:`, e instanceof Error ? e.message : e));
   }
 
   // ---------- static reload ----------
@@ -338,7 +338,7 @@ export function createDelayEngine(
   async function reloadStatic(newBoardTag: string): Promise<void> {
     const fingerprint = await boardFingerprint(db, agency);
     if (ready && boardTag === newBoardTag && fingerprint !== null && index.fingerprint === fingerprint) {
-      console.log(`[engine] board ${boardTag} is unchanged (fingerprint ${fingerprint.slice(0, 12)}) ` +
+      console.log(`[engine:${writeAgency}] board ${boardTag} is unchanged (fingerprint ${fingerprint.slice(0, 12)}) ` +
         '— keeping the loaded index, no static read');
       // The reload still gets to retry a crosswalk restore that failed at boot. loadCrosswalk
       // swallows its own errors (a failed restore costs warm-up, not correctness), so before
@@ -378,7 +378,7 @@ export function createDelayEngine(
       claimedStatic.clear(); firstStopResids.length = 0;
       patternValidation.clear();
       resolvedStatic = new Map(); resolvedIter = new Map();
-      console.log(`[engine] board changed to ${boardTag} — crosswalk and bindings invalidated`);
+      console.log(`[engine:${writeAgency}] board changed to ${boardTag} — crosswalk and bindings invalidated`);
     }
     // COLD START. `rt_stop_xwalk` used to be written and never read, so every restart began
     // from an empty crosswalk and needed ~8 cycles (a propagated entry needs 8 corroborating
@@ -387,7 +387,7 @@ export function createDelayEngine(
     // nothing, ever. Only on a genuinely cold crosswalk: a periodic reload of the same board
     // must not stomp on fresher in-memory state with the row we ourselves wrote.
     if (xwalk.size === 0) await loadCrosswalk();
-    console.log(`[engine] pattern index: ${index.patterns.size} patterns, ${index.tripIds.size} trips, ` +
+    console.log(`[engine:${writeAgency}] pattern index: ${index.patterns.size} patterns, ${index.tripIds.size} trips, ` +
       `${index.routeStops.size} routes with geometry (${(index.elapsedMs / 1000).toFixed(1)}s, ${index.source})`);
   }
 
@@ -408,7 +408,7 @@ export function createDelayEngine(
     }
     const t0 = Date.now();
     ambiguousStops = structurallyAmbiguousStops(index.routeStops, dirsOfStop);
-    console.log(`[engine] ${ambiguousStops.size} of ${dirsOfStop.size} static stops are structurally ` +
+    console.log(`[engine:${writeAgency}] ${ambiguousStops.size} of ${dirsOfStop.size} static stops are structurally ` +
       `ambiguous (a same-route stop within 80 m served the same direction) — the second ` +
       `promotion path refuses on these (${Date.now() - t0} ms)`);
   }
@@ -440,7 +440,7 @@ export function createDelayEngine(
 
   /**
    * Demote entries whose only claim to `confirmed` was time-domain validation that has
-   * since been withdrawn — a pattern distrusted by the consistency gate, or one whose
+   * since been WITHDRAWN — a pattern distrusted by the consistency gate, or one whose
    * bindings were all voided by the drift breaker.
    *
    * The promotion loop only rewrites entries the current cycle re-proposed, and a stop can
@@ -448,6 +448,25 @@ export function createDelayEngine(
    * an entry would keep backing delay rows on evidence that no longer exists — the exact
    * failure the warm-start guard closes across a restart, left open within one process.
    * Paths 1 and 2 rest on evidence that only accumulates, so they are never swept.
+   *
+   * WITHDRAWN, NOT MERELY UNEARNED — the distinction this sweep got wrong for five days
+   * in production, and the reason it is spelled out here. `validationFor` answers null
+   * for two unrelated situations: a pattern the audit REJECTED, and a pattern that has
+   * simply not earned credit yet. Sweeping on the second is a daily ratchet, because
+   * `runCycle` clears the whole credit store at every service-day rollover BY DESIGN
+   * (binding credit is evidence about the service that ran, not about the board). At
+   * ~4 a.m. almost nothing is running to re-earn it, so a sweep keyed on "no credit"
+   * demoted a slice of the crosswalk every night — and because every entry is upserted
+   * to `rt_stop_xwalk` each cycle, each night's demotion PERSISTED into the next day.
+   * Measured on ghostbus.tech over one 6-week board tag, TTC's occurrence coverage
+   * walked 50.0% -> 50.0% -> 46.1% -> 43.9% -> 43.7% on successive days and then sat
+   * permanently under the 50% `xwalkOccurrenceCoverage` gate, which drops every observation
+   * the engine computes: `obs+=0` on every cycle for five days.
+   *
+   * So the trigger is distrust, which is permanent and order-independent, and never the
+   * absence of credit the rollover is entitled to reset. This is exactly the failure
+   * DECISIONS names as defect 3 ("a stop stops being proposed the moment its RT pattern
+   * is QUARANTINED") — the sweep simply asked a broader question than that sentence.
    */
   function demoteUnvalidated(): void {
     for (const e of xwalk.values()) {
@@ -458,7 +477,8 @@ export function createDelayEngine(
       // it would demote every identity stop absent from the current minute's feed.
       if (e.source === 'identity') continue;
       if (e.source === 'geo' && e.geoResidM != null && e.geoResidM <= GEO_SELF_CONFIRM_M) continue;
-      if (validationSufficient(validationFor(e.rtStopId))) continue;
+      const agreeing = xwalkAgreeingPatterns.get(e.rtStopId);
+      if (!agreeing || !patternValidation.anyDistrusted(agreeing)) continue;
       e.state = 'candidate';
     }
   }
@@ -532,7 +552,7 @@ export function createDelayEngine(
         else if (state === 'confirmed' && confidence >= XWALK_MIN_CONF) usable++;
       }
       if (res.rows.length > 0) {
-        console.log(`[engine] restored ${res.rows.length} crosswalk entries for ${boardTag} ` +
+        console.log(`[engine:${writeAgency}] restored ${res.rows.length} crosswalk entries for ${boardTag} ` +
           `(${usable} usable for a delay row, ${conflictedStops.size} conflicted` +
           `${demoted > 0 ? `, ${demoted} back to candidate pending fresh binding evidence` : ''}) — warm start`);
       }
@@ -593,7 +613,7 @@ export function createDelayEngine(
         maxStaticLen: index.maxLenByRoute.get(tu.routeId) ?? null,
       });
       if (out.pattern) rtPatternByTrip.set(tu.rtTripId, out.pattern);
-      else console.warn(`[engine] route ${tu.routeId} hit the RT pattern cap; not clustering further`);
+      else console.warn(`[engine:${writeAgency}] route ${tu.routeId} hit the RT pattern cap; not clustering further`);
     }
     collapseDuplicatePatterns();
   }
@@ -1163,7 +1183,7 @@ export function createDelayEngine(
     quarantined.add(b.rtPatternId);
     bindings.delete(rtTripId);
     claimedStatic.delete(b.staticTripId);
-    console.warn(`[engine] consistency gate: rt trip ${rtTripId} seq ${bad.stopSequence} — bound trip has ` +
+    console.warn(`[engine:${writeAgency}] consistency gate: rt trip ${rtTripId} seq ${bad.stopSequence} — bound trip has ` +
       `${bad.expected}, crosswalk says ${bad.got}; voided binding + quarantined pattern`);
     fireAndLog(db.query(
       "UPDATE rt_trip_binding SET state='voided' WHERE agency=$1 AND service_date=$2 AND rt_trip_id=$3",

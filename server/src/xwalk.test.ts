@@ -387,6 +387,27 @@ test('CREDIT: the per-trip cycle set is capped without changing any verdict', ()
   assert.equal(validationSufficient(s.validation(['P'])), false, 'one trip is still one binding');
 });
 
+test('CREDIT: anyDistrusted separates REJECTED from not-yet-earned, which validation() cannot', () => {
+  // The five-day production stall: `validation()` answers null for a pattern the audit
+  // threw out AND for one that simply has no credit yet, and `demoteUnvalidated` was
+  // taking confirmed crosswalk entries away on both. Since the service-day rollover
+  // clears the whole store BY DESIGN, the second case fires every night on every pattern.
+  const s = createPatternCreditStore();
+  s.credit('P', 't1', 1);
+  s.distrust('P');
+  assert.equal(s.validation(['P']), null);
+  assert.equal(s.validation(['Q']), null, 'uncredited Q is indistinguishable to validation()');
+  assert.equal(s.anyDistrusted(['P']), true, 'but P was REJECTED');
+  assert.equal(s.anyDistrusted(['Q']), false, 'and Q was merely never credited');
+  assert.equal(s.anyDistrusted(['Q', 'P']), true, 'one rejected pattern taints the set');
+  assert.equal(s.anyDistrusted([]), false);
+
+  // And the rollover the ratchet rode in on: after clear(), nothing is distrusted, so a
+  // sweep keyed on anyDistrusted takes nothing away while credit is being re-earned.
+  s.clear();
+  assert.equal(s.anyDistrusted(['P']), false, 'a cleared store has withdrawn nothing');
+});
+
 test('CREDIT: retracting the last binding drops the pattern, and clear() resets distrust', () => {
   const s = createPatternCreditStore();
   s.credit('P', 't1', 1);

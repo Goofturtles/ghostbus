@@ -174,7 +174,37 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
 }
 
-/** Aggregate on boot (non-fatal if it fails) and then hourly in-process. */
+/**
+ * Recycle write-ahead log segments.
+ *
+ * PGlite is Postgres compiled to WASM and run SINGLE-PROCESS: the background checkpointer
+ * that a normal server runs does not exist, so nothing ever services the checkpoint request
+ * `max_wal_size` raises. The GUC is set (1 GB, in the generated postgresql.conf) and is
+ * simply never acted on — measured on ghostbus.tech, `pg_wal` reached 87 GB across 5,514
+ * segments in 4.7 days of uptime, on a 96 GB disk, with not one segment recycled since boot.
+ * The database itself was 2.1 GB. A clean shutdown fixed it in 3.2 seconds (PGlite's
+ * `close()` runs the shutdown checkpoint), which is the whole diagnosis: checkpoints work,
+ * nothing was asking for one.
+ *
+ * `ALTER SYSTEM SET` + `pg_reload_conf()` is not an alternative — verified locally against a
+ * throwaway datadir, `SHOW max_wal_size` still reports the boot value afterwards, because
+ * there is no postmaster to signal. An explicit statement on a timer is the only lever.
+ *
+ * Cheap, and cheapest exactly when it matters least: a checkpoint with nothing dirty to
+ * flush is close to a no-op, so this costs nothing on a quiet instance and bounds `pg_wal`
+ * at roughly one interval's writes (~800 MB/h measured) on a busy one. Postgres RECYCLES
+ * rather than deletes, so the segment count plateaus instead of falling — that plateau is
+ * the fix working, not a partial one.
+ */
+async function checkpoint(db: Awaited<ReturnType<typeof getDb>>): Promise<void> {
+  if (db.driver !== 'pglite') return; // a real server runs its own checkpointer
+  await db.query('CHECKPOINT');
+}
+
+/**
+ * Aggregate on boot (non-fatal if it fails) and then hourly in-process, and checkpoint the
+ * WAL on the same tick — see `checkpoint` for why that is this process's job at all.
+ */
 function startAggregation(db: Awaited<ReturnType<typeof getDb>>): NodeJS.Timeout {
   runAggregationAll(db)
     .then((r) => console.log(`[aggregate] boot: agg_delay=${r.stopHourRows} agg_delay_route=${r.routeHourRows} from ${r.obsConsidered} obs (${(r.elapsedMs / 1000).toFixed(1)}s)`))
@@ -183,6 +213,11 @@ function startAggregation(db: Awaited<ReturnType<typeof getDb>>): NodeJS.Timeout
     runAggregationAll(db)
       .then((r) => console.log(`[aggregate] hourly: agg_delay=${r.stopHourRows} agg_delay_route=${r.routeHourRows} from ${r.obsConsidered} obs`))
       .catch((e) => console.error('[aggregate] hourly failed:', e));
+    // Independent of the aggregation above: a failed aggregation must not cost the
+    // instance its only WAL recycling, and vice versa.
+    checkpoint(db)
+      .then(() => console.log('[checkpoint] wal recycled'))
+      .catch((e) => console.error('[checkpoint] failed:', e));
   }, AGG_INTERVAL_MS);
   t.unref?.();
   return t;

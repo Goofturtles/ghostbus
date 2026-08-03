@@ -494,6 +494,16 @@ export interface PatternCreditStore {
   distrust(staticPatternId: string): void;
   /** The best-validated single pattern among those given, or null. */
   validation(staticPatternIds: Iterable<string>): PatternValidation | null;
+  /**
+   * Has the consistency gate caught any of these patterns?
+   *
+   * `validation()` answers null for two different situations — a pattern the audit
+   * REJECTED, and a pattern that simply has not earned credit yet — and the difference
+   * decides whether a confirmed crosswalk entry should be taken away. This separates
+   * them, so a caller can demote on withdrawn evidence without also demoting on
+   * evidence that has not been re-earned. See `demoteUnvalidated` in engine.ts.
+   */
+  anyDistrusted(staticPatternIds: Iterable<string>): boolean;
   clear(): void;
   readonly size: number;
 }
@@ -534,6 +544,10 @@ export function createPatternCreditStore(): PatternCreditStore {
         if (!best || Math.min(here.bindings, here.cycles) > Math.min(best.bindings, best.cycles)) best = here;
       }
       return best;
+    },
+    anyDistrusted(staticPatternIds) {
+      for (const patternId of staticPatternIds) if (distrusted.has(patternId)) return true;
+      return false;
     },
     clear() { credits.clear(); distrusted.clear(); },
     get size() { return credits.size; },
