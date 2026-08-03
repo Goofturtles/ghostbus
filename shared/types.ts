@@ -92,6 +92,28 @@ export interface HealthResponse {
   /** the loaded static GTFS board's calendar coverage, "YYYYMMDD..YYYYMMDD". */
   boardCoverage: string;
   /**
+   * Whether the accountability engine is currently WRITING observations, and if not,
+   * which honesty gate is holding them back and why.
+   *
+   * Added after a production stall in which the engine computed observations and
+   * dropped every one of them for five days: the gate was doing its job and saying so
+   * only into the process log, so the outage was invisible to anything short of
+   * `journalctl` on the box. The suppression is not a fault in itself — refusing to
+   * publish unverified measurements is the whole design — but a suppression that lasts
+   * days is, and it now shows up in the same place everything else about this
+   * deployment's health does.
+   *
+   * Scoped to the poller this endpoint already reports feeds for; the process log
+   * carries the same line, per agency, tagged with the agency id.
+   */
+  delayEngine: {
+    suppressed: boolean;
+    /** the operator-readable sentence — null exactly when `suppressed` is false. */
+    reason: string | null;
+    /** which gate refused, e.g. 'xwalkOccurrenceCoverage'. Null when publishing. */
+    gate: string | null;
+  };
+  /**
    * EVERY AGENCY THIS DEPLOYMENT SERVES, in configured order.
    *
    * The client renders its coverage claim from this list rather than from a hardcoded

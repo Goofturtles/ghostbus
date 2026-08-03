@@ -338,7 +338,13 @@ const fakePoller: PollerHandle = {
    * strictly typed, so the compiler still proves every METHOD of `PollerHandle` exists
    * here, which is the property that was missing when `now()`/`getMode()` went absent.
    */
-  getJoinStats: () => ({ boardCoverage: '20260726..20260905' } as ReturnType<PollerHandle['getJoinStats']>),
+  // `delayEngine` is spelled out rather than left to the cast: /api/health reads its
+  // suppression state, and a stub that omits it makes the endpoint throw a 500 that
+  // surfaces as an unrelated assertion about `mode` several fields later.
+  getJoinStats: () => ({
+    boardCoverage: '20260726..20260905',
+    delayEngine: { suppressionReason: null, suppressionGate: null },
+  } as ReturnType<PollerHandle['getJoinStats']>),
   isIndexReady: () => true,
   /** The DATA clock. Live it is the wall clock, and these tests are a live instance. */
   now: () => Date.now(),

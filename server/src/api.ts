@@ -819,10 +819,19 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     // a recording and a live feed are indistinguishable on the wire, which is exactly
     // the confusion Demo Mode exists to prevent (DECISIONS §44).
     const m = poller.getMode();
+    const js = poller.getJoinStats();
     const body: HealthResponse = {
       ok, dbDriver: db.driver, lastPollAtMs: h.lastPollAtMs, collectorMode: 'in-process',
-      feeds, boardCoverage: poller.getJoinStats().boardCoverage, agencies: seededForWire, serverNowMs: dataNow(),
+      feeds, boardCoverage: js.boardCoverage, agencies: seededForWire, serverNowMs: dataNow(),
       mode: m.mode, demo: m.demo,
+      // `suppressionReason` is the engine's own sentence, passed through verbatim rather
+      // than re-worded here: the log line and this field must never drift into two
+      // different accounts of why the same gate refused.
+      delayEngine: {
+        suppressed: js.delayEngine.suppressionReason != null,
+        reason: js.delayEngine.suppressionReason,
+        gate: js.delayEngine.suppressionGate,
+      },
     };
     return reply.send(body);
   });
