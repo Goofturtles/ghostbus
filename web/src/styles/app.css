@@ -1531,7 +1531,12 @@
   .search-row,
   .plan-legs > .plan-leg,
   .plan-summary,
-  .search-rows > .search-row:nth-child(n) { animation-delay: 0ms !important; }
+  .search-rows > .search-row:nth-child(n),
+  /* The options list joins the same flattening as it joins the same cascade. Note
+     `.dep-list > .dep-card` (above) has staggered delays and is NOT in this list —
+     a pre-existing gap, left alone because this pass has no other reason to be in
+     that rule, but it is the same defect. */
+  .opt-list > .opt-card:nth-child(n) { animation-delay: 0ms !important; }
 }
 
 /* ======================================================================== */

@@ -3173,6 +3173,43 @@ tonal re-verification. That is the next piece of work in this file, and it now h
 that will not lie to it. The correction is written into `mapStyle.ts` at both the palette and the
 casing layer so it cannot be missed.
 
+### 7. What code review caught, and it was not cosmetic
+
+Five findings, three of them real defects this pass introduced:
+
+1. **An unterminated CSS comment silently deleted `.opt-when`.** A `*/` closed a comment
+   and the prose kept going, so the parser read the remaining paragraph plus `.opt-when`
+   as one selector prelude and dropped the whole rule — taking the flex/baseline layout
+   and the 92px reserved width with it. **The §F probe passed all twelve combinations
+   with the rule missing**, because an unreserved column is not an overlap. Worth
+   recording: the probe is a floor, not a proof, and a layout law can be broken without
+   it firing.
+2. **`voxelVehicles.setTheme` updated two uniforms of eight.** It set `uLit`/`uShade`
+   only, so a dark->light swap left a bus wearing the other theme's crevice, ground AO
+   and face gradient — and would now have left it wearing the night seam depth. This is
+   the same failure the note above `CUBE_VERT` warns about for the shader source, one
+   level up, so the fix is the same shape: `applyCubeTheme(mat, theme)` is exported from
+   `voxelMesh.ts` and both call sites use it. Neither can drift again.
+3. **The roof gradient dotted a CUBE-frame offset against a WORLD-frame light axis.**
+   Every block is yawed by its own footprint's PCA orientation, so each roof's bright
+   side pointed in an arbitrary direction. Pre-existing and invisible at the old 0.10
+   amplitude; not invisible at 0.24. `vLocalW` now carries the offset rotated into world
+   XY.
+4. **The roof gradient is now one-sided — darken only.** Two-sided, it brightened the
+   near half PAST the authored tone, which the dark theme merely wasted and the light
+   theme clipped: its roofs are authored near white (`#f6f4f1` is 0.965), so any lift
+   saturates them to flat 1.0 and manufactures the exact uniform region this pass exists
+   to break up.
+5. `MAX_TICKS` 6 -> 5. `count(step) = N` puts the span in `[(N-1)*step, (N+1)*step)`, so
+   the worst-case label gap at N is `track/(N+1)` — 45px at six ticks on the 314px track,
+   which an fr-CA `13 h 45` can touch. Five leaves ~52px.
+
+**And a note on the backtick.** Twice in this pass a backtick inside a GLSL template
+literal silently terminated it, and both times the error surfaced as `TS1005` on a line
+two hundred lines away. There is now a one-line guard in the scratchpad that greps each
+shader body for one; it belongs in this file's history rather than in the build, because
+the compiler does catch it — it just does not say what it is.
+
 ### 6. Verification
 
 Production build, real Chrome, each of the four combinations in its own rate-limit window, every
@@ -5047,3 +5084,241 @@ the next bus on time, and the honest product statement is "too frequent to measu
 reliably". The route-hour cell counts are consistent with roughly half the TTC's routes
 being able to produce evidence at all. Any plan that assumes every board eventually earns a
 grade is wrong for the same reason BLOCKERS 10 was right.
+
+## §55 — The flat face was the gap, not the flat frame: seams, a re-centred palette, and the axis that was left out
+
+The user's verdict was *"the design is really lacking, make the voxel art style better"*,
+and the brief named the residual gaps as per-face shading depth, block-tint variety,
+ground/road contrast and tree canopy read. Three of those four turned out to be real and
+one did not — and the one that mattered most was none of them. It was a metric §39 named
+and no pass since had run.
+
+**The instrument** (`vox.py`, one code path over both images) resamples the reference
+sheet's desktop map region and our production capture to the reference's own 0.950 m/px
+with a box filter, then measures six-band luminance, the convex-corner face ratios (§40's
+discriminator), wall vertical ramp, roof-tone hue and luminance spread, §40's canopy
+segmentation, ground/built/open structure, and — new here — **flatness**: quantise
+luminance into 4-level bins, label 8-connected components, and ask what share of the frame
+sits in any region bigger than 0.2% of it.
+
+### 1. Flatness: §39 named this and then measured the wrong surface
+
+§39 wrote: *"The reference's largest connected same-tone region is 0.38% of the frame.
+Ours is 1.97%... Our faces are three flat measured tones, so a bigger block is simply a
+bigger flat region."* It concluded the lever was block size and closed the file. Measured
+whole-frame at HEAD, ours is **2.96% against the reference's 0.47%**, with **33.5% of our
+frame in flat regions against its 5.1%** — six times worse, and worse than §39 reported.
+
+Dumping the winning regions says why the whole-frame figure is not the one to chase: ours
+is `#0e142c` at luminance 20.6, in one piece, in the bottom-left of the frame — **the rail
+corridor south of Front Street.** That is real emptiness in real data, and §42 already
+closed the book on it. So the metric was restricted to **building surface** (luminance
+>= 32, a band both images share), which is what §39 was actually talking about:
+
+| | reference | before | after |
+|---|---|---|---|
+| largest single face patch | 0.72% | 1.10% | **0.78%** |
+| face patches over 0.2% | 9 | 59 | **3** |
+| **share of face area in them** | **3.0%** | **22.4%** | **1.2%** |
+
+**The cause, at 5x: a tone blend cannot draw a seam between two identical tones.** §39
+rebuilt every mass as a cluster of cubes and the clusters are there — but along a
+cluster's flank the neighbour is another cube's wall on the SAME plane facing the SAME
+way, so the bevel's blend toward "the tone across the edge" is a no-op and five cubes drew
+as one uncut quad. The cube grid existed in the silhouette and nowhere on the surface.
+The reference plainly shows both cuts at 5x: a vertical line where two cubes stand side by
+side, and a horizontal one at each course.
+
+So the seam is a **multiply**, not a blend — it darkens near the edge whatever the tone is,
+which is what the gap between two abutting blocks does to the light. It cannot disturb the
+measured face ratios, because it scales the lit and shaded walls by the same factor and
+dies to nothing at the face centre where those ratios are sampled. Three parts:
+
+* **roof seam** (`SEAM_M` 2.6 m, `seam` 0.58) — its own width and depth, because `BEVEL_M`
+  is shared with the wall corner and that one is deliberately tiny: its own comment
+  records that blending the wall corner hard bunched the two measured wall tones from
+  0.641 : 0.491 to 0.676 : 0.650;
+* **wall seams**, vertical at the cube edge and horizontal at each course, at **0.36** of
+  the roof seam's depth. Parity was built and rejected at 5x: at full strength the course
+  lines read as a drawn stripe across every wall, which is what §41's depth-buffer banding
+  looked like, and this pass must not reintroduce by hand the appearance it just measured
+  away;
+* **`gradientTop` split from `gradient`** (0.24 against the walls' unchanged 0.10). The two
+  faces measured differently and one number could not serve both: the wall-ramp instrument
+  puts the reference at 0.027 and ours at 0.053, so our walls are already twice as
+  contoured as the reference's, while its roofs visibly ramp and ours were flat quads.
+
+### 2. The palette: the mean was right again, and the shape was wrong again
+
+Measured over roof pixels only (luminance > 58, saturation > 0.10), both images at
+0.950 m/px:
+
+| | reference | before | after |
+|---|---|---|---|
+| circular mean hue | 233.3 | 238.2 | **231.1** |
+| hue, fullest 10 deg bin | 34.3% | **51.2%** | **35.6%** |
+| roof luminance IQR | 12.9 | **23.6** | **11.4** |
+| p95 frame luminance | 77.7 | 87.7 | **75.0** |
+| frame above luminance 80 | 3.7% | 7.2% | **3.0%** |
+
+Two independent faults, and §38's hue work fixed neither because it was measuring the mean,
+which was already close. **Half our roof pixels sat in one 10 deg bin** — the same "narrow
+spike reads as one colour" failure §38 diagnosed, one bin further warm. And our roof
+**luminance** spread was 1.8x the reference's, which is `tintJitter` stacking on families
+that already spanned 66..89.
+
+The six families are now **constructed from the measurement** rather than nudged toward it
+— each solved for a target Rec.709 luminance at a chosen hue and saturation — giving a
+dealt-weighted mean of **76.6**, the reference's own measured roof median to one decimal,
+over a family span of 70..83 rather than 66..89. `tintJitter` narrows +/-15% -> **+/-7%**
+(fill the gaps between six tones, not smear the population); `hueJitter` widens
++/-11 deg -> **+/-18 deg**.
+
+### 3. The frame, and what did not move
+
+| | reference | before | after |
+|---|---|---|---|
+| bands 0-16 / 16-32 / 32-48 / 48-64 / 64-80 / 80+ | 3.3 / 39.5 / 28.7 / 13.2 / 11.5 / 3.7 | 0.7 / 53.0 / 16.0 / 16.2 / 7.0 / 7.2 | 0.6 / 50.9 / **18.0** / 16.7 / **10.7** / **3.0** |
+| **six-band deviation** | — | **39.8** | **29.8** |
+| median frame luminance | 35.1 | 26.7 | **29.7** |
+| built coverage | 61.7% | 47.7% | 49.9% |
+
+**The 16-32 band is still 12 points over and built coverage 13 points under, and neither is
+a shading problem.** §42 measured that even drawing every ring the tiles hand us we reach
+47.2% against 58.6%; the deficit is in the data. This pass did not re-open it and no lever
+here pretends to.
+
+The contact shadow was widened (`grow` 2.6 + 0.10h -> 4.2 + 0.22h) and its falloff made a
+continuous gradient with the knee at zero. **It is worth recording that this did NOT do
+what it was changed to do.** It was aimed at the whole-frame flatness figure; measured, it
+moved that figure 2.96 -> 4.30 in the WRONG direction on the first attempt (a 0.26 knee
+with the falloff squared — squaring shortens the tail rather than lengthening it, so the
+wider quad laid down a bigger flat plate) and 4.29 after the knee went to zero. It is kept
+because it is a closer reading of the reference's own ground and costs nothing measurable,
+but the flatness win in §1 is the seams, not this.
+
+### 4. The tree trunk: built, measured, reverted
+
+§40 closed the trees on a close match and left one residual: *"the reference's canopy sits
+on a visible brown trunk (~4 px wide at 0.950 m/px) and ours has none."* It was built — the
+canopy lifted off the ground on a `base`, a third `fill-extrusion` layer filtered on a `tk`
+property off the same source, the colour authored against the RENDER rather than the sample
+after the first attempt drew at luminance 26 against a ground of 20 and was invisible.
+
+**It renders and it cannot be seen.** `queryRenderedFeatures` reports 21 trunks against 110
+canopy cubes, so the geometry is there; at 9x it is not, and the reason is structural. The
+reference's canopy is a tall narrow cluster with gaps you can see the trunk through and
+below. Ours is a 1.76-canopy-wide slab about 1.0 canopy tall, and from the diorama's
+48 degree pitch its own silhouette projects below the trunk base at every point. No trunk
+under its centre can be visible without changing the cluster's proportions — which would
+move canopy width, the one tree statistic §40 pinned and this pass re-measured as still
+good (27.5 m against the reference's 29.4, coverage 1.59% against 1.51%).
+
+So `voxelTrees.ts` is **unchanged**, and this is the honest negative result rather than a
+layer of invisible geometry and a floating-canopy risk. §31's "sub-pixel at every framing"
+was wrong about the reason and right about the outcome. If a future pass wants the trunk,
+the change is the cluster's aspect — `CLUSTER_OFFSET` / `CLUSTER_SIDE` / `HEIGHT_RATIO` —
+and it needs its own measurement of canopy width first.
+
+### 5. The journey surfaces: the piece the transit notes had deliberately left out
+
+`design-refs/transit-app-notes.md` listed four adoptions and one of them was never built:
+*"itineraries as rows on a SHARED PROPORTIONAL TIME AXIS."* It is built now, in
+`buildTimeAxis` / `axisFrac` (pure, in `lib/journey.ts`, with four new tests).
+
+It is a drawing, not a claim: every instant on it is one the plan already published and the
+card already prints in words. **And it refuses to draw.** A menu of real transit options
+does not guarantee that every row is readable — the last row can be tomorrow morning's
+first service — so the axis returns null when the span exceeds three hours or the narrowest
+option is under 6% of the track, and the list renders without it. Clamping, bucketing or
+breaking the scale would all draw a length that is not the duration.
+
+Also: the countdown numeral 30 -> **38px** (46 on desktop), with `.opt-when`'s reserved
+width recomputed from the 390px arithmetic rather than left where it was; the brand wash
+0.07 flat -> a **0.22 directional ramp** that has decayed to nothing before it reaches the
+text column, so `readableOn`'s contrast argument at the head of that file still holds; and
+the options list joins the SAME stagger the search rows and plan legs use, including its
+`prefers-reduced-motion` delay flattening.
+
+**A dead declaration removed in passing:** `font-variant-numeric: var(--tabular)` on
+`.opt-when`, where `--tabular` is `"tnum" 1, "lnum" 1` — font-feature-settings syntax,
+which `font-variant-numeric` rejects, so it never did anything. Tabular figures come from
+`body` and from the `.tnum` class. **The same dead declaration is still on `.pct-num` and
+`.jr-count-num`** and was left there, because this pass had no other reason to be in those
+rules.
+
+### 7. What code review caught, and it was not cosmetic
+
+Five findings, three of them real defects this pass introduced:
+
+1. **An unterminated CSS comment silently deleted `.opt-when`.** A `*/` closed a comment
+   and the prose kept going, so the parser read the remaining paragraph plus `.opt-when`
+   as one selector prelude and dropped the whole rule — taking the flex/baseline layout
+   and the 92px reserved width with it. **The §F probe passed all twelve combinations
+   with the rule missing**, because an unreserved column is not an overlap. Worth
+   recording: the probe is a floor, not a proof, and a layout law can be broken without
+   it firing.
+2. **`voxelVehicles.setTheme` updated two uniforms of eight.** It set `uLit`/`uShade`
+   only, so a dark->light swap left a bus wearing the other theme's crevice, ground AO
+   and face gradient — and would now have left it wearing the night seam depth. This is
+   the same failure the note above `CUBE_VERT` warns about for the shader source, one
+   level up, so the fix is the same shape: `applyCubeTheme(mat, theme)` is exported from
+   `voxelMesh.ts` and both call sites use it. Neither can drift again.
+3. **The roof gradient dotted a CUBE-frame offset against a WORLD-frame light axis.**
+   Every block is yawed by its own footprint's PCA orientation, so each roof's bright
+   side pointed in an arbitrary direction. Pre-existing and invisible at the old 0.10
+   amplitude; not invisible at 0.24. `vLocalW` now carries the offset rotated into world
+   XY.
+4. **The roof gradient is now one-sided — darken only.** Two-sided, it brightened the
+   near half PAST the authored tone, which the dark theme merely wasted and the light
+   theme clipped: its roofs are authored near white (`#f6f4f1` is 0.965), so any lift
+   saturates them to flat 1.0 and manufactures the exact uniform region this pass exists
+   to break up.
+5. `MAX_TICKS` 6 -> 5. `count(step) = N` puts the span in `[(N-1)*step, (N+1)*step)`, so
+   the worst-case label gap at N is `track/(N+1)` — 45px at six ticks on the 314px track,
+   which an fr-CA `13 h 45` can touch. Five leaves ~52px.
+
+**And a note on the backtick.** Twice in this pass a backtick inside a GLSL template
+literal silently terminated it, and both times the error surfaced as `TS1005` on a line
+two hundred lines away. There is now a one-line guard in the scratchpad that greps each
+shader body for one; it belongs in this file's history rather than in the build, because
+the compiler does catch it — it just does not say what it is.
+
+### 6. Verification
+
+`npm test` **500 / 500** (496 before, plus four on the axis). `tsc --noEmit` and
+`tsc -p tsconfig.node.json --noEmit` both clean.
+
+**All twelve combinations** — 390x844 and 1280x800, dark and light, `en-CA` / `fr-CA` /
+`es`, on the home view AND the options view: **`trueOverlaps` 0, `hScroll` false, clipping
+audit 0 hits, 0 console and page errors**, axis present in all twelve.
+
+**Computed contrast** on every new or changed string, read off the live page in both themes
+(not from the tokens — a `var()` that resolves to nothing computes to invalid silently):
+`.opt-axis-label` 6.02 dark / 4.89 light, `.opt-num` 14.5 / 17.8, `.opt-unit` 6.14 / 6.77,
+`.opt-dest` 14.5 / 17.8, `.opt-meta` 6.14 / 6.77, `.evidence-chip` 5.32 / 5.31, `.pill`
+4.95 / 6.05. All pass.
+
+**One measured failure, and it is not this pass's:** `.opt-go-label` / `.opt-go-sub` read
+**4.38:1** against the 4.5 they need, identically in both themes — so it is the route
+colour against `readableOn`'s white, not a theme bug. `.opt-go` is untouched here. The fix
+is not a colour tweak: `readableOn` returns *the better of white and near-black*, which is
+not the same as *a colour that clears 4.5:1*, and making that guarantee real changes a
+helper `RouteBadge` uses everywhere. It needs its own pass.
+
+Frame timings, foregrounded, 4.5 s of `requestAnimationFrame` with `triggerRepaint`:
+**p50 4.2 / p95 4.9 / worst 21.4 ms**, against p50 4.2 / p95 5.4 / worst 27.0 measured on
+the deployed build in the same session. Flat, which is what a shader change with no new
+geometry costs. Camera unchanged and measured: zoom 16.182, pitch 48, FOV 16.
+
+Evidence in the session scratchpad: `FINAL-scale-matched-400m.png` (reference, before and
+after, all resampled to 0.950 m/px BEFORE cropping so a cube is the same size on screen in
+every panel) and `FINAL-zoom5x-{1,2,3}.png` (the same 85 m of ground at 5x, which is where
+the seams are legible and where the case for them was actually made).
+
+**One operational note.** Iterating on a shader needs the app running, and this session did
+it WITHOUT PGlite — three of whose directories have now been corrupted by hard kills — by
+running `vite` and standing a 20-line proxy on :8799 that forwards `/api` to the deployed
+service. No repo change, no seed, no `postmaster.pid`. The local dev build reproduced the
+deployed build's camera and every measured statistic to within 0.3, which is what makes it
+a legitimate place to measure.

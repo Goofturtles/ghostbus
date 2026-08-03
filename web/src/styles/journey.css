@@ -40,6 +40,27 @@
 }
 
 /*
+ * The cascade. Deliberately the SAME shape as `.search-rows > .search-row` and
+ * `.plan-legs > .plan-leg` in app.css — same keyframe, same easing token, same
+ * nth-child mechanism, same cap — rather than a second stagger with its own feel.
+ * nth-child and not an inline custom property for the reason recorded there: a React
+ * row that survives a re-render keeps its DOM node, so an inline delay would not
+ * replay anyway and would instead sit there re-triggering on every tick.
+ *
+ * `--ease-out` is cubic-bezier(0.16, 1, 0.3, 1) — the house decelerate curve. The
+ * reduced-motion arm that flattens these delays lives beside the others in app.css,
+ * because a delay left in place under `prefers-reduced-motion` makes a row invisible
+ * for its delay and then pop, which is worse than the animation it replaces.
+ */
+.opt-list > .opt-card { animation: reveal-row var(--dur-sheet) var(--ease-out) both; }
+.opt-list > .opt-card:nth-child(1) { animation-delay: var(--stagger-base); }
+.opt-list > .opt-card:nth-child(2) { animation-delay: calc(var(--stagger-base) + var(--stagger-step)); }
+.opt-list > .opt-card:nth-child(3) { animation-delay: calc(var(--stagger-base) + 2 * var(--stagger-step)); }
+.opt-list > .opt-card:nth-child(4) { animation-delay: calc(var(--stagger-base) + 3 * var(--stagger-step)); }
+.opt-list > .opt-card:nth-child(5) { animation-delay: calc(var(--stagger-base) + 4 * var(--stagger-step)); }
+.opt-list > .opt-card:nth-child(n + 6) { animation-delay: calc(var(--stagger-base) + 5 * var(--stagger-step)); }
+
+/*
  * The card. `--opt-brand` is the lead route's own GTFS route_color, set inline by the
  * component; it is used at full strength ONLY on the accent rail, and as a low-alpha wash
  * behind the card. Flooding the whole card with an arbitrary agency colour would put text
@@ -54,11 +75,19 @@
   overflow: hidden;
   transition: box-shadow var(--dur-micro) var(--ease-standard);
 }
+/*
+ * The wash. STRENGTHENED and made DIRECTIONAL rather than raised as a flat sheet, which
+ * is how the transit notes' "the route's brand colour is the whole card background" is
+ * honoured without breaking the contrast argument above: the colour is strong where it
+ * meets the rail and has decayed to nothing by the time it reaches the text column, so
+ * `.opt-dest`, `.opt-meta` and the evidence chips still sit on `--surface` and keep the
+ * ratios they were tuned against. Flat 0.07 becomes a 0.20 -> 0 ramp over the first 55%.
+ */
 .opt-card::before {
   content: '';
   position: absolute; inset: 0;
-  background: var(--opt-brand, transparent);
-  opacity: 0.07;
+  background: linear-gradient(100deg, var(--opt-brand, transparent) 0%, transparent 58%);
+  opacity: 0.22;
   pointer-events: none;
 }
 .opt-open { box-shadow: var(--shadow-float), var(--inner-top), 0 0 0 1.5px var(--opt-brand, var(--brand)); }
@@ -99,13 +128,28 @@
 .opt-meta { font-size: 12px; line-height: 1.45; color: var(--text-2); }
 
 /* The countdown column, with a reserved minimum so a one-digit and a two-digit
-   countdown do not reflow the text column beside them. */
+   countdown do not reflow the text column beside them.
+
+   RESERVED WIDTH, recomputed for the bigger numeral rather than left at the old 76px.
+   At 390px: 390 - 2*16 (`.side-inner`) = 358 card, - 4 rail - 12 gap - 12 gap - 16 right
+   padding = 314px of content. 92px here leaves 222px for the text column, which is wider
+   than the 200px a two-digit countdown at this size actually needs and keeps
+   `.opt-dest`'s ellipsis off short French destinations.
+
+   The `font-variant-numeric: var(--tabular)` that stood here is GONE, not moved:
+   `--tabular` is `"tnum" 1, "lnum" 1`, which is font-feature-settings syntax, so the
+   declaration was invalid and did nothing. Tabular figures come from `body`'s own
+   `font-variant-numeric: tabular-nums` and from the `.tnum` class the component sets.
+   The same dead declaration is still on `.pct-num` and `.jr-count-num`; not touched
+   here because this pass has no other reason to be in those rules. */
 .opt-when {
   display: flex; align-items: baseline; gap: 3px;
-  min-width: 76px; justify-content: flex-end;
-  font-variant-numeric: var(--tabular);
+  min-width: 92px; justify-content: flex-end;
 }
-.opt-num { font-size: 30px; font-weight: 700; line-height: 1; color: var(--text); }
+/* The countdown is the biggest thing on the card, per the transit notes' "giant ETA
+   numerals". 30 -> 38 on a phone (46 on desktop, below). `.opt-when`'s reserved width
+   grows with it — see there for the 390px arithmetic. */
+.opt-num { font-size: 38px; font-weight: 750; line-height: 1; color: var(--text); letter-spacing: -0.02em; }
 /* A clock time carries letters (a meridiem), so it needs real leading — the digits-only
    rule above would clip a descender in some locales. */
 .opt-num-clock { font-size: 20px; line-height: 1.3; }
@@ -121,6 +165,83 @@
 /* The live arc. Only ever rendered on a genuinely live-tracked boarding departure —
    the component decides, this only draws. */
 .opt-arc { color: var(--live-text); flex: 0 0 auto; }
+
+/* ==================== the shared proportional time axis ====================
+ *
+ * Every row is drawn on ONE domain (`buildTimeAxis`), so a bar that is wider is a trip
+ * that is longer, and a bar that starts further left leaves sooner. The gridlines are
+ * wall-clock instants, labelled once above the list.
+ *
+ * §D/§F notes for anything added here later:
+ *   · the track is `position: relative` and every child is positioned in PERCENT of it,
+ *     so nothing can exceed the card's own width and nothing can cause horizontal
+ *     scroll at 390px. Do not put a px offset on a child without also shrinking the
+ *     track by the same amount.
+ *   · `.opt-card` is `overflow: hidden`. The label row is deliberately OUTSIDE the
+ *     cards, in `.opt-axis-head`, because a label at 0% or 100% would otherwise be
+ *     half-clipped by the card's own rounding — the same class of bug as `.jr-bar-now`.
+ *   · the track has a real height and the segments are its children, not absolutely
+ *     positioned over a zero-height box, so nothing here can measure 0px on a device.
+ */
+.opt-axis { padding: 2px var(--s4) var(--s3) calc(4px + var(--s3)); }
+
+.opt-axis-track {
+  position: relative;
+  height: 12px;
+  border-radius: 6px;
+  background: var(--field);
+  /* The card behind carries the route's brand wash, so `--field` alone does not
+     reliably read as a channel on every route colour. The hairline gives the track an
+     edge that survives any hue underneath it. */
+  box-shadow: inset 0 0 0 1px var(--hairline);
+}
+
+/* Measured, not guessed: `--hairline-2` computes to rgba(255,255,255,0.09) in the dark
+   theme, which over `--field` is invisible at 1px. `--text-3` at 0.35 is the faintest
+   value that still reads as a rule on both themes. */
+.opt-axis-grid {
+  position: absolute; top: -3px; bottom: -3px; width: 1px;
+  background: var(--text-3);
+  opacity: 0.35;
+  transform: translateX(-0.5px);
+}
+
+/* A segment. `left`/`width` come from the axis; everything else is the leg's identity. */
+.opt-seg {
+  position: absolute; top: 0; bottom: 0;
+  border-radius: 3px;
+  /* A one-minute walk on a two-hour axis is a fraction of a pixel wide. It still
+     happened, so it still draws — at the narrowest width that survives a device pixel. */
+  min-width: 2px;
+}
+.opt-seg-ride { background: var(--seg-brand, var(--brand)); }
+/* Walks and waits are not vehicles and must not read as one. Dotted leaders, in the
+   same language the map's beaded walk path uses. */
+.opt-seg-walkToStop,
+.opt-seg-walkToDest {
+  background-image: radial-gradient(circle at 2px 50%, var(--text-3) 1.1px, transparent 1.3px);
+  background-size: 5px 100%;
+  opacity: 0.9;
+}
+.opt-seg-transfer { background: var(--hairline-2); }
+
+/* The gridline labels, once for the whole list. */
+.opt-axis-head {
+  position: relative;
+  height: 16px;
+  margin: 0 var(--s4) var(--s2) calc(4px + var(--s3));
+}
+/* The head reuses `.opt-axis-track` only for its geometry — it must carry neither the
+   channel fill nor the channel's hairline, or the label row draws as an empty bordered
+   box above the list. (It did. Caught at 1280x800 light, fr-CA.) */
+.opt-axis-head .opt-axis-track { height: 16px; background: none; box-shadow: none; }
+.opt-axis-label {
+  position: absolute; top: 0;
+  transform: translateX(-50%);
+  font-size: 11px; line-height: 1.45;
+  color: var(--text-3);
+  white-space: nowrap;
+}
 
 .opt-evidence {
   position: relative;
@@ -367,7 +488,13 @@
     padding: var(--s5) var(--s6) var(--s6);
   }
   .jr-headline { font-size: 30px; }
-  .opt-num { font-size: 34px; }
+  .opt-num { font-size: 46px; }
+  /* The sidebar is 320px, so the reserved numeral column has to be checked here too:
+     320 - 2*16 = 288 card, - 4 rail - 12 - 12 - 16 = 244 of content, of which 108
+     is the numeral and 136 the text. Tighter than the phone, which is why the desktop
+     axis track is a little shorter as well. */
+  .opt-when { min-width: 108px; }
+  .opt-axis-track { height: 14px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

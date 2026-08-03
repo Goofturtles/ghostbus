@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import type { RideCandidateDto, ItineraryDto, PlanResponse } from '../../../shared/types.ts';
 import {
   buildOptions, toJourney, journeyProgress, nextRideStep, optionIsLive, optionLikelihood,
-  optionLegs, optionBoardMs, MAX_OPTIONS,
+  optionLegs, optionBoardMs, MAX_OPTIONS, buildTimeAxis, axisFrac,
 } from './journey.ts';
 import { buildRidePlan, buildItineraryPlan } from './plan.ts';
 import { MIN_OBSERVATIONS, ON_TIME_SEC } from './likelihood.ts';
@@ -390,4 +390,52 @@ test('the next ride to catch is the next one that has not departed, then nothing
   assert.equal(nextRideStep(j, plan.leg1.boardMs + 1)?.step.candidate?.tripId, 'T2');
   // Both gone: a catch verdict here would be a countdown to nothing.
   assert.equal(nextRideStep(j, plan.leg2.boardMs + 1), null);
+});
+
+// ---------------------------------------------------------- the shared time axis
+
+const axisOptions = (specs: Array<[number, number]>) =>
+  buildOptions(rideRes(specs.map(([dep, arr], i) =>
+    candidate({ tripId: 'T' + i, departureMs: T0 + dep, arrivalMs: T0 + arr }))), opts).options;
+
+test('the axis spans every option and its gridlines land on wall-clock instants', () => {
+  const options = axisOptions([[600_000, 1_200_000], [1_800_000, 2_400_000]]);
+  const axis = buildTimeAxis(options);
+  assert.ok(axis, 'expected an axis over two ordinary options');
+  // The domain is the plans' own instants, not a rounded window.
+  assert.equal(axis.t0, Math.min(...options.map((o) => o.plan.leaveByMs)));
+  assert.equal(axis.t1, Math.max(...options.map((o) => o.plan.doorMs)));
+  assert.ok(axis.ticks.length >= 2 && axis.ticks.length <= 6, `ticks ${axis.ticks.length}`);
+  for (const tk of axis.ticks) {
+    assert.equal(tk % axis.stepMs, 0, 'a gridline must be a whole step of wall clock');
+    assert.ok(tk >= axis.t0 && tk <= axis.t1, 'a gridline must lie inside the domain');
+  }
+});
+
+test('a menu too spread out to draw to scale REFUSES an axis rather than squashing a row', () => {
+  // One option now, one twelve hours out (the `widened` next-service case). Drawing both
+  // on one domain would render the first as a hairline, so nothing is drawn at all.
+  assert.equal(buildTimeAxis(axisOptions([[600_000, 1_200_000], [43_200_000, 43_800_000]])), null);
+  // A single option has nothing to be compared against, so it earns no axis either.
+  assert.equal(buildTimeAxis(axisOptions([[600_000, 1_200_000]])), null);
+});
+
+test('axisFrac is clamped, so a live re-estimate outside the domain cannot draw off-track', () => {
+  const axis = buildTimeAxis(axisOptions([[600_000, 1_200_000], [1_800_000, 2_400_000]]));
+  assert.ok(axis);
+  assert.equal(axisFrac(axis, axis.t0 - 9_999_999), 0);
+  assert.equal(axisFrac(axis, axis.t1 + 9_999_999), 1);
+  assert.ok(Math.abs(axisFrac(axis, (axis.t0 + axis.t1) / 2) - 0.5) < 1e-9);
+});
+
+test('every step of every option lies inside the axis it was laid out on', () => {
+  const options = axisOptions([[600_000, 1_200_000], [1_500_000, 2_100_000], [1_800_000, 2_400_000]]);
+  const axis = buildTimeAxis(options);
+  assert.ok(axis);
+  for (const o of options) {
+    for (const s of toJourney(o, 'somewhere').steps) {
+      assert.ok(s.startMs >= axis.t0 && s.endMs <= axis.t1,
+        `step ${s.kind} ${s.startMs}..${s.endMs} outside ${axis.t0}..${axis.t1}`);
+    }
+  }
 });

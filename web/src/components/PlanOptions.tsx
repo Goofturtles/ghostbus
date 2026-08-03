@@ -25,8 +25,8 @@ import { useTranslation } from 'react-i18next';
 import type { RideCandidateDto } from '@shared/types';
 import type { Likelihood } from '@/lib/likelihood';
 import {
-  type PlanOption, type OptionList, optionLegs, optionIsLive, optionLikelihood,
-  optionBoardMs, toJourney,
+  type PlanOption, type OptionList, type TimeAxis, optionLegs, optionIsLive, optionLikelihood,
+  optionBoardMs, toJourney, buildTimeAxis, axisFrac,
 } from '@/lib/journey';
 import { useStore } from '@/store';
 import { useTick } from '@/hooks/useTick';
@@ -305,9 +305,54 @@ function OptionDetail({ o, imperial, destinationName }: {
   );
 }
 
-function OptionCard({ o, expanded, onToggle, imperial, destinationName, now }: {
+/**
+ * ONE OPTION, DRAWN TO SCALE on the list's shared axis.
+ *
+ * `aria-hidden` on purpose, and it is not a shortcut. Every instant this draws is already
+ * on the card in words — the countdown, "About N min door to door", "Arrive around H:MM"
+ * — so to a screen reader this is a second, worse reading of the same sentence. What it
+ * adds is only available to the eye: the COMPARISON between rows, which exists because
+ * they share one domain.
+ *
+ * The four step kinds keep the same vocabulary they have in GO mode: rides in the route's
+ * own brand colour, walks as dotted leaders, a transfer wait as a gap. `--seg-brand`
+ * carries each leg's own colour, so a two-leg itinerary shows both.
+ */
+function OptionAxis({ axis, o, destinationName }: {
+  axis: TimeAxis; o: PlanOption; destinationName: string;
+}) {
+  const steps = toJourney(o, destinationName).steps;
+  const pct = (ms: number) => `${(axisFrac(axis, ms) * 100).toFixed(3)}%`;
+  return (
+    <div className="opt-axis" aria-hidden>
+      <div className="opt-axis-track">
+        {axis.ticks.map((tk) => (
+          <span key={tk} className="opt-axis-grid" style={{ left: pct(tk) }} />
+        ))}
+        {steps.map((s, i) => {
+          const brand = s.candidate ? `#${s.candidate.color.replace('#', '')}` : undefined;
+          const left = axisFrac(axis, s.startMs);
+          const right = axisFrac(axis, s.endMs);
+          return (
+            <span
+              key={`${s.kind}-${i}`}
+              className={`opt-seg opt-seg-${s.kind}`}
+              style={{
+                left: `${(left * 100).toFixed(3)}%`,
+                width: `${Math.max(0, (right - left) * 100).toFixed(3)}%`,
+                ...(brand ? ({ '--seg-brand': brand } as React.CSSProperties) : {}),
+              }}
+            />
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function OptionCard({ o, expanded, onToggle, imperial, destinationName, now, axis }: {
   o: PlanOption; expanded: boolean; onToggle: () => void;
-  imperial: boolean; destinationName: string; now: number;
+  imperial: boolean; destinationName: string; now: number; axis: TimeAxis | null;
 }) {
   const { t } = useTranslation();
   const startJourney = useStore((s) => s.startJourney);
@@ -395,6 +440,10 @@ function OptionCard({ o, expanded, onToggle, imperial, destinationName, now }: {
         </span>
       </button>
 
+      {/* This option laid on the list's shared clock. Null when the menu is too spread out
+          to draw honestly — see `buildTimeAxis`. */}
+      {axis && <OptionAxis axis={axis} o={o} destinationName={destinationName} />}
+
       {/* The percentage where the observations paid for one; the plain evidence line where
           they did not. Never both, and never a substitute number. */}
       <div className="opt-evidence">
@@ -447,6 +496,10 @@ export function PlanOptions({ list, selectedId, onSelect, imperial, destinationN
 
   if (list.options.length === 0) return null;
 
+  // One domain for the whole list, so the rows are comparable. Null when the menu spans
+  // too much clock to draw to scale — the list is unaffected either way.
+  const axis = buildTimeAxis(list.options);
+
   return (
     <section className="opt-section" aria-labelledby="gb-opt-head">
       <div className="section-head">
@@ -454,6 +507,25 @@ export function PlanOptions({ list, selectedId, onSelect, imperial, destinationN
           {widened ? t('plan.nextServiceEyebrow') : t('plan.optionsEyebrow', { count: list.totalCount })}
         </span>
       </div>
+
+      {/* The gridlines' own labels, once for the list rather than once per card. Hidden
+          from assistive tech for the same reason the rows are: it is a scale for a
+          drawing, and every instant it marks is already spoken in each card's text. */}
+      {axis && (
+        <div className="opt-axis-head" aria-hidden>
+          <div className="opt-axis-track">
+            {axis.ticks.map((tk) => (
+              <span
+                key={tk}
+                className="opt-axis-label tnum"
+                style={{ left: `${(axisFrac(axis, tk) * 100).toFixed(3)}%` }}
+              >
+                {fmtClock(tk)}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       <ul className="opt-list">
         {list.options.map((o) => (
@@ -467,6 +539,7 @@ export function PlanOptions({ list, selectedId, onSelect, imperial, destinationN
             imperial={imperial}
             destinationName={destinationName}
             now={now}
+            axis={axis}
           />
         ))}
       </ul>

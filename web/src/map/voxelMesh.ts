@@ -178,8 +178,43 @@ interface MeshPalette {
   crevice: number;
   /** Ground contact darkening at the foot of a wall. */
   aoStrength: number;
-  /** Across-face gradient amplitude — no face in the reference is one flat tone. */
+  /** Across-face gradient amplitude on WALLS — no face in the reference is one flat tone. */
   gradient: number;
+  /**
+   * Across-face gradient amplitude on ROOFS, held separately from the wall figure
+   * because the two were measured separately and they disagree.
+   *
+   * A wall-ramp instrument run over both images (each resampled to the reference's
+   * own 0.950 m/px, one code path) reads each wall's top / middle / bottom third
+   * relative to its own middle band, and puts the reference at a 0.027 ramp against
+   * ours at 0.053 — i.e. our WALLS are already twice as contoured as the reference's
+   * and must not be pushed further. The roofs are the opposite: the reference's big
+   * lavender roofs visibly ramp across their width and ours are flat quads. One
+   * number could not serve both, so there are now two.
+   *
+   * SWEPT, at 0.14 / 0.19 / 0.24, a production capture each, measured through the same
+   * six-band instrument the whole §38-§42 series used:
+   *
+   *   gradientTop     0.24    0.19    0.14     reference
+   *   band deviation  34.6    32.1    29.6         —
+   *   bands 64-80      8.1     9.5    10.7       11.5
+   *   bands over 80    2.7     2.9     3.1        3.7
+   *   p95             72.5    73.6    75.2       77.7
+   *   face patches     1.2%    1.2%    1.2%       3.0%
+   *
+   * 0.14 is best on every tonal statistic, and the flatness figure does not move across
+   * the sweep at all — which is the useful finding: the roof gradient is not what broke
+   * up the flat faces, the SEAMS are, so this knob is free to be set purely on tone. The
+   * light theme is scaled by the same ratio rather than swept on its own, for the reason
+   * §40 gave for leaving LIGHT_TREES alone: the reference's only daylight panel is a
+   * 280x166 phone card and cannot support the measurement.
+   */
+  gradientTop: number;
+  /**
+   * ROOF SEAM depth: how far a roof's tone is pulled toward its wall tone at the
+   * cube's own edge. See SEAM_M.
+   */
+  seam: number;
 }
 
 const PALETTES: Record<VoxelTheme, MeshPalette> = {
@@ -199,20 +234,81 @@ const PALETTES: Record<VoxelTheme, MeshPalette> = {
     // same masking, both panels � so the roofs really were eight levels dark, and
     // the frame histogram agreed (bands 64-80 and >80 sat at 4.1 / 3.4 against the
     // reference's 12.3 / 6.1). Hue and saturation are untouched; this is value only.
-    tops: ['#3a4076', '#5a5489', '#3e4b80', '#5a4787', '#2f4b52', '#744374'],
+    // RE-CENTRED, and this time the families are CONSTRUCTED from the measurement
+    // rather than nudged toward it: each is solved for a target Rec.709 luminance at
+    // a chosen hue and saturation, so the dealt population lands on the reference's
+    // own roof statistics instead of near them.
+    //
+    // Measured over ROOF pixels only (luminance > 58, saturation > 0.10), both images
+    // at 0.950 m/px, one code path:
+    //
+    //                       reference     ours, before
+    //   circular mean hue     233.3          238.2
+    //   hue, 10 deg bins over 220..260
+    //                     14.4/34.3/29.9/4.6   7.8/24.1/51.1/4.1
+    //   roof luminance IQR     12.9           23.3
+    //
+    // Two separate faults, and §38's hue work fixed neither because it was measuring
+    // the mean, which was already close. (1) HALF OUR ROOF PIXELS SAT IN ONE 10 deg
+    // BIN — a 51% spike against a reference whose fullest bin is 34% — i.e. the same
+    // "narrow spike reads as one colour" failure §38 diagnosed, one bin further warm.
+    // (2) Our roof LUMINANCE spread was 1.8x the reference's, which is `tintJitter`
+    // stacking on families that already spanned 66..89: the bright tail put 7.1% of
+    // the frame above luminance 80 against the reference's 3.7%, and p95 at 87.5
+    // against 77.7. Blown roofs and a bunched hue together are most of what "the
+    // palette is poorer than the reference's" looks like as numbers.
+    //
+    // So the six families below are (hue, saturation, target luminance):
+    //   A 226 / 0.50 / 71 (34%)   B 240 / 0.40 / 83 (30%)   C 232 / 0.52 / 76 (26%)
+    //   D 252 / 0.46 / 79 ( 6%)   teal 196 / 0.42 / 70 (2%)  rose 296 / 0.40 / 80 (2%)
+    // Dealt-weighted mean luminance 76.6, which is the reference's own measured roof
+    // median to one decimal, and a family luminance span of 70..83 against the old
+    // 66..89. `tintJitter` narrows to match (see there).
+    tops: ['#394773', '#4f4f84', '#404a86', '#544885', '#314b54', '#6e4471'],
     ground: '#0e142b',
     shadow: '#05070f',
     // Night: the wall tones already separate the blocks, so the contact shadow is a
     // whisper. Measured on the reference, the darkening under a block bottoms out
     // ~18% below the surrounding ground.
-    shadowAlpha: 0.34,
+    // WIDENED, and this is the largest single change in this pass. Measured with a
+    // structural instrument §39 named and never closed — quantise luminance into
+    // 4-level bins, label 8-connected components, ask what share of the frame sits
+    // in any region bigger than 0.2% of it:
+    //
+    //                                    reference   ours, before
+    //   largest single same-tone region     0.47%       2.96%
+    //   frame in regions over 0.2%          5.1%       33.5%
+    //
+    // A third of our frame was flat plate, against the reference's twentieth. Dumping
+    // the winning regions names the culprit, and it is NOT the roofs §39 assumed:
+    // ours is `#0e142c` at luminance 20.6 covering 2.73% in one piece — the GROUND
+    // FILL. The reference's ground is not one tone. Its six largest regions run
+    // 0.47 / 0.44 / 0.41 / 0.39 / 0.32 / 0.21% at luminances 22 / 18 / 42 / 34 / 26 /
+    // 14, i.e. its ground is broken up into small patches at many levels by the
+    // ambient occlusion of the blocks standing on it.
+    //
+    // That is a SHADING gap, not the density gap §42 closed the book on — the ground
+    // is as wide as the data says it is, and this only changes how lit it is. So the
+    // contact shadow becomes what the reference's actually is: a wide, soft skirt
+    // that reaches well past the block, rather than a small hard plate under it. See
+    // SHADOW_FRAG and the `grow` term in `build` for the two halves of it.
+    //
+    // It also moves two band statistics the right way for free: the reference gives
+    // 3.3% of its frame to luminance 0-16 where we gave 0.7%, and 39.5% to 16-32
+    // where we gave 53.0%. Darkening ground that is already too plentiful and too
+    // uniform is the one place this render could afford to lose light.
+    shadowAlpha: 0.40,
     // Night leans on wall TONE for separation, so the crevice can be firm without
-    // muddying the frame; the gradient stays small because the measured face ratios
-    // (1.000 : 0.641 : 0.491) are what the palette match is pinned to and a large
-    // ramp would smear them together.
-    crevice: 0.30,
+    // muddying the frame; the WALL gradient stays small because the measured face
+    // ratios (1.000 : 0.641 : 0.491) are what the palette match is pinned to and a
+    // large ramp would smear them together — and because the wall ramp is already
+    // measured at twice the reference's. The ROOF gradient and the roof seam are
+    // where the flatness above is actually paid for.
+    crevice: 0.34,
     aoStrength: 0.34,
     gradient: 0.10,
+    gradientTop: 0.14,
+    seam: 0.58,
   },
   light: {
     tops: ['#f3f1ec', '#eceae4', '#f6f4f1', '#eee9f0', '#dfe6df', '#f0e3e2'],
@@ -225,10 +321,23 @@ const PALETTES: Record<VoxelTheme, MeshPalette> = {
     shadowAlpha: 0.46,
     // Daylight's right wall is within 2% of its roof, so tone separates almost
     // nothing and the crevice has to do more of the work of showing where one cube
-    // ends and the next begins.
-    crevice: 0.34,
+    // ends and the next begins — and for the same reason the roof SEAM matters more
+    // here than at night: in the light theme it is very nearly the only thing that
+    // says where one cube ends and the next begins on a shared roofline.
+    //
+    // These two are set by the same argument as the dark theme's rather than by their
+    // own measurement, and that is stated rather than hidden: the reference's only
+    // daylight panel is a 280x166 phone card whose blocks are a few pixels across,
+    // which cannot support a flatness or gradient measurement (the same limit §40
+    // recorded when it declined to move `LIGHT_TREES`). They are held slightly below
+    // the dark theme's because daylight's face tones are 1.000 : 0.983 : 0.808 — the
+    // faces are nearly equal, so an equally strong seam would read as a drawn outline
+    // rather than as a shaded edge.
+    crevice: 0.36,
     aoStrength: 0.22,
     gradient: 0.09,
+    gradientTop: 0.11,
+    seam: 0.44,
   },
 };
 
@@ -374,6 +483,29 @@ const AO_HEIGHT_M = 9;
 const BEVEL_M = 1.4;
 
 /**
+ * ROOF SEAM width in metres — the band over which a roof dims toward its wall tone
+ * at the cube's own edge.
+ *
+ * This is separate from BEVEL_M, and the reason is what 5x magnification shows.
+ * §39 established that every reference mass is a CLUSTER of cubes and rebuilt the
+ * geometry to match, but at 5x our clusters still read as one mass: where two of our
+ * cubes stand at the SAME height their roofs are coplanar and abutting, so the pair
+ * draws as one continuous flat quad and the cube grid is visible only in the
+ * silhouette. In the reference the same pair shows a clear dark seam between the two
+ * roofs — the cube lattice reads on the roof SURFACE, which is most of what makes a
+ * big mass look built out of blocks rather than extruded.
+ *
+ * BEVEL_M could not be widened to do this. It is shared with the wall edges, and its
+ * own comment records what happened when the wall corner was blended hard: the two
+ * measured wall tones bunched from 0.641 : 0.491 to 0.676 : 0.650 and the cube
+ * structure sank into shadow. So the roof edge gets its own width and its own depth
+ * (`seam` in the palette) and the wall bevel is untouched at 0.30 over BEVEL_M.
+ *
+ * 2.6 m is ~2.7 px at the reference's own 0.950 m/px, which is what its seams measure.
+ */
+const SEAM_M = 2.6;
+
+/**
  * How far ABOVE a short neighbour's roofline the crevice occlusion reaches on the
  * tall cube's wall. Roughly a third of a cell: in the reference the darkening in an
  * inner corner fades out well before the top of the taller cube.
@@ -415,6 +547,7 @@ varying vec3 vColor;
 varying vec3 vNormalW;
 varying vec3 vNormalL;    // the cube's OWN frame — picks the neighbour and the edges
 varying vec3 vLocalM;     // metres from the cube centre (x,y) / its base (z)
+varying vec2 vLocalW;     // the same offset ROTATED INTO WORLD XY — see the roof gradient
 varying vec3 vHalfM;      // this cube's half extents, post-scale
 varying float vUpM;       // metres above the cube's base
 varying vec4 vNbr;
@@ -426,6 +559,12 @@ void main() {
   vec3 local = vec3(position.x * iSize.x, position.y * iSize.y, position.z * iSize.z * hScale);
 
   vLocalM = local;
+  // The roof gradient asks "which way is the lamp", and uLitAxis answers in WORLD XY.
+  // "local" is in the CUBE's frame, and every block is yawed by its own footprint's PCA
+  // orientation, so dotting the two put each roof's bright side in an arbitrary
+  // direction — a per-block error that was invisible while the amplitude was 0.10 and
+  // is not at 0.24. Rotating the offset into world XY here costs one mat3 multiply.
+  vLocalW = (mat3(instanceMatrix) * vec3(local.x, local.y, 0.0)).xy;
   vHalfM = vec3(iSize.x * 0.5, iSize.y * 0.5, iSize.z * hScale);
   vUpM = local.z;
   vNbr = iNbr * hScale;
@@ -451,7 +590,10 @@ uniform float uAoHeightM;
 uniform float uCrevice;     // crevice occlusion between abutting cubes, 0..1
 uniform float uCreviceM;    // how far the crevice gradient reaches, metres
 uniform float uBevelM;      // bevel width, metres
-uniform float uGrad;        // across-face gradient amplitude, 0..1
+uniform float uSeamM;       // roof-edge seam width, metres
+uniform float uSeam;        // roof-edge seam depth, 0..1
+uniform float uGrad;        // across-face gradient amplitude on WALLS, 0..1
+uniform float uGradTop;     // across-face gradient amplitude on ROOFS, 0..1
 uniform vec3  uMute;        // route-focus target colour
 uniform float uMuteMix;
 
@@ -459,6 +601,7 @@ varying vec3 vColor;
 varying vec3 vNormalW;
 varying vec3 vNormalL;
 varying vec3 vLocalM;
+varying vec2 vLocalW;
 varying vec3 vHalfM;
 varying float vUpM;
 varying vec4 vNbr;
@@ -514,16 +657,69 @@ void main() {
     else if (dSide <= dBottom)                    { dEdge = dSide * 3.0; toneAcross = (toneThis > (uLit + uShade) * 0.5) ? uShade : uLit; }
     else                                          { dEdge = dBottom;  toneAcross = toneThis * (1.0 - uAo); }
   }
-  tone = mix(toneAcross, tone, smoothstep(0.0, uBevelM, dEdge) * 0.30 + 0.70);
+  // The ROOF edge gets its own width and depth — see SEAM_M. Two abutting cubes at
+  // the same height share a coplanar roofline, so without this the pair draws as one
+  // flat quad and the cluster is visible only in silhouette.
+  if (isTop) {
+    tone = mix(toneAcross, tone, smoothstep(0.0, uSeamM, dEdge) * uSeam + (1.0 - uSeam));
+  } else {
+    tone = mix(toneAcross, tone, smoothstep(0.0, uBevelM, dEdge) * 0.30 + 0.70);
+
+    // --- THE COPLANAR SEAM, and it is the reason a cluster still read as one mass ---
+    // Blending a face toward its NEIGHBOUR'S tone can only show an edge where the two
+    // tones differ. Along a cluster's flank the neighbour is another cube's wall on
+    // the SAME plane facing the SAME way, so its tone is identical and the blend above
+    // is a no-op: five cubes drew as one uncut quad. Measured, 22.4% of our building
+    // surface sat in single-tone patches bigger than 0.2% of it against the
+    // reference's 3.0%, and at 5x the reference plainly shows both cuts our walls
+    // lacked — a vertical line where two cubes stand side by side, and a horizontal
+    // one at each course.
+    //
+    // So this is a MULTIPLY, not a blend: it darkens near the seam whatever the tone
+    // is, which is what the gap between two abutting blocks actually does to the
+    // light. It also cannot disturb the measured face ratios, because it scales the
+    // lit and shaded walls by the same factor and dies to nothing at the face centre
+    // where those ratios are sampled.
+    float dSideOnly = (abs(vNormalL.x) > 0.5)
+      ? vHalfM.y - abs(vLocalM.y)
+      : vHalfM.x - abs(vLocalM.x);
+    // The horizontal cut, at the cube's own width, so a column that is three courses
+    // tall reads as three stacked cubes rather than one tall slab. That is the shape
+    // the geometry already has — heights are quantised onto a shared lattice and
+    // HEIGHT_STEP_M is derived to make one course draw as one cube (DECISIONS §39) —
+    // it simply was not visible on the surface.
+    float pitch = max(min(vHalfM.x, vHalfM.y) * 2.0, 1.0);
+    float upCourse = min(mod(vUpM, pitch), pitch - mod(vUpM, pitch));
+    // The base is not a seam; the ground contact darkening below owns that edge.
+    float dCourse = vUpM < pitch * 0.5 ? uSeamM : upCourse;
+    float dSeam = min(dSideOnly, dCourse);
+    // 0.36 of the roof seam's depth, not the whole of it, and checked at 5x before it
+    // was believed. At parity the course lines read as a drawn stripe across every
+    // wall — which is exactly what §41's depth-buffer banding looked like, and this
+    // pass must not reintroduce that appearance by hand having just measured it away.
+    tone *= mix(1.0 - uSeam * 0.36, 1.0, smoothstep(0.0, uSeamM, dSeam));
+  }
 
   // --- FACE GRADIENT: no face in the reference is one flat tone -----------------
-  // Walls brighten toward the top, roofs brighten away from the light. Small — this
-  // is the difference between "a flat swatch" and "a lit surface", not a new palette,
-  // and it is what stops big cube faces owning a whole luminance band.
-  float g = isTop
-    ? clamp(0.5 + dot(normalize(vec2(vLocalM.x, vLocalM.y) + 1e-4), uLitAxis) * 0.5, 0.0, 1.0)
-    : clamp(vUpM / max(vHalfM.z, 1e-3), 0.0, 1.0);
-  tone *= 1.0 + uGrad * (g - 0.5);
+  // Walls brighten toward the top, roofs brighten away from the light. This is the
+  // difference between "a flat swatch" and "a lit surface", not a new palette, and it
+  // is what stops big cube faces owning a whole luminance band.
+  //
+  // Two amplitudes, because the two faces measured differently — the wall ramp is
+  // already twice the reference's and the roofs are flat quads. See gradientTop.
+  if (isTop) {
+    // ONE-SIDED, and deliberately so: a roof is darkest away from the lamp and at most
+    // its own material colour toward it. A two-sided ramp brightened the near half PAST
+    // the authored tone, which the dark theme merely wasted and the LIGHT theme clipped
+    // — its roofs are authored near white (#f6f4f1 is 0.965), so any lift saturates them
+    // to flat 1.0 and manufactures exactly the uniform region this pass exists to break
+    // up. Darkening only cannot clip at either end.
+    float g = clamp(0.5 + dot(normalize(vLocalW + 1e-4), uLitAxis) * 0.5, 0.0, 1.0);
+    tone *= 1.0 - uGradTop * (1.0 - g);
+  } else {
+    float g = clamp(vUpM / max(vHalfM.z, 1e-3), 0.0, 1.0);
+    tone *= 1.0 + uGrad * (g - 0.5);
+  }
 
   // --- CREVICE OCCLUSION where a cube abuts a shorter neighbour -----------------
   // The single strongest voxel cue in the reference after the cluster itself: a tall
@@ -594,7 +790,10 @@ export function makeCubeMaterial(theme: VoxelTheme): THREE.ShaderMaterial {
       uCrevice: { value: PALETTES[theme].crevice },
       uCreviceM: { value: CREVICE_M },
       uBevelM: { value: BEVEL_M },
+      uSeamM: { value: SEAM_M },
+      uSeam: { value: PALETTES[theme].seam },
       uGrad: { value: PALETTES[theme].gradient },
+      uGradTop: { value: PALETTES[theme].gradientTop },
       uAo: { value: PALETTES[theme].aoStrength },
       uAoHeightM: { value: AO_HEIGHT_M },
       uHeightGain: { value: 1 },
@@ -609,6 +808,31 @@ export function makeCubeMaterial(theme: VoxelTheme): THREE.ShaderMaterial {
  *  swap without reaching into the palette tables. */
 export function cubeTones(theme: VoxelTheme): { lit: number; shade: number; litScreenDeg: number } {
   return TONES[theme];
+}
+
+/**
+ * Re-point a cube material at another theme — EVERY uniform the theme owns, in one
+ * place, so the two call sites cannot drift.
+ *
+ * They already had. `voxelVehicles.setTheme` was updating `uLit` and `uShade` and
+ * nothing else, so on a dark->light swap a bus kept the night theme's crevice, ground
+ * AO, face gradient and (once this pass added them) roof seam depth, because those were
+ * baked in by `makeCubeMaterial(theme)` at `onAdd` and never touched again. It is the
+ * same failure mode the note above `CUBE_VERT` warns about for the shader source — two
+ * copies of a thing is two copies of every future correction to it — one level up.
+ */
+export function applyCubeTheme(mat: THREE.ShaderMaterial, theme: VoxelTheme): void {
+  const t = TONES[theme];
+  const p = PALETTES[theme];
+  mat.uniforms.uLit.value = t.lit;
+  mat.uniforms.uShade.value = t.shade;
+  mat.uniforms.uCrevice.value = p.crevice;
+  mat.uniforms.uGrad.value = p.gradient;
+  mat.uniforms.uGradTop.value = p.gradientTop;
+  mat.uniforms.uSeam.value = p.seam;
+  mat.uniforms.uAo.value = p.aoStrength;
+  const g = srgb(p.ground);
+  (mat.uniforms.uMute.value as THREE.Vector3).set(g[0], g[1], g[2]);
 }
 
 /** Hex -> sRGB 0..1 triple, in the same non-colour-managed space the shader expects.
@@ -647,9 +871,27 @@ uniform float uAlpha;
 varying vec2 vUv2;
 void main() {
   // Rounded-box falloff: solid under the block, soft at the margin.
+  //
+  // WIDENED AND SOFTENED. The old 0.45 knee made this a hard plate with a short
+  // margin — effectively a slightly darker rectangle under each block, which left
+  // the ground between blocks perfectly uniform. Measured, our ground was one
+  // connected #0e142c region covering 2.73% of the frame where the reference's
+  // largest region of ANY tone is 0.47%, and a third of our frame sat in flat
+  // regions against its twentieth (see shadowAlpha in PALETTES).
+  //
+  // The fix is a knee at ZERO — a continuous gradient from the block's foot to the
+  // edge of its skirt, with no plateau anywhere. A plateau is the thing being fixed:
+  // any flat-topped falloff just relocates the uniform region rather than breaking
+  // it up, and the first attempt here (a 0.26 knee with the falloff SQUARED) made the
+  // measurement worse, 2.96% -> 4.30%, because squaring shortens the tail instead of
+  // lengthening it and the wider quad then laid down a BIGGER flat plate.
+  //
+  // With a gradient this wide, neighbouring blocks' skirts overlap and compound
+  // through the blend, so dense fabric darkens and open ground stays light — which is
+  // the ambient occlusion the reference's ground carries and ours had none of.
   vec2 q = abs(vUv2) * 2.0;               // 0 at centre, 1 at the quad edge
   float d = max(q.x, q.y);
-  float a = uAlpha * (1.0 - smoothstep(0.45, 1.0, d));
+  float a = uAlpha * (1.0 - smoothstep(0.0, 1.0, d));
   if (a <= 0.003) discard;
   gl_FragColor = vec4(uColor, a);
 }
@@ -926,15 +1168,9 @@ export function createVoxelMeshLayer(opts: VoxelMeshOptions): VoxelMeshLayer {
 
   function applyTheme(): void {
     if (!blockMat || !shadowMat) return;
-    const t = TONES[theme];
     const p = PALETTES[theme];
-    blockMat.uniforms.uLit.value = t.lit;
-    blockMat.uniforms.uShade.value = t.shade;
-    blockMat.uniforms.uCrevice.value = p.crevice;
-    blockMat.uniforms.uGrad.value = p.gradient;
-    blockMat.uniforms.uAo.value = p.aoStrength;
-    const g = srgb(p.ground);
-    (blockMat.uniforms.uMute.value as THREE.Vector3).set(g[0], g[1], g[2]);
+    // Every uniform the theme owns, via the shared applier — see `applyCubeTheme`.
+    applyCubeTheme(blockMat, theme);
     const sh = srgb(p.shadow);
     (shadowMat.uniforms.uColor.value as THREE.Vector3).set(sh[0], sh[1], sh[2]);
     shadowMat.uniforms.uAlpha.value = p.shadowAlpha;
@@ -1137,7 +1373,12 @@ export function createVoxelMeshLayer(opts: VoxelMeshOptions): VoxelMeshLayer {
       // --- contact shadow: ONE per footprint, not one per cube ------------------
       // The building casts one shadow; a shadow quad per cube would stack alpha in
       // the middle of every cluster and burn a dark core into it.
-      const grow = 2.6 + b.height * 0.10;
+      // The quad reaches this far past the footprint on every side. WIDENED with the
+      // softened falloff in SHADOW_FRAG — the two are one change and neither works
+      // alone: a soft falloff on a small quad just makes a faint plate, and a wide
+      // quad with a hard knee makes a bigger hard plate. Scaling with height keeps a
+      // tower's skirt proportional to a tower, which is what the reference shows.
+      const grow = 4.2 + b.height * 0.22;
       const off = b.height * 0.16;
       _pos.set(b.cx - litAxis[0] * off, b.cy - litAxis[1] * off, 0.12);
       _m4.compose(_pos, _q, _scale);
@@ -1358,15 +1599,24 @@ export function createVoxelMeshLayer(opts: VoxelMeshOptions): VoxelMeshLayer {
    * The reference is not six colours; it is a city of individually-tinted blocks, and
    * its luminance histogram is a smooth ramp. Six discrete tones times three face
    * levels gives eighteen spikes instead, which measured as a visibly lumpy
-   * distribution — 23% of the frame in one 16-level band and 3% in the next. A +/-15%
+   * distribution — 23% of the frame in one 16-level band and 3% in the next. A
    * jitter fills the gaps between the tones without moving the mean, and is the same
    * class of decorative variation as the palette itself.
+   *
+   * NARROWED, +/-15% -> +/-7%. The argument above is still right and the amount was
+   * not. Measured over roof pixels in both images at 0.950 m/px, our roof luminance
+   * IQR was 23.3 against the reference's 12.9 — the jitter was stacking on families
+   * that already spanned 66..89, so the tail put 7.1% of the frame above luminance 80
+   * against the reference's 3.7% and p95 at 87.5 against 77.7. Filling the gaps
+   * BETWEEN six tones needs a jitter about half the gap; ours was wider than the gap
+   * and simply smeared the whole population. With the re-centred families above
+   * (a 70..83 span) +/-7% closes the gaps and stops there.
    */
   function tintJitter(id: number): number {
     let h = (id * 2654435761) >>> 0;
     h ^= h >>> 13;
     h = Math.imul(h, 0xc2b2ae35) >>> 0;
-    return 1 + (((h % 1000) / 1000) - 0.5) * 0.30;
+    return 1 + (((h % 1000) / 1000) - 0.5) * 0.14;
   }
 
   /**
@@ -1385,12 +1635,25 @@ export function createVoxelMeshLayer(opts: VoxelMeshOptions): VoxelMeshLayer {
    * by rotating the R and B channels about the block's own luminance, which is a
    * cheap approximation to a hue rotation and preserves the measured luminance the
    * face tones depend on.
+   *
+   * WIDENED, +/-11 deg -> +/-18 deg, because the spike came back. Re-measured over
+   * roof pixels in both images at 0.950 m/px, in 10 deg bins over 220..260:
+   *
+   *   reference   14.4 / 34.3 / 29.9 /  4.6      fullest bin 34.3%
+   *   ours        7.8 / 24.1 / 51.1 /  4.1      fullest bin 51.1%
+   *
+   * Half our roof pixels in one 10 deg bin is the same failure §38 named — a narrow
+   * spike reads as one colour however right the mean is — and +/-11 deg was not enough
+   * to break it because the four main families were themselves bunched inside 30 deg.
+   * Both halves move: the families now span 226..252 (above) and this spreads each
+   * one across 36 deg, so neighbouring families overlap and the population is
+   * continuous rather than four humps.
    */
   function hueJitter(id: number): number {
     let h = (Math.imul(id, 0x9e3779b1) ^ 0x5bf03635) >>> 0;
     h ^= h >>> 16;
     h = Math.imul(h, 0x85ebca6b) >>> 0;
-    return (((h % 1000) / 1000) - 0.5) * 0.22;
+    return (((h % 1000) / 1000) - 0.5) * 0.36;
   }
 
   /** World-XY direction the lit wall faces, derived from the map bearing so the lamp
@@ -1510,6 +1773,11 @@ export function createVoxelMeshLayer(opts: VoxelMeshOptions): VoxelMeshLayer {
       // read as a different material rather than as the same rounded cube.
       const mpp = metresPerPixel(map);
       blockMat.uniforms.uBevelM.value = Math.max(BEVEL_M, mpp * 1.6);
+      // Same argument for the roof seam, and it matters more: a seam thinner than a
+      // pixel does not draw at all, so without the floor the cube grid on a roof
+      // would simply disappear as the camera pulls back — which is the framing a
+      // phone actually lands on (z15.4 against the desktop's z16.2).
+      blockMat.uniforms.uSeamM.value = Math.max(SEAM_M, mpp * 2.8);
       const axis = litAxisWorld();
       (blockMat.uniforms.uLitAxis.value as THREE.Vector2).set(axis[0], axis[1]);
 

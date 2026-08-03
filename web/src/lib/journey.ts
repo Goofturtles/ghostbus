@@ -313,3 +313,91 @@ export function nextRideStep(j: Journey, nowMs: number): { step: JourneyStep; in
   }
   return null;
 }
+
+// =====================================================================================
+// the shared proportional time axis
+// =====================================================================================
+
+/**
+ * THE ONE PIECE OF THE TRANSIT-APP NOTES THAT WAS DELIBERATELY LEFT OUT — itineraries
+ * drawn to scale against a shared set of gridlines, so a rider can SEE that one option
+ * leaves sooner and another gets there faster, instead of reading two numbers and doing
+ * the arithmetic.
+ *
+ * It is an honest drawing, not a new claim: every instant on it is one the plan already
+ * published and the card already prints in words (`leaveByMs`, each leg's own
+ * `startMs`/`endMs` out of `toJourney`, `doorMs`). Nothing is estimated here and nothing
+ * is rounded except for display. A row that is longer on screen is longer in minutes.
+ *
+ * WHY IT CAN REFUSE TO DRAW. A shared axis is only readable while every row is big enough
+ * to read, and a menu of real transit options does not guarantee that: the last row can be
+ * tomorrow morning's first service (`widened`), which would squash the other five into
+ * hairlines. Rather than clamp, bucket or fake a break in the scale — all of which draw a
+ * length that is not the duration — this returns null and the list renders without an
+ * axis. Refusing to draw is the only option here that cannot mislead.
+ */
+export interface TimeAxis {
+  /** domain start / end, epoch ms. */
+  t0: number;
+  t1: number;
+  /** wall-clock instants to draw a gridline at, inside [t0, t1]. */
+  ticks: number[];
+  /** the spacing those ticks were chosen at, ms — the caller labels with it. */
+  stepMs: number;
+}
+
+/** Gridline spacings, in minutes. Wall-clock friendly: every one divides an hour. */
+const TICK_STEPS_MIN = [5, 10, 15, 20, 30, 60];
+/** Widest span the axis will draw. Past this the rows are not comparable by eye. */
+const AXIS_MAX_SPAN_MS = 3 * 60 * 60_000;
+/** An option narrower than this share of the track cannot be read, so nothing is drawn. */
+const AXIS_MIN_ROW_SHARE = 0.06;
+/** Gridlines the 314px-wide track at 390px can label without the labels colliding —
+ *  a label is ~34px, so six of them leave ~52px of clear space between each pair. */
+const MAX_TICKS = 5;
+
+export function buildTimeAxis(options: PlanOption[]): TimeAxis | null {
+  if (options.length < 2) return null;
+
+  let t0 = Infinity;
+  let t1 = -Infinity;
+  let narrowest = Infinity;
+  for (const o of options) {
+    const a = optionLeaveByMs(o);
+    const b = optionDoorMs(o);
+    if (!Number.isFinite(a) || !Number.isFinite(b) || b < a) return null;
+    if (a < t0) t0 = a;
+    if (b > t1) t1 = b;
+    if (b - a < narrowest) narrowest = b - a;
+  }
+
+  const span = t1 - t0;
+  if (span <= 0 || span > AXIS_MAX_SPAN_MS) return null;
+  if (narrowest / span < AXIS_MIN_ROW_SHARE) return null;
+
+  // The finest spacing that still fits inside MAX_TICKS. Walking the list upward and
+  // stopping at the first one that fits is what keeps a 20-minute menu on 5-minute
+  // gridlines and a two-hour one on 30-minute gridlines; taking the first with "at
+  // least three" instead would put 36 labelled gridlines on the wide case.
+  const count = (ms: number) => Math.floor(t1 / ms) - Math.ceil(t0 / ms) + 1;
+  let stepMs = TICK_STEPS_MIN[TICK_STEPS_MIN.length - 1]! * 60_000;
+  for (const m of TICK_STEPS_MIN) {
+    const ms = m * 60_000;
+    if (count(ms) <= MAX_TICKS) { stepMs = ms; break; }
+  }
+
+  const ticks: number[] = [];
+  for (let tk = Math.ceil(t0 / stepMs) * stepMs; tk <= t1; tk += stepMs) ticks.push(tk);
+  // Two gridlines are the fewest that can establish a scale; one is just a mark.
+  if (ticks.length < 2) return null;
+
+  return { t0, t1, ticks, stepMs };
+}
+
+/** Where an instant sits on the axis, 0..1. Clamped, because a live re-estimate can
+ *  move a leg a few seconds outside the domain the list was laid out on. */
+export function axisFrac(axis: TimeAxis, ms: number): number {
+  const span = axis.t1 - axis.t0;
+  if (span <= 0) return 0;
+  return Math.min(1, Math.max(0, (ms - axis.t0) / span));
+}

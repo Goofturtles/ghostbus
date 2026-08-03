@@ -40,7 +40,7 @@ import type { Map as MlMap, CustomLayerInterface, CustomRenderMethodInput } from
 import {
   makeCubeGeometry,
   makeCubeMaterial,
-  cubeTones,
+  applyCubeTheme,
   cubeSrgb,
   cubeLitAxis,
 } from './voxelMesh';
@@ -387,6 +387,13 @@ export function createVoxelVehicleLayer(opts: { theme: VoxelTheme }): VoxelVehic
       const lat = map.getCenter().lat;
       const mpp = (156543.03392 * Math.cos(lat * DEG)) / Math.pow(2, map.getZoom() + 1);
       mat.uniforms.uBevelM.value = Math.max(0.18, mpp * 0.5);
+      // The roof seam needs the same treatment and for a sharper reason. It is sized
+      // for a 24 m city cube (SEAM_M is 2.6 m), and a streetcar is about 2.6 m WIDE —
+      // left at the city's value it would dim the entire roof of every vehicle toward
+      // its wall tone and the model would read as one dark lump. Scaled to the
+      // vehicle's own cube size it does here what it does on a block: it shows where
+      // one cube of the cluster ends and the next begins.
+      mat.uniforms.uSeamM.value = Math.max(0.22, mpp * 0.6);
 
       const canvas = map.getCanvas();
       renderer.resetState();
@@ -412,11 +419,10 @@ export function createVoxelVehicleLayer(opts: { theme: VoxelTheme }): VoxelVehic
     setTheme(next: VoxelTheme) {
       if (theme === next) return;
       theme = next;
-      if (mat) {
-        const t = cubeTones(theme);
-        mat.uniforms.uLit.value = t.lit;
-        mat.uniforms.uShade.value = t.shade;
-      }
+      // Every uniform the theme owns, not just the two wall ratios. This used to set
+      // uLit/uShade only, so a swapped theme left a bus wearing the other theme's
+      // crevice, AO, face gradient and seam depth.
+      if (mat) applyCubeTheme(mat, theme);
       map?.triggerRepaint();
     },
 
