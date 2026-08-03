@@ -990,6 +990,15 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
         `| patterns ${d.patterns.resolved}/${d.patterns.rtTotal} resolved (maxIter=${d.patterns.maxResolveIter}, ` +
         `amb=${d.patterns.ambiguous} noCand=${d.patterns.noCandidate} thin=${d.patterns.tooFewAnchors}) ` +
         `| bindings births=${d.bindings.births} pending=${d.bindings.pending} active=${d.bindings.active} ` +
+        // Where THIS cycle's pending births stopped, then the cumulative refusal ledger.
+        // `pending` climbing while `active` sits at zero is the engine's worst-looking and
+        // least-explained state; these two groups are what turn it into a sentence.
+        `| lock unres=${d.bindings.lockPath.patternUnresolved} noPat=${d.bindings.lockPath.noPattern} ` +
+        `originUnconf=${d.bindings.lockPath.originUnconfirmed} scored=${d.bindings.lockPath.reached} ` +
+        `locked=${d.bindings.lockPath.locked} ` +
+        `| refused(cum) noSlot=${d.bindings.refusedNoSlot} amb=${d.bindings.refusedAmbiguous} ` +
+        `hw=${d.bindings.refusedHeadwayBand} inactive=${d.bindings.refusedBoardInactive} ` +
+        `midroute=${d.bindings.refusedMidroute} unres=${d.bindings.refusedUnresolved} ` +
         `| directTripIdMatch=${(d.directTripIdMatchRate * 100).toFixed(1)}% ` +
         `| ${d.suppressionReason ? `SUPPRESSED (${d.suppressionGate}): ${d.suppressionReason}` : 'publishing'}`,
       );

@@ -128,6 +128,19 @@ export interface DelayEngineStats {
     refusedTooFewAnchors: number; refusedHeadwayBand: number; refusedBoardInactive: number;
     refusedNoSlot: number; refusedScheduleRelationship8: number; doubleBookRejected: number;
     medianFirstStopResidS: number | null; boardAgreementOk: boolean;
+    /**
+     * THIS CYCLE ONLY. Where each pending birth stopped on its way to a binding.
+     *
+     * Every other counter here is cumulative, and cumulative counters cannot answer the
+     * one question that matters when `pending` climbs while `active` sits at zero: what
+     * is the *current* population waiting for. Three of the four exits below are silent
+     * `continue`s that leave the birth pending — they were invisible above the log, which
+     * is precisely the failure DECISIONS §53 spent five days paying for.
+     */
+    lockPath: {
+      pending: number; noPattern: number; patternUnresolved: number; originUnconfirmed: number;
+      quarantined: number; reached: number; locked: number;
+    };
   };
   obs: SettleCounters & { droppedNoBinding: number; suppressedByGate: number };
   /**
@@ -298,6 +311,10 @@ export function createDelayEngine(
         refusedUnresolved: 0, refusedTooFewAnchors: 0, refusedHeadwayBand: 0,
         refusedBoardInactive: 0, refusedNoSlot: 0, refusedScheduleRelationship8: 0,
         doubleBookRejected: 0, medianFirstStopResidS: null, boardAgreementOk: true,
+        lockPath: {
+          pending: 0, noPattern: 0, patternUnresolved: 0, originUnconfirmed: 0,
+          quarantined: 0, reached: 0, locked: 0,
+        },
       },
       obs: { ...emptyCounters(), droppedNoBinding: 0, suppressedByGate: 0 },
       identity: null,
@@ -927,23 +944,31 @@ export function createDelayEngine(
   }
 
   async function lockPendingBirths(inp: EngineCycleInput, nowS: number): Promise<void> {
+    const path = { pending: births.size, noPattern: 0, patternUnresolved: 0, originUnconfirmed: 0,
+      quarantined: 0, reached: 0, locked: 0 };
+    stats.bindings.lockPath = path;
     for (const [rtTripId, birth] of [...births]) {
       const pattern = rtPatternByTrip.get(rtTripId);
-      if (!pattern) continue;
+      if (!pattern) { path.noPattern++; continue; }
       if (quarantined.has(pattern.rtPatternId)) {
+        path.quarantined++;
         births.delete(rtTripId);
         refusedTrips.set(rtTripId, 'refused_unresolved');
         stats.bindings.refusedUnresolved++;
         continue;
       }
       const staticPatternId = resolvedStatic.get(pattern.rtPatternId);
-      if (!staticPatternId) continue;   // still unresolved; try again next cycle
+      if (!staticPatternId) { path.patternUnresolved++; continue; }   // still unresolved; try again next cycle
 
       // The origin stop's identity must be confirmed, or the residual we are about to
       // measure is against a stop we only think we know.
       const firstRtStop = birth.rtStops.get(birth.minSeq);
       const firstXw = firstRtStop ? xwalk.get(firstRtStop) : undefined;
-      if (!firstXw || firstXw.state !== 'confirmed' || firstXw.confidence < XWALK_MIN_CONF) continue;
+      if (!firstXw || firstXw.state !== 'confirmed' || firstXw.confidence < XWALK_MIN_CONF) {
+        path.originUnconfirmed++;
+        continue;
+      }
+      path.reached++;
 
       const slots: LockSlot[] = (index.slotsByPattern.get(staticPatternId) ?? [])
         .filter((s) => inp.activeServices.has(s.serviceId) && !claimedStatic.has(s.tripId))
@@ -1026,6 +1051,7 @@ export function createDelayEngine(
       claimedStatic.set(res.tripId, rtTripId);
       births.delete(rtTripId);
       stats.bindings.locked++;
+      path.locked++;
 
       if (res.residS != null) {
         firstStopResids.push(res.residS);
@@ -1488,6 +1514,10 @@ export function createDelayEngine(
     // only the WRITE of delay rows is gated.
     stats.bindings.births += captureBirths(inp, nowS);
     expireBirths(nowS);
+    // Set before the guard, never only inside it: an inactive board must read as "nothing
+    // was attempted", not as last cycle's attempt.
+    stats.bindings.lockPath = { pending: births.size, noPattern: 0, patternUnresolved: 0,
+      originUnconfirmed: 0, quarantined: 0, reached: 0, locked: 0 };
     if (stats.boardActive) {
       try { await lockPendingBirths(inp, nowS); } catch (e) { console.error('[engine] lock failed:', e); }
     }
@@ -1512,7 +1542,7 @@ export function createDelayEngine(
         ...stats,
         xwalk: { ...stats.xwalk },
         patterns: { ...stats.patterns },
-        bindings: { ...stats.bindings },
+        bindings: { ...stats.bindings, lockPath: { ...stats.bindings.lockPath } },
         obs: { ...stats.obs },
         identity: stats.identity ? { ...stats.identity } : null,
       };
