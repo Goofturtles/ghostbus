@@ -1,0 +1,264 @@
+{
+  "header": {
+    "gtfs_realtime_version": "2.0",
+    "incrementality": "FULL_DATASET",
+    "timestamp": 1785365898
+  },
+  "entity": [
+    {
+      "id": "20260729-41-41471",
+      "is_deleted": false,
+      "trip_update": {
+        "trip": {
+          "trip_id": "20260729-41-41471",
+          "route_id": "06260926-41",
+          "direction_id": 1,
+          "start_time": "14:55:00",
+          "start_date": "20260729",
+          "schedule_relationship": "SCHEDULED"
+        },
+        "vehicle": {
+          "id": "8532",
+          "label": "41 - Hamilton GO",
+          "license_plate": ""
+        },
+        "stop_time_update": [
+          {
+            "stop_id": "00141",
+            "arrival": null,
+            "departure": {
+              "delay": -706,
+              "time": 1785366000,
+              "uncertainty": 0
+            },
+            "schedule_relationship": "SCHEDULED"
+          }
+        ],
+        "timestamp": 1785365310,
+        "delay": null
+      },
+      "vehicle": null,
+      "alert": null
+    },
+    {
+      "id": "20260729-41-41530",
+      "is_deleted": false,
+      "trip_update": {
+        "trip": {
+          "trip_id": "20260729-41-41530",
+          "route_id": "06260926-41",
+          "direction_id": 0,
+          "start_time": "15:20:00",
+          "start_date": "20260729",
+          "schedule_relationship": "SCHEDULED"
+        },
+        "vehicle": {
+          "id": "8372",
+          "label": "41 - Pickering GO",
+          "license_plate": ""
+        },
+        "stop_time_update": [
+          {
+            "stop_id": "02651",
+            "arrival": null,
+            "departure": {
+              "delay": 1005,
+              "time": 1785365865,
+              "uncertainty": 0
+            },
+            "schedule_relationship": "SCHEDULED"
+          },
+          {
+            "stop_id": "02541",
+            "arrival": null,
+            "departure": {
+              "delay": 1005,
+              "time": 1785365925,
+              "uncertainty": 0
+            },
+            "schedule_relationship": "SCHEDULED"
+          },
+          {
+            "stop_id": "00634",
+            "arrival": null,
+            "departure": {
+              "delay": 1005,
+              "time": 1785366525,
+              "uncertainty": 0
+            },
+            "schedule_relationship": "SCHEDULED"
+          },
+          {
+            "stop_id": "00312",
+            "arrival": null,
+            "departure": {
+              "delay": 1005,
+              "time": 1785366585,
+              "uncertainty": 0
+            },
+            "schedule_relationship": "SCHEDULED"
+          },
+          {
+            "stop_id": "00971",
+            "arrival": null,
+            "departure": {
+              "delay": 1005,
+              "time": 1785366825,
+              "uncertainty": 0
+            },
+            "schedule_relationship": "SCHEDULED"
+          },
+          {
+            "stop_id": "00726",
+            "arrival": null,
+            "departure": {
+              "delay": 1005,
+              "time": 1785367065,
+              "uncertainty": 0
+            },
+            "schedule_relationship": "SCHEDULED"
+          },
+          {
+            "stop_id": "00147",
+            "arrival": null,
+            "departure": {
+              "delay": 1005,
+              "time": 1785367305,
+              "uncertainty": 0
+            },
+            "schedule_relationship": "SCHEDULED"
+          }
+        ],
+        "timestamp": 1785365890,
+        "delay": null
+      },
+      "vehicle": null,
+      "alert": null
+    },
+    {
+      "id": "20260729-41-41481",
+      "is_deleted": false,
+      "trip_update": {
+        "trip": {
+          "trip_id": "20260729-41-41481",
+          "route_id": "06260926-41",
+          "direction_id": 1,
+          "start_time": "15:25:00",
+          "start_date": "20260729",
+          "schedule_relationship": "SCHEDULED"
+        },
+        "vehicle": {
+          "id": "8358",
+          "label": "41 - Hamilton GO",
+          "license_plate": ""
+        },
+        "stop_time_update": [
+          {
+            "stop_id": "00310",
+            "arrival": null,
+            "departure": {
+              "delay": -415,
+              "time": 1785366120,
+              "uncertainty": 0
+            },
+            "schedule_relationship": "SCHEDULED"
+          },
+          {
+            "stop_id": "01010",
+            "arrival": null,
+            "departure": {
+              "delay": -415,
+              "time": 1785366480,
+              "uncertainty": 0
+            },
+            "schedule_relationship": "SCHEDULED"
+          },
+          {
+            "stop_id": "00732",
+            "arrival": null,
+            "departure": {
+              "delay": -415,
+              "time": 1785366540,
+              "uncertainty": 0
+            },
+            "schedule_relationship": "SCHEDULED"
+          },
+          {
+            "stop_id": "01009",
+            "arrival": null,
+            "departure": {
+              "delay": -415,
+              "time": 1785366600,
+              "uncertainty": 0
+            },
+            "schedule_relationship": "SCHEDULED"
+          },
+          {
+            "stop_id": "01008",
+            "arrival": null,
+            "departure": {
+              "delay": -415,
+              "time": 1785366660,
+              "uncertainty": 0
+            },
+            "schedule_relationship": "SCHEDULED"
+          },
+          {
+            "stop_id": "01011",
+            "arrival": null,
+            "departure": {
+              "delay": -415,
+              "time": 1785366780,
+              "uncertainty": 0
+            },
+            "schedule_relationship": "SCHEDULED"
+          },
+          {
+            "stop_id": "01012",
+            "arrival": null,
+            "departure": {
+              "delay": -415,
+              "time": 1785366780,
+              "uncertainty": 0
+            },
+            "schedule_relationship": "SCHEDULED"
+          },
+          {
+            "stop_id": "01007",
+            "arrival": null,
+            "departure": {
+              "delay": -415,
+              "time": 1785366840,
+              "uncertainty": 0
+            },
+            "schedule_relationship": "SCHEDULED"
+          },
+          {
+            "stop_id": "01014",
+            "arrival": null,
+            "departure": {
+              "delay": -415,
+              "time": 1785366900,
+              "uncertainty": 0
+            },
+            "schedule_relationship": "SCHEDULED"
+          },
+          {
+            "stop_id": "00141",
+            "arrival": null,
+            "departure": {
+              "delay": -415,
+              "time": 1785367500,
+              "uncertainty": 0
+            },
+            "schedule_relationship": "SCHEDULED"
+          }
+        ],
+        "timestamp": 1785365891,
+        "delay": null
+      },
+      "vehicle": null,
+      "alert": null
+    }
+  ]
+}

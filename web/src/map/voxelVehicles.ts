@@ -45,6 +45,7 @@ import {
   cubeLitAxis,
 } from './voxelMesh';
 import type { VoxelTheme } from './voxelCity';
+import type { VehicleKind } from './sprites';
 
 export const VOXEL_VEHICLE_LAYER = 'voxel-vehicles-3d';
 
@@ -58,7 +59,7 @@ export interface VoxelVehicle {
   heading: number;
   /** agency route colour, `RRGGBB`, no leading '#' */
   color: string;
-  kind: 'bus' | 'streetcar';
+  kind: VehicleKind;
   selected: boolean;
   /** 0..1 fade, used by the same appear/disappear tween the sprites used */
   opacity: number;
@@ -138,8 +139,13 @@ const ROOF_TONE = 1.16;
  * The 0.30-of-length body width is taken off the shipped sprite (`sprites.ts` drew a
  * streetcar body 0.28 wide by 0.72 long, i.e. 0.39 of its length, and a bus stubbier
  * still), which is the proportion this project's own design review already accepted.
+ *
+ * The TRAIN (GO/UP rail, route_type 1/2) is the streetcar's own articulated vocabulary
+ * taken one step further: THREE coupled coach segments around two dark coupling seams,
+ * so a GO train reads as a train and not as a long bus. Same cubes, same shader, same
+ * honesty line — position and heading are the agency's, the body is scenery.
  */
-const MODELS: Record<'bus' | 'streetcar', ModelCube[]> = {
+const MODELS: Record<VehicleKind, ModelCube[]> = {
   bus: [
     { x: 0, y: 0, z: 0, len: 1.0, wid: 0.34, hgt: 0.26, tone: BODY_TONE },
     { x: -0.05, y: 0, z: 0.26, len: 0.80, wid: 0.23, hgt: 0.08, tone: ROOF_TONE },
@@ -158,10 +164,28 @@ const MODELS: Record<'bus' | 'streetcar', ModelCube[]> = {
     { x: 0.485, y: 0.09, z: 0.04, len: 0.04, wid: 0.06, hgt: 0.05, tone: 1, rgb: LAMP },
     { x: 0.485, y: -0.09, z: 0.04, len: 0.04, wid: 0.06, hgt: 0.05, tone: 1, rgb: LAMP },
   ],
+  train: [
+    // three coupled coaches…
+    { x: -0.34, y: 0, z: 0, len: 0.30, wid: 0.24, hgt: 0.20, tone: BODY_TONE },
+    { x: 0, y: 0, z: 0, len: 0.30, wid: 0.24, hgt: 0.20, tone: BODY_TONE },
+    { x: 0.34, y: 0, z: 0, len: 0.30, wid: 0.24, hgt: 0.20, tone: BODY_TONE },
+    // …around two dark coupling seams, narrower and darker like the streetcar's joint
+    { x: -0.17, y: 0, z: 0, len: 0.04, wid: 0.19, hgt: 0.18, tone: 0.5 },
+    { x: 0.17, y: 0, z: 0, len: 0.04, wid: 0.19, hgt: 0.18, tone: 0.5 },
+    // a roof band per coach, so each segment reads as its own lit car
+    { x: -0.34, y: 0, z: 0.20, len: 0.24, wid: 0.15, hgt: 0.06, tone: ROOF_TONE },
+    { x: 0, y: 0, z: 0.20, len: 0.24, wid: 0.15, hgt: 0.06, tone: ROOF_TONE },
+    { x: 0.34, y: 0, z: 0.20, len: 0.24, wid: 0.15, hgt: 0.06, tone: ROOF_TONE },
+    { x: 0.435, y: 0, z: 0.10, len: 0.13, wid: 0.245, hgt: 0.11, tone: 1, rgb: GLASS },
+    { x: 0.485, y: 0.08, z: 0.04, len: 0.04, wid: 0.06, hgt: 0.05, tone: 1, rgb: LAMP },
+    { x: 0.485, y: -0.08, z: 0.04, len: 0.04, wid: 0.06, hgt: 0.05, tone: 1, rgb: LAMP },
+  ],
 };
 
 const MAX_VEHICLES = 400;
-const MAX_CUBES = MAX_VEHICLES * 8;
+// The budget is the LARGEST model (the train's 11 cubes), so a worst-case all-train
+// frame still fits every drawable vehicle instead of silently dropping the tail.
+const MAX_CUBES = MAX_VEHICLES * 11;
 
 /**
  * DRAWN LENGTH, in CSS pixels — the vehicle is sized in SCREEN space, exactly as
@@ -173,14 +197,19 @@ const MAX_CUBES = MAX_VEHICLES * 8;
  * the shorter vehicle without being drawn at the 2.5 : 1 ratio reality would give —
  * which at this scale would make every bus a dash.
  */
-const LENGTH_PX: Record<'bus' | 'streetcar', number> = { bus: 46, streetcar: 60 };
+const LENGTH_PX: Record<VehicleKind, number> = { bus: 46, streetcar: 60, train: 76 };
 /**
  * REAL envelopes, used only as clamps. The screen-space length is held between the
  * vehicle's true length (never draw one SMALLER than it is) and three times it (never
  * park an articulated bus across a city block), so a deep zoom converges on reality
  * and a wide one keeps the vehicle findable.
+ *
+ * The train's clamp is the DRAWN consist — three BiLevel coaches at 25.9 m — not a real
+ * GO train's 10-12 (~300 m): the model IS three coaches, and clamping to a full consist
+ * would park a train across half of downtown at street zoom. The envelope is stylised
+ * scenery here exactly as the header documents for the other two.
  */
-const REAL_LENGTH_M: Record<'bus' | 'streetcar', number> = { bus: 12.2, streetcar: 30.2 };
+const REAL_LENGTH_M: Record<VehicleKind, number> = { bus: 12.2, streetcar: 30.2, train: 77.7 };
 const MAX_OVERSIZE = 3;
 
 const _q = new THREE.Quaternion();

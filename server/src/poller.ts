@@ -57,6 +57,7 @@ import { isDbClosed } from './db.ts';
 import { activeServiceIds, boardSpan, type CalendarRow, type CalendarDateRow } from './gtfs.ts';
 import { torontoDay, torontoMidnightEpoch, torontoYmd, serviceYmd } from './tz.ts';
 import { presentInt, presentStr, presentFloat } from './pb.ts';
+import { decodeJsonFeed } from './rtjson.ts';
 import { createDelayEngine, type DelayEngineStats, type EngineVehicle, type EngineTripUpdate, type EngineStopUpdate } from './engine.ts';
 import { agency as agencyDescriptor, feedIdsFor, USER_AGENT, type AgencyDescriptor } from './agencies.ts';
 import type { FeedId, FeedStatusKind } from '../../shared/types.ts';
@@ -368,7 +369,12 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
       if (res.status === 304) { markOk(st, now); return { status: 'notmodified' }; }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const buf = Buffer.from(await res.arrayBuffer());
-      const msg = transit_realtime.FeedMessage.decode(buf);
+      // A descriptor-flagged JSON feed (Metrolinx/GO — see rtjson.ts for the casing and
+      // presence traps) parses through fromObject; every other agency's binary decode is
+      // byte-for-byte the line it always was.
+      const msg = descriptor.rtFormat === 'json'
+        ? decodeJsonFeed(buf)
+        : transit_realtime.FeedMessage.decode(buf);
       st.etag = res.headers.get('etag') ?? undefined;
       st.lastModified = res.headers.get('last-modified') ?? undefined;
       markOk(st, now);
@@ -452,7 +458,7 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
     staticTripIds = newStaticIds;
     activeServiceCache.clear(); // active-service sets depend on the calendar we just replaced
     joinStats.boardCoverage = boardCoverage;
-    console.log(`[poller] static context: ${calendar.length} calendar, ${calendarDates.length} calendar_dates, ${tripStarts.size} trips, board ${boardCoverage}`);
+    console.log(`[poller:${staticAgency}] static context: ${calendar.length} calendar, ${calendarDates.length} calendar_dates, ${tripStarts.size} trips, board ${boardCoverage}`);
   }
 
   // Reload the static context (calendar/trips/index) on a service-day rollover or every
@@ -465,7 +471,7 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
     const stale = now - lastStaticLoadAt > STATIC_RELOAD_MS;
     if (!rollover && !stale) return;
     staticReloading = true;
-    console.log(`[poller] static reload triggered (${rollover ? 'service-day rollover' : '6h refresh'})`);
+    console.log(`[poller:${staticAgency}] static reload triggered (${rollover ? 'service-day rollover' : '6h refresh'})`);
     void (async () => {
       try {
         await loadStaticContext();
@@ -741,7 +747,7 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
     // LIVE observation table, which is exactly the blend Demo Mode may never cause.
     const r = await db.query('DELETE FROM trip_delay_obs WHERE agency=$1 AND ts < $2', [agency, cutoff]);
     lastRetentionYmd = ymd; // only mark done after a successful prune, so a failure retries
-    if (r.rowCount > 0) console.log(`[poller][retention] deleted ${r.rowCount} obs older than ${RETENTION_DAYS}d`);
+    if (r.rowCount > 0) console.log(`[poller:${staticAgency}][retention] deleted ${r.rowCount} obs older than ${RETENTION_DAYS}d`);
   }
 
   function evictStaleVehicles(cycle: number): void {
@@ -771,13 +777,13 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
     const vehicleTripIds = new Set<string>();
     let vehicles = 0;
     if (vr.status === 'ok') vehicles = processVehicles(vr.msg, vehicleTripIds, cycle);
-    else if (publishes('vehicles')) console.log(`[poller][cycle ${cycle}] vehicles ${vr.status}${'reason' in vr && vr.reason ? `: ${vr.reason}` : ''}`);
+    else if (publishes('vehicles')) console.log(`[poller:${staticAgency}][cycle ${cycle}] vehicles ${vr.status}${'reason' in vr && vr.reason ? `: ${vr.reason}` : ''}`);
     evictStaleVehicles(cycle);
 
     let tripUpdates = 0;
     let parsed: TripUpdateParsed[] = [];
     if (tr.status === 'ok') { const r = processTripUpdates(tr.msg); tripUpdates = r.count; parsed = r.parsed; }
-    else if (publishes('trips')) console.log(`[poller][cycle ${cycle}] trips ${tr.status}${'reason' in tr && tr.reason ? `: ${tr.reason}` : ''}`);
+    else if (publishes('trips')) console.log(`[poller:${staticAgency}][cycle ${cycle}] trips ${tr.status}${'reason' in tr && tr.reason ? `: ${tr.reason}` : ''}`);
 
     // ----- the delay engine -----
     // NOTE: TTC sends no ETag/Last-Modified and never returns 304 (measured — see
@@ -810,7 +816,7 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
           obsInserted = res.rows;
           totals.obs += obsInserted;
         } catch (e) {
-          console.error(`[poller][cycle ${cycle}] delay engine error:`, e);
+          console.error(`[poller:${staticAgency}][cycle ${cycle}] delay engine error:`, e);
         }
       }
       joinStats.delayEngine = engine.getStats();
@@ -898,7 +904,7 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
           ghostInserted.delete(d.key);
           ghostMissStreak.delete(d.key);
         }
-        if (retracted > 0) { joinStats.retractionsTotal += retracted; console.log(`[poller][cycle ${cycle}] retracted ${retracted} ghost(s) — trip(s) later claimed or cancelled within the due window`); }
+        if (retracted > 0) { joinStats.retractionsTotal += retracted; console.log(`[poller:${staticAgency}][cycle ${cycle}] retracted ${retracted} ghost(s) — trip(s) later claimed or cancelled within the due window`); }
 
         // Mass-ghost breakers on the confirmed set: GLOBAL (>30% of all due) plus PER-ROUTE
         // (>30% of a route's due, once it has >=4 due) — a board swap touching a few routes
@@ -912,7 +918,7 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
         let suppressed = false;
         if (dueCount > 0 && confirmed.length / dueCount > MASS_GHOST_FRACTION) {
           suppressed = true;
-          console.log(`[poller][cycle ${cycle}] GLOBAL MASS-GHOST BREAKER: ${confirmed.length}/${dueCount} due (> ${MASS_GHOST_FRACTION * 100}%) — suppressing all (feed outage or our bug, not reality)`);
+          console.log(`[poller:${staticAgency}][cycle ${cycle}] GLOBAL MASS-GHOST BREAKER: ${confirmed.length}/${dueCount} due (> ${MASS_GHOST_FRACTION * 100}%) — suppressing all (feed outage or our bug, not reality)`);
         } else {
           const suppressedRoutes: string[] = [];
           for (const [route, list] of confirmedByRoute) {
@@ -920,7 +926,7 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
             if (dueR >= MASS_GHOST_ROUTE_MIN_DUE && list.length / dueR > MASS_GHOST_FRACTION) suppressedRoutes.push(`${route}:${list.length}/${dueR}`);
             else toInsert.push(...list);
           }
-          if (suppressedRoutes.length > 0) { suppressed = true; console.log(`[poller][cycle ${cycle}] PER-ROUTE MASS-GHOST BREAKER suppressed ${suppressedRoutes.length} route(s): ${suppressedRoutes.join(' ')}`); }
+          if (suppressedRoutes.length > 0) { suppressed = true; console.log(`[poller:${staticAgency}][cycle ${cycle}] PER-ROUTE MASS-GHOST BREAKER suppressed ${suppressedRoutes.length} route(s): ${suppressedRoutes.join(' ')}`); }
         }
         if (suppressed) joinStats.massGhostTrippedCycles++;
 
@@ -938,7 +944,7 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
         for (const k of ghostMissStreak.keys()) if (!currentDueKeys.has(k)) ghostMissStreak.delete(k);
         for (const [k, v] of ghostInserted) if (now - v.startEpoch > GHOST_MAX_AGE_MS + 60_000) ghostInserted.delete(k);
       } else {
-        console.log(`[poller][cycle ${cycle}] ghost scan skipped (${!feedsFresh ? 'vehicles/trips feed not fresh' : 'static reload in progress'})`);
+        console.log(`[poller:${staticAgency}][cycle ${cycle}] ghost scan skipped (${!feedsFresh ? 'vehicles/trips feed not fresh' : 'static reload in progress'})`);
       }
     }
     joinStats.lastJoinRate = joinRate;
@@ -954,7 +960,7 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
 
     let alerts = 0;
     if (ar.status === 'ok') { alerts = await processAlerts(ar.msg); totals.alerts = alerts; }
-    else if (ar.status !== 'notmodified' && publishes('alerts')) console.log(`[poller][cycle ${cycle}] alerts ${ar.status}${'reason' in ar && ar.reason ? `: ${ar.reason}` : ''}`);
+    else if (ar.status !== 'notmodified' && publishes('alerts')) console.log(`[poller:${staticAgency}][cycle ${cycle}] alerts ${ar.status}${'reason' in ar && ar.reason ? `: ${ar.reason}` : ''}`);
 
     const jr = joinRate == null ? 'n/a(index warming)' : `${(joinRate * 100).toFixed(1)}%`;
     const cancTag = canceledSeen > 0 ? ` canceled(seen=${canceledSeen} id=${canceledIdentified} anon=${canceledUnidentified})` : '';
@@ -963,12 +969,12 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
     // codebase could produce.
     if (source) {
       const p = source.describe();
-      console.log(`[poller][cycle ${cycle}] DEMO replay t+${(p.positionMs / 1000).toFixed(0)}s of ` +
+      console.log(`[poller:${staticAgency}][cycle ${cycle}] DEMO replay t+${(p.positionMs / 1000).toFixed(0)}s of ` +
         `${((p.captureEndMs - p.captureStartMs) / 1000).toFixed(0)}s (loop ${p.loops}, ${p.speed}x) ` +
         `data clock ${new Date(now).toISOString()} — recorded, not live`);
     }
     console.log(
-      `[poller][cycle ${cycle}] vehicles=${vehicles} tripUpdates=${tripUpdates} obs+=${obsInserted} ` +
+      `[poller:${staticAgency}][cycle ${cycle}] vehicles=${vehicles} tripUpdates=${tripUpdates} obs+=${obsInserted} ` +
       `join=${jr} due=${dueCount} ghosts+=${ghostsIns} retracted=${retracted} cancelled+=${cancelledIns}${cancTag} alerts=${alerts} ` +
       `| totals obs=${totals.obs} ghost=${totals.ghosts} cancelled=${totals.cancelled}`,
     );
@@ -978,7 +984,7 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
     if (engine.isReady()) {
       const d = joinStats.delayEngine;
       console.log(
-        `[engine][cycle ${cycle}] xwalk ${d.xwalk.confirmed}/${d.xwalk.rtStopsSeen} confirmed ` +
+        `[engine:${staticAgency}][cycle ${cycle}] xwalk ${d.xwalk.confirmed}/${d.xwalk.rtStopsSeen} confirmed ` +
         `(${(d.xwalk.occurrenceCoverage * 100).toFixed(1)}% of occurrences, ${d.xwalk.conflicted} conflicted, ` +
         `agree=${d.xwalk.crossRouteAgreement == null ? 'n/a' : (d.xwalk.crossRouteAgreement * 100).toFixed(1) + '%'}) ` +
         `| patterns ${d.patterns.resolved}/${d.patterns.rtTotal} resolved (maxIter=${d.patterns.maxResolveIter}, ` +
@@ -1011,8 +1017,8 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
   }
   async function loop(cycle: number): Promise<void> {
     if (stopping) return;
-    try { await poll(cycle); } catch (e) { console.error(`[poller][cycle ${cycle}] error:`, e); }
-    if (maxCycles > 0 && cycle >= maxCycles) { console.log(`[poller] reached ${maxCycles} cycles.`); options.onExit?.(); return; }
+    try { await poll(cycle); } catch (e) { console.error(`[poller:${staticAgency}][cycle ${cycle}] error:`, e); }
+    if (maxCycles > 0 && cycle >= maxCycles) { console.log(`[poller:${staticAgency}] reached ${maxCycles} cycles.`); options.onExit?.(); return; }
     scheduleNext(cycle);
   }
 

@@ -127,16 +127,71 @@ test('Oakville and Milton are schedule-only, for two different reasons', () => {
   }
 });
 
-test('GO and UP Express are static-only until the Metrolinx key arrives, with the required credit', () => {
-  // The static zips are open; the RT API is key-gated and GO's RT namespace is UNVERIFIED
-  // (the key gate blocked measurement) — so 'learned' is the only honest value, and the
-  // Metrolinx Access and Use Agreement's attribution sentence is carried verbatim.
+// GO's realtime is key-gated: the descriptor's `rt` is a getter over this env var, so a
+// test must control it the same way the GHOSTBUS_AGENCIES tests below control theirs.
+function withMetrolinxKey(value: string | undefined, fn: () => void): void {
+  const prev = process.env.GHOSTBUS_METROLINX_KEY;
+  if (value === undefined) delete process.env.GHOSTBUS_METROLINX_KEY;
+  else process.env.GHOSTBUS_METROLINX_KEY = value;
+  try { fn(); } finally {
+    if (prev === undefined) delete process.env.GHOSTBUS_METROLINX_KEY;
+    else process.env.GHOSTBUS_METROLINX_KEY = prev;
+  }
+}
+
+test('GO without GHOSTBUS_METROLINX_KEY is schedule-only, exactly as before the key existed', () => {
+  // Honest degradation, not an error: no key means no feeds means the §4.1 schedule-only
+  // rendering the app already has. A blank value is the same statement as an absent one.
+  withMetrolinxKey(undefined, () => {
+    const go = agency('go');
+    assert.equal(isScheduleOnly(go), true, 'GO must be schedule-only with no key in env');
+    assert.deepEqual(feedIdsFor(go), []);
+  });
+  withMetrolinxKey('   ', () => assert.equal(isScheduleOnly(agency('go')), true));
+});
+
+test('GO with the key in env publishes three JSON feeds — and the key is NEVER hardcoded', () => {
+  // The key is the operator's personal Metrolinx credential and this repository is
+  // public: the descriptor may only ever read it from GHOSTBUS_METROLINX_KEY. The URL
+  // paths are pinned as Metrolinx publishes them — note the SINGULAR `VehiclePosition`,
+  // which is the publisher's own name for it; pluralising it returns 404.
+  withMetrolinxKey('test-key-not-a-real-one', () => {
+    const go = agency('go');
+    assert.deepEqual(feedIdsFor(go).sort(), ['alerts', 'trips', 'vehicles']);
+    assert.equal(isScheduleOnly(go), false);
+    assert.match(go.rt.vehicles!, /^https:\/\/api\.openmetrolinx\.com\/OpenDataAPI\/api\/V1\/Gtfs\/Feed\/VehiclePosition\?key=test-key-not-a-real-one$/);
+    assert.match(go.rt.trips!, /\/Gtfs\/Feed\/TripUpdates\?key=/);
+    assert.match(go.rt.alerts!, /\/Gtfs\/Feed\/Alerts\?key=/);
+    // The bytes are JSON, not protobuf (measured 2026-07-29) — this flag is what routes
+    // GO through rtjson.ts. Every other agency leaves it unset (binary).
+    assert.equal(go.rtFormat, 'json');
+    for (const a of allAgencies()) {
+      if (a.id === 'go') continue;
+      assert.equal(a.rtFormat, undefined, `${a.id} must stay on the binary decode path`);
+    }
+  });
+});
+
+test("GO's rtNamespace is identity — MEASURED 2026-07-29, not read from documentation", () => {
+  // The same standard every other GTA agency was held to (plan §1.4: >=99% = identity),
+  // applied the day the key arrived: .data/go-rt-probe.mjs decoded all three live feeds
+  // and diffed ids against GO's own static board — 654/654 stops, 194/194 trips,
+  // 39/39 routes, 100.0% combined (alerts' informed_entity included). Artifact:
+  // .data/go-rt-probe-output.json. If the feed ever changes namespace, the engine's
+  // identityVerified gate refuses to publish — that gate, not this constant, is the
+  // runtime defence.
+  assert.equal(agency('go').rtNamespace, 'identity');
+});
+
+test('UP Express stays schedule-only and learned — GO\'s measurement says nothing about UP', () => {
+  // Same publisher, same licence, same verbatim attribution sentence — but UP's realtime
+  // lives on separate unmeasured endpoints, so 'learned' remains the fail-safe.
+  const up = agency('upexpress');
+  assert.equal(isScheduleOnly(up), true, 'upexpress should be schedule-only until its feed is measured');
+  assert.equal(up.rtNamespace, 'learned');
+  assert.match(up.staticSource.kind === 'direct' ? up.staticSource.url : '', /assets\.metrolinx\.com/);
   for (const id of ['go', 'upexpress']) {
-    const a = agency(id);
-    assert.equal(isScheduleOnly(a), true, `${id} should be schedule-only until the key arrives`);
-    assert.equal(a.rtNamespace, 'learned', `${id} RT namespace is unverified — must stay 'learned'`);
-    assert.match(a.staticSource.kind === 'direct' ? a.staticSource.url : '', /assets\.metrolinx\.com/);
-    assert.equal(a.licence.attribution,
+    assert.equal(agency(id).licence.attribution,
       'Data used in this product or service is provided with the permission of Metrolinx.');
   }
 });

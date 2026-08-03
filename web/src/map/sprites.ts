@@ -5,7 +5,7 @@
 // shadow. Drawn pointing NORTH so the symbol layer's icon-rotate = heading
 // aims the front down the direction of travel.
 
-export type VehicleKind = 'bus' | 'streetcar';
+export type VehicleKind = 'bus' | 'streetcar' | 'train';
 
 /** RGBA image + pixelRatio, ready for map.addImage(). */
 export interface SpriteImage {
@@ -74,13 +74,15 @@ export function makeVoxelSprite(kind: VehicleKind, hex: string): SpriteImage {
 
   const cx = S / 2;
   const cy = S / 2;
-  const bw = kind === 'streetcar' ? S * 0.28 : S * 0.32;
-  const bh = kind === 'streetcar' ? S * 0.72 : S * 0.56;
+  // A train reads as the longest, narrowest body of the three — the same legibility
+  // register as the other two, not a scale model (a real GO consist is ~300 m).
+  const bw = kind === 'streetcar' ? S * 0.28 : kind === 'train' ? S * 0.24 : S * 0.32;
+  const bh = kind === 'streetcar' ? S * 0.72 : kind === 'train' ? S * 0.82 : S * 0.56;
   // Deep enough to read as an extrusion at this size. This is the visible SIDE of
   // the block — at 40px it was 3.6px and invisible, which is why the sprite read
   // as a flat lozenge rather than a solid.
   const depth = S * 0.10;
-  const r = kind === 'streetcar' ? S * 0.055 : S * 0.07;
+  const r = kind === 'bus' ? S * 0.07 : S * 0.055;
 
   const roofX = cx - bw / 2;
   const roofY = cy - bh / 2 - depth / 2; // bias up so the block sits centered incl. its extrusion
@@ -103,7 +105,10 @@ export function makeVoxelSprite(kind: VehicleKind, hex: string): SpriteImage {
   ctx.fillStyle = 'rgba(14, 16, 26, 0.9)';
   const wW = bw * 0.20;
   const wH = bh * 0.13;
-  for (const fy of kind === 'streetcar' ? [0.20, 0.50, 0.78] : [0.24, 0.74]) {
+  const wheelRows = kind === 'streetcar' ? [0.20, 0.50, 0.78]
+    : kind === 'train' ? [0.12, 0.38, 0.62, 0.88]
+    : [0.24, 0.74];
+  for (const fy of wheelRows) {
     const wy = roofY + bh * fy;
     roundRect(ctx, roofX - wW * 0.42 + depth * 0.55, wy + depth * 0.9, wW, wH, wW * 0.3);
     ctx.fill();
@@ -148,8 +153,8 @@ export function makeVoxelSprite(kind: VehicleKind, hex: string): SpriteImage {
   ctx.fillStyle = 'rgba(190, 214, 255, 0.5)';
   roundRect(ctx, roofX + bw * 0.15, roofY + bh * 0.07, bw * 0.70, bh * 0.05, r * 0.35);
   ctx.fill();
-  // streetcars get a rear window band too
-  if (kind === 'streetcar') {
+  // streetcars and trains get a rear window band too
+  if (kind !== 'bus') {
     ctx.fillStyle = 'rgba(12, 16, 30, 0.62)';
     roundRect(ctx, roofX + bw * 0.11, roofY + bh * 0.84, bw * 0.78, bh * 0.10, r * 0.5);
     ctx.fill();
@@ -171,7 +176,9 @@ export function spriteId(kind: VehicleKind, color: string): string {
   return `veh-${kind}-${color}`;
 }
 
-/** Vehicle kind from a GTFS route_type (0 = tram/streetcar, else bus-shaped). */
+/** Vehicle kind from a GTFS route_type: 0 = tram/streetcar, 1/2 = subway/rail (GO and
+ *  UP Express rail routes are route_type 2 in their own GTFS — counted, 7 of GO's 44),
+ *  else bus-shaped. */
 export function kindForRouteType(routeType: number | null): VehicleKind {
-  return routeType === 0 ? 'streetcar' : 'bus';
+  return routeType === 0 ? 'streetcar' : routeType === 1 || routeType === 2 ? 'train' : 'bus';
 }

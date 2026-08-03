@@ -99,6 +99,14 @@ export interface AgencyDescriptor {
    * (the same argument gates.ts makes for boardIntegrity). Oakville publishes none at all.
    */
   rt: Partial<Record<FeedId, string>>;
+  /**
+   * The BYTES the rt endpoints answer with. Absent = binary protobuf, which is what
+   * every agency except Metrolinx publishes — the poller's binary decode path is
+   * untouched for them by construction. 'json' routes the body through rtjson.ts:
+   * measured 2026-07-29, GO's three feeds answer GTFS-realtime SHAPES as snake_case
+   * JSON (body starts `{ "header": {`), not protobuf.
+   */
+  rtFormat?: 'json';
   /** See the long note at the top of this file. */
   rtNamespace: 'learned' | 'identity';
   licence: AgencyLicence;
@@ -343,16 +351,47 @@ const MILTON: AgencyDescriptor = {
 };
 
 /**
- * GO Transit — STATIC-ONLY UNTIL THE METROLINX KEY ARRIVES.
+ * GO Transit realtime endpoints, built from the operator's key — or nothing.
  *
- * The static zip is open; the realtime API (api.openmetrolinx.com) requires a free key the
- * operator has requested (up to 10 business days). When it arrives, RT joins as a
- * descriptor edit here — URLs plus the key's env-var name — not a rebuild. GO's RT
- * namespace is UNVERIFIED (the key gate blocked measurement), so 'learned' is the only
- * honest value until it is measured; do not flip it to 'identity' on documentation.
+ * THE KEY NEVER APPEARS IN THIS REPOSITORY. It is the operator's personal Metrolinx key
+ * and the repository is public, so it rides in `GHOSTBUS_METROLINX_KEY` only. With the
+ * env var absent this returns `{}` and GO is schedule-only exactly as it was before the
+ * key existed — honest degradation, not an error (the §4.1 case the app already renders).
+ *
+ * A getter recomputes on access so tests can exercise both states; the poller captures
+ * the map once at construction, so a running poller's URLs never shift under it.
+ *
+ * Note the singular `VehiclePosition` — that is Metrolinx's own path name; pluralising
+ * it to match the other agencies' conventions returns 404.
+ */
+const METROLINX_RT_BASE = 'https://api.openmetrolinx.com/OpenDataAPI/api/V1/Gtfs/Feed';
+function metrolinxRt(): Partial<Record<FeedId, string>> {
+  const key = process.env.GHOSTBUS_METROLINX_KEY?.trim();
+  if (!key) return {};
+  return {
+    vehicles: `${METROLINX_RT_BASE}/VehiclePosition?key=${encodeURIComponent(key)}`,
+    trips: `${METROLINX_RT_BASE}/TripUpdates?key=${encodeURIComponent(key)}`,
+    alerts: `${METROLINX_RT_BASE}/Alerts?key=${encodeURIComponent(key)}`,
+  };
+}
+
+/**
+ * GO Transit — LIVE WHEN THE OPERATOR'S METROLINX KEY IS IN THE ENVIRONMENT.
+ *
+ * The key arrived 2026-07-29 and the namespace was MEASURED the same day, by the same
+ * standard every other GTA agency was held to (decode the live feed, diff its ids
+ * against GO's own downloaded static board — .data/go-rt-probe.mjs, artifact
+ * .data/go-rt-probe-output.json): 654/654 stops, 194/194 trips and 39/39 routes
+ * resolved directly, 100.0% across all three feeds including alerts' informed_entity.
+ * `'identity'` below is that measurement, not Metrolinx's documentation.
+ *
+ * TWO WAYS THIS FEED IS UNLIKE THE OTHERS. It is key-gated (see `metrolinxRt` above:
+ * no env key, no feeds, schedule-only as before), and it answers JSON rather than
+ * binary protobuf — `rtFormat: 'json'` routes it through rtjson.ts, which documents
+ * the casing and presence traps that conversion has to survive.
  *
  * Licence: Metrolinx Access and Use Agreement. The attribution below is the exact
- * sentence Metrolinx requires, verbatim.
+ * sentence Metrolinx requires, verbatim. No new GO branding beyond it.
  */
 const GO: AgencyDescriptor = {
   id: 'go',
@@ -362,8 +401,9 @@ const GO: AgencyDescriptor = {
     kind: 'direct',
     url: 'https://assets.metrolinx.com/raw/upload/Documents/Metrolinx/Open%20Data/GO-GTFS.zip',
   },
-  rt: {},
-  rtNamespace: 'learned',
+  get rt() { return metrolinxRt(); },
+  rtFormat: 'json',
+  rtNamespace: 'identity',
   licence: {
     name: 'GO Transit GTFS',
     via: 'Metrolinx Open Data · Metrolinx Access and Use Agreement',
@@ -372,8 +412,10 @@ const GO: AgencyDescriptor = {
 };
 
 /**
- * UP Express. Same publisher, licence and key situation as GO (see above): static-only
- * until the Metrolinx key arrives, and the same required attribution sentence.
+ * UP Express. Same publisher and licence as GO, and the same required attribution
+ * sentence — but STILL SCHEDULE-ONLY: UP's realtime lives on separate Metrolinx
+ * endpoints that have not been measured, and GO's 2026-07-29 identity measurement says
+ * nothing about them. 'learned' stays the fail-safe until UP's own feed is probed.
  */
 const UPEXPRESS: AgencyDescriptor = {
   id: 'upexpress',
@@ -459,7 +501,10 @@ export function enabledAgencies(): readonly AgencyDescriptor[] {
  * (Oakville) reports nothing instead of three permanently-`down` feeds.
  */
 export function feedIdsFor(d: AgencyDescriptor): FeedId[] {
-  return (Object.keys(d.rt) as FeedId[]).filter((k) => d.rt[k] != null);
+  // Read `rt` ONCE: GO's is a getter recomputed per access (see metrolinxRt), and taking
+  // keys and values from the same snapshot makes self-consistency structural.
+  const rt = d.rt;
+  return (Object.keys(rt) as FeedId[]).filter((k) => rt[k] != null);
 }
 
 /** True when the agency publishes no realtime at all — schedule-only, and honest about it. */
