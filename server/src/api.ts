@@ -29,7 +29,7 @@ import type {
   AlertsResponse, AlertDto, AlertInformedDto,
   GhostFeedResponse, GhostEventDto, GhostKind, GhostCounters,
   TrustGrade, GradeLetter, GhostRisk, EtaBucket,
-  PlanResponse, PlanStopDto, RideCandidateDto, PlanOutcome,
+  PlanResponse, PlanStopDto, RideCandidateDto, PlanOutcome, ItineraryDto,
 } from '../../shared/types.ts';
 
 // The agency namespace is NOT a module constant: it is read off the poller inside
@@ -1121,8 +1121,11 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       from: { lat: fromLat, lon: fromLon }, to: { lat: toLat, lon: toLon },
       serverNowMs: now, atMs, windowMinutes: windowMin, radiusM: radius,
     };
-    const answer = (outcome: PlanOutcome, candidates: RideCandidateDto[] = []) =>
-      reply.send({ ...head, outcome, candidates } satisfies PlanResponse);
+    const answer = (
+      outcome: PlanOutcome,
+      candidates: RideCandidateDto[] = [],
+      itineraries: ItineraryDto[] = [],
+    ) => reply.send({ ...head, outcome, candidates, itineraries } satisfies PlanResponse);
 
     /** The real stops within `radius` of a point, nearest first. Same bounding-box +
      *  haversine method `/api/stops/nearby` uses, so the two can never disagree. */

@@ -388,7 +388,46 @@ export interface RideCandidateDto {
  *   'noStopsNearDestination'    no stop at all within `radiusM` of the destination.
  */
 export type PlanOutcome =
-  | 'ride' | 'transfer' | 'noService' | 'noStopsNearYou' | 'noStopsNearDestination';
+  | 'ride' | 'transfer' | 'noService' | 'noStopsNearYou' | 'noStopsNearDestination'
+  /** No single ride does it, but TWO rides joined by a walk do — `itineraries`. */
+  | 'twoLeg';
+
+/**
+ * The walk between the two rides of a two-leg itinerary.
+ *
+ * A straight-line estimate, and labelled as one everywhere it is shown: this walk
+ * happens somewhere out in the network, not under the rider's feet, so the device has
+ * no reason to hold the tiles that would let it be routed the way the first walk is.
+ */
+export interface TransferWalkDto {
+  from: PlanStopDto;
+  to: PlanStopDto;
+  distanceM: number;
+  /** true when both rides call at the SAME stop — no walking, just a wait. */
+  sameStop: boolean;
+}
+
+/**
+ * Two rides and the walk between them.
+ *
+ * Each leg is a full `RideCandidateDto`, carrying its OWN evidence — live, honest ETA,
+ * grade, ghost risk — because the two legs are routinely not equally knowable: leg 1 may
+ * be a live-tracked TTC bus and leg 2 a schedule-only Milton coach. Averaging that into
+ * one confidence for the itinerary would hide exactly the thing a rider needs to know
+ * before committing to a connection.
+ */
+export interface ItineraryDto {
+  legs: [RideCandidateDto, RideCandidateDto];
+  transfer: TransferWalkDto;
+  /**
+   * Seconds between leg 1's scheduled arrival and leg 2's scheduled departure. Always
+   * at least the walk, because a connection that cannot be made is not offered — see
+   * TRANSFER_MIN_SLACK_S. Stated out loud in the UI rather than folded into a total.
+   */
+  transferWaitSec: number;
+  /** true when the two legs belong to different agencies (e.g. MiWay -> TTC). */
+  crossAgency: boolean;
+}
 
 export interface PlanResponse {
   from: { lat: number; lon: number };
@@ -401,6 +440,8 @@ export interface PlanResponse {
   outcome: PlanOutcome;
   /** soonest departure first; empty unless `outcome === 'ride'`. */
   candidates: RideCandidateDto[];
+  /** soonest arrival first; empty unless `outcome === 'twoLeg'`. */
+  itineraries: ItineraryDto[];
 }
 
 // ---------- /api/alerts ----------
