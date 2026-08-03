@@ -227,6 +227,22 @@ export function JourneyView() {
   useEffect(() => {
     if (!j) return;
     const opener = document.activeElement as HTMLElement | null;
+    /**
+     * JOIN THE APP'S EXISTING FULL-SCREEN-MODAL MECHANISM rather than growing a second one.
+     *
+     * `:root[data-modal]` is what SearchSheet has always set, and at phone width it takes
+     * `.mobile-top`, `.pane-side` and `.tabbar` out of the picture entirely — not painted,
+     * not in the accessibility tree, and not something this sheet's text is read on top of.
+     * The map is deliberately left alone; hiding a live WebGL canvas to satisfy a DOM probe
+     * would be a real risk taken for a cosmetic reason.
+     *
+     * Measured, not assumed: with the §F probe run against a full-screen sheet that does
+     * NOT set this, everything behind it counts as an intersection (the corrected probe
+     * models clipping, but nothing models occlusion). The search sheet, which does set it,
+     * measures zero. So this is the difference between a surface that passes §F and one
+     * that only looks like it should.
+     */
+    document.documentElement.setAttribute('data-modal', 'journey');
     const focusables = () => Array.from(
       ref.current?.querySelectorAll<HTMLElement>('button, [href], input, select, [tabindex]:not([tabindex="-1"])') ?? [],
     ).filter((el) => !el.hasAttribute('disabled'));
@@ -241,7 +257,11 @@ export function JourneyView() {
       else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
     };
     document.addEventListener('keydown', onKey);
-    return () => { document.removeEventListener('keydown', onKey); opener?.focus?.(); };
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.documentElement.removeAttribute('data-modal');
+      opener?.focus?.();
+    };
   }, [j]);
 
   const now = liveNow();
