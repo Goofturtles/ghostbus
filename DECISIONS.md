@@ -4952,6 +4952,17 @@ by running late, which is the exact inversion this project exists to prevent.
 
 Feeds that publish their own sequences are untouched, field for field.
 
+**What this means for an agency that is ALL direct**, stated rather than left to be
+discovered: its board-agreement gate, its drift breaker and its consistency check are all
+inert. The first two are inert by the paragraph above. The third is inert because for a
+repaired trip it re-tests the same stop-id equality that produced the sequence, so it can
+only agree. That is not three audits being suppressed — it is three audits of an inference
+that was never made. What replaces them is the uniqueness requirement: if the published
+stop-id list fits the named trip's stop list in exactly one place, the numbering is the only
+one consistent with the board, and there is nothing left for those audits to disagree with.
+If that requirement is ever weakened to a nearest or first match, all three must come back,
+because then there would be an inference again.
+
 ### Measured on ghostbus.tech, 2026-08-03
 
 | | before | after |
