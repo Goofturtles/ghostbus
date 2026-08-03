@@ -408,7 +408,7 @@ function PlanOutcomeView({ res, widened, best, bestItinerary, imperial, now, des
         <PlanState
           glyph={<ClockIcon width={24} height={24} />}
           title={t('plan.unreachableTitle')}
-          body={t('plan.unreachableBody', { count: res.itineraries.length })}
+          body={t('plan.unreachableBodyTwoLeg', { count: res.itineraries.length })}
         />
       );
     }
@@ -418,6 +418,7 @@ function PlanOutcomeView({ res, widened, best, bestItinerary, imperial, now, des
         imperial={imperial}
         now={now}
         destinationName={destinationName}
+        widened={widened}
       />
     );
   }
@@ -574,8 +575,8 @@ function ItineraryRideLeg({ leg, boardMs }: { leg: RideCandidateDto; boardMs: nu
  * the reason §53's spec gives: standing on a platform for eleven minutes is the part of a
  * connection a rider most needs to see before agreeing to it.
  */
-function ItineraryCard({ plan, imperial, now, destinationName }: {
-  plan: ItineraryPlan; imperial: boolean; now: number; destinationName: string;
+function ItineraryCard({ plan, imperial, now, destinationName, widened }: {
+  plan: ItineraryPlan; imperial: boolean; now: number; destinationName: string; widened: boolean;
 }) {
   const { t } = useTranslation();
   const min = (sec: number) => Math.max(1, Math.round(sec / 60));
@@ -584,9 +585,10 @@ function ItineraryCard({ plan, imperial, now, destinationName }: {
   const board1 = plan.leg1.candidate.board;
 
   return (
-    <section className="plan-result" aria-label={t('plan.twoLegResultLabel')}>
+    <section className="plan-result" role="status" aria-label={t('plan.twoLegResultLabel')}>
       <div className="plan-summary">
-        <span className="eyebrow">{t('plan.twoLegEyebrow')}</span>
+        <h3 className="sr-only">{t('plan.twoLegResultLabel')}</h3>
+        <span className="eyebrow">{widened ? t('plan.nextServiceEyebrow') : t('plan.twoLegEyebrow')}</span>
         <p className="plan-total">{t('plan.doorToDoor', { min: min(plan.totalSec) })}</p>
         <p className="plan-arrive">
           {t('plan.arriveAt', { time: fmtClock(plan.doorMs) })}
@@ -667,9 +669,10 @@ function RidePlanCard({ plan, imperial, now, destinationName, widened }: {
   const sameDay = new Date(plan.boardMs).toDateString() === new Date(now).toDateString();
 
   return (
-    <section className="plan-result" aria-label={t('plan.resultLabel')}>
+    <section className="plan-result" role="status" aria-label={t('plan.resultLabel')}>
       {/* The headline claim, and the two things that qualify it. */}
       <div className="plan-summary">
+        <h3 className="sr-only">{t('plan.resultLabel')}</h3>
         <span className="eyebrow">{widened ? t('plan.nextServiceEyebrow') : t('plan.summaryEyebrow')}</span>
         <p className="plan-total">{t('plan.doorToDoor', { min: min(plan.totalSec) })}</p>
         <p className="plan-arrive">

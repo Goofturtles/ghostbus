@@ -200,8 +200,31 @@ export interface ItineraryPlan {
   leg2: RidePlan;
   /** the transfer walk, re-timed at THIS rider's pace. */
   transferWalkSec: number;
-  /** the agency-scheduled gap between the two legs. Stated, never folded into a total. */
+  /**
+   * Alighting to boarding, measured on the instants THIS plan is built on — which is not
+   * the same as the server's `ItineraryDto.transferWaitSec` the moment leg 1 carries a
+   * live or honest prediction and leg 2 does not.
+   */
+  transferGapSec: number;
+  /**
+   * What is left of that gap AFTER the walk — the time the rider actually stands there.
+   *
+   * NOT the server's field of the same name, which is the WHOLE gap and therefore
+   * already includes the walk. Rendering that one beside the walk row printed the walk
+   * twice: the legs summed to `totalSec` plus one transfer walk, in all three locales.
+   * `transferWalkSec + transferWaitSec === transferGapSec` by construction, which is what
+   * makes the rendered rows add up to `totalSec` exactly.
+   */
   transferWaitSec: number;
+  /**
+   * Does the connection still work once leg 1's own prediction is counted?
+   *
+   * The server chose this pair off the published schedule. When `boardingInstant` then
+   * shifts leg 1 onto a live or honest estimate — and leg 2, schedule-only, does not move
+   * — the gap shrinks, and past a point the rider is still on the first vehicle when the
+   * second one leaves. The card would print leg 1 alighting AFTER leg 2 boards.
+   */
+  connectionHolds: boolean;
   leaveByMs: number;
   doorMs: number;
   /** walk + ride + transfer walk + wait + ride + walk. */
@@ -224,21 +247,37 @@ export function buildItineraryPlan(it: ItineraryDto, opts: PlanOptions): Itinera
   // rider's own first leg, and letting it match here would apply a path measured under
   // the rider's feet to a stop somewhere out in the network.
   const leg2 = buildRidePlan(it.legs[1], { ...opts, boardWalk: null });
+
+  // The gap measured on the instants this plan is ACTUALLY built on. `leg1.boardMs` is
+  // the predicted boarding where there is a prediction, and the ride time after it is the
+  // agency's, so this is when the rider really steps off the first vehicle.
+  const leg1AlightMs = leg1.boardMs + leg1.rideSec * 1000;
+  const transferGapSec = Math.round((leg2.boardMs - leg1AlightMs) / 1000);
+  const transferWalkSec = walkLegSeconds('direct', it.transfer.distanceM, opts.paceMps);
+
   return {
     itinerary: it,
     leg1,
     leg2,
-    transferWalkSec: walkLegSeconds('direct', it.transfer.distanceM, opts.paceMps),
-    transferWaitSec: it.transferWaitSec,
+    transferWalkSec,
+    transferGapSec,
+    // Floored at zero so a broken connection cannot render as a negative wait; the
+    // itinerary is refused by `connectionHolds` below rather than shown with a 0.
+    transferWaitSec: Math.max(0, transferGapSec - transferWalkSec),
+    connectionHolds: transferGapSec >= transferWalkSec,
     leaveByMs: leg1.leaveByMs,
     doorMs: leg2.doorMs,
     // Travel only, on the same definition `RidePlan.totalSec` uses and for the same
     // reason: measured from `leaveByMs`, so an itinerary whose first leg is tomorrow
     // morning does not report as a sixteen-hour journey.
     totalSec: Math.max(0, Math.round((leg2.doorMs - leg1.leaveByMs) / 1000)),
-    // Only the FIRST leg can be missed by walking too slowly — the connection itself was
-    // already judged makeable by the server, at a pace no rider setting is slower than.
-    reachable: leg1.reachable,
+    // TWO ways an itinerary stops being one. The rider cannot reach the first stop in
+    // time — or they can, and the first leg's own predicted delay has since eaten the
+    // connection. The server judged the second question against the published schedule
+    // at a slow pace; it could not have judged it against a prediction that did not
+    // exist yet. Both are refusals, because itinerary.ts's first rule is the same on
+    // this side of the wire: a connection the rider cannot make is not a connection.
+    reachable: leg1.reachable && transferGapSec >= transferWalkSec,
   };
 }
 

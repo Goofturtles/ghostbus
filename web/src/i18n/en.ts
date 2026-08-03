@@ -495,6 +495,8 @@ const en = {
     noStopsBody: 'GhostBus found no covered stop within {{m}} m of it, so there is nowhere to start or finish the ride.',
     unreachableTitle: "You can't reach any of these on foot",
     unreachableBody: 'All {{count}} direct rides GhostBus found depart before you could walk to their stop at your pace.',
+    unreachableBodyTwoLeg: 'The one two-ride option GhostBus found either leaves before you could walk to the first stop at your pace, or no longer connects once the first ride’s delay is counted.',
+    unreachableBodyTwoLeg_other: 'All {{count}} two-ride options GhostBus found either leave before you could walk to the first stop at your pace, or no longer connect once the first ride’s delay is counted.',
     resultLabel: 'Your single-ride plan',
     summaryEyebrow: 'Best single ride',
     nextServiceEyebrow: 'Next scheduled service',

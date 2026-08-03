@@ -447,6 +447,8 @@ const frCA: Dict = {
     noStopsBody: 'GhostBus n’a trouvé aucun arrêt couvert à moins de {{m}} m : il n’y a donc nulle part où commencer ou terminer le trajet.',
     unreachableTitle: 'Aucun de ces départs n’est atteignable à pied',
     unreachableBody: 'Les {{count}} trajets directs trouvés partent avant que vous puissiez rejoindre leur arrêt à votre rythme.',
+    unreachableBodyTwoLeg: 'La seule option à deux trajets trouvée par GhostBus part avant que vous puissiez atteindre le premier arrêt à votre rythme, ou ne fait plus la correspondance une fois le retard du premier trajet compté.',
+    unreachableBodyTwoLeg_other: 'Les {{count}} options à deux trajets trouvées par GhostBus partent avant que vous puissiez atteindre le premier arrêt à votre rythme, ou ne font plus la correspondance une fois le retard du premier trajet compté.',
     resultLabel: 'Votre trajet direct',
     summaryEyebrow: 'Meilleur trajet direct',
     nextServiceEyebrow: 'Prochain service à l’horaire',
@@ -467,7 +469,7 @@ const frCA: Dict = {
     // ---- palier à deux trajets ----
     twoLegResultLabel: 'Votre plan à deux trajets',
     twoLegEyebrow: 'Meilleur trajet · une correspondance',
-    twoLegCrossAgency: 'Deux sociétés, deux horaires distincts',
+    twoLegCrossAgency: 'Deux agences, deux horaires distincts',
     transferWalkTo: 'Marchez ≈{{dist}} · {{min}} min jusqu’à {{stop}}',
     transferStayAt: 'Restez à {{stop}}',
     transferWait: 'Puis attendez {{min}} min',

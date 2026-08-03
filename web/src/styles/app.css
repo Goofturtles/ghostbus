@@ -1434,7 +1434,7 @@
   overflow-wrap: anywhere;
 }
 .plan-arrive { margin: 0; font-size: 14px; line-height: 1.5; color: var(--text-2); overflow-wrap: anywhere; }
-.plan-date { color: var(--accent); font-weight: 600; }
+.plan-date { color: var(--accent-text); font-weight: 600; }
 
 .plan-legs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s3); }
 .plan-leg {

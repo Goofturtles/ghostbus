@@ -272,9 +272,13 @@ test('a two-leg plan leaves on the FIRST leg and arrives on the SECOND', () => {
   assert.equal(p.doorMs, p.leg2.doorMs);
   assert.ok(p.doorMs > it.legs[1].arrivalMs, 'the walk from the last stop is counted');
 
-  // The transfer wait is STATED, not folded away — 10 minutes here.
-  assert.equal(p.transferWaitSec, 600);
+  // The gap is 10 minutes, and it SPLITS into the walk and what is left to stand around
+  // for. `transferWaitSec` is the post-walk remainder, NOT the whole gap — the server's
+  // field of that name is the whole gap, and rendering it beside the walk row is exactly
+  // how the legs came to over-sum the total by one transfer walk.
+  assert.equal(p.transferGapSec, 600);
   assert.ok(p.transferWalkSec > 0, 'a 130 m transfer takes real time at a real pace');
+  assert.equal(p.transferWaitSec, 600 - p.transferWalkSec);
 
   // Total is travel only, measured from leaving — the same definition the ride tier uses.
   assert.equal(p.totalSec, Math.round((p.doorMs - p.leaveByMs) / 1000));
@@ -362,4 +366,72 @@ test('every plan string the planner can render exists in all three locales', () 
       assert.equal(typeof dicts[name].plan[k], 'string', `${name}.plan.${k} is missing`);
     }
   }
+});
+
+test('THE ROWS ADD UP: every leg the card renders sums to exactly totalSec', () => {
+  // The bug this exists for: the server's `transferWaitSec` is the WHOLE gap and already
+  // includes the walk, so rendering it beside the walk row printed the walk twice and the
+  // legs over-summed the headline total by one transfer walk, in all three locales.
+  const it = itinerary({
+    leg1Dep: T0 + 600_000, leg1Arr: T0 + 1_200_000,
+    leg2Dep: T0 + 1_800_000, leg2Arr: T0 + 2_400_000, transferM: 250,
+  });
+  const p = buildItineraryPlan(it, opts);
+  const rendered = p.leg1.toStop.seconds      // "Walk … to <first stop>"
+    + p.leg1.rideSec                          // first ride
+    + p.transferWalkSec                       // "Walk … to <transfer stop>"
+    + p.transferWaitSec                       // "Then wait …"
+    + p.leg2.rideSec                          // second ride
+    + p.leg2.fromStop.seconds;                // "Walk … to <destination>"
+  assert.equal(rendered, p.totalSec, 'the rows the rider reads must be the total they are given');
+  // And the two halves of the gap are exactly the gap — no third place for time to hide.
+  assert.equal(p.transferWalkSec + p.transferWaitSec, p.transferGapSec);
+});
+
+test('a DELAYED first leg that eats the connection is refused, not printed', () => {
+  // Scheduled, this connects with 10 minutes to spare. Leg 1 is then predicted 12 minutes
+  // late while leg 2 — schedule-only, another agency — does not move. The rider is still
+  // on the first vehicle when the second one leaves, and the card would otherwise print
+  // leg 1 alighting AFTER leg 2 boards.
+  const base = itinerary({
+    leg1Dep: T0 + 600_000, leg1Arr: T0 + 1_200_000,
+    leg2Dep: T0 + 1_800_000, leg2Arr: T0 + 2_400_000, transferM: 130,
+  });
+  assert.equal(buildItineraryPlan(base, opts).connectionHolds, true, 'on schedule it holds');
+
+  const delayed: ItineraryDto = {
+    ...base,
+    legs: [
+      { ...base.legs[0], honest: { estimateMs: base.legs[0].departureMs + 720_000, bandLowMs: null, bandHighMs: null, medianDelaySec: 720 } },
+      base.legs[1],
+    ],
+  };
+  const p = buildItineraryPlan(delayed, opts);
+  assert.equal(p.leg1.boardIsPredicted, true, 'the plan really is built on the prediction');
+  assert.ok(p.transferGapSec < p.transferWalkSec, 'the walk no longer fits in the gap');
+  assert.equal(p.connectionHolds, false);
+  assert.equal(p.reachable, false, 'a connection that cannot be made is not offered');
+  assert.equal(pickBestItinerary([delayed], opts), null);
+  // Never a negative wait on the way out.
+  assert.ok(p.transferWaitSec >= 0);
+});
+
+test('a first leg predicted only slightly late still connects', () => {
+  // The refusal must be about the ARITHMETIC, not about any prediction existing at all.
+  const base = itinerary({
+    leg1Dep: T0 + 600_000, leg1Arr: T0 + 1_200_000,
+    leg2Dep: T0 + 1_800_000, leg2Arr: T0 + 2_400_000, transferM: 130,
+  });
+  const nudged: ItineraryDto = {
+    ...base,
+    legs: [
+      { ...base.legs[0], honest: { estimateMs: base.legs[0].departureMs + 60_000, bandLowMs: null, bandHighMs: null, medianDelaySec: 60 } },
+      base.legs[1],
+    ],
+  };
+  const p = buildItineraryPlan(nudged, opts);
+  assert.equal(p.connectionHolds, true);
+  assert.equal(p.reachable, true);
+  // And the wait shrank by exactly the delay — the gap is measured, not assumed.
+  assert.equal(p.transferGapSec, buildItineraryPlan(base, opts).transferGapSec - 60);
 });

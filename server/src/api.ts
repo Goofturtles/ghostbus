@@ -1359,27 +1359,53 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     // Evidence for the BOARDING departure, on exactly the terms a departure board uses:
     // this stop's own history where there is enough of it, the route-hour rollup where
     // there is not, and no estimate at all where there is neither.
-    const stopsInvolved = [...new Set(rides.map((r) => r.boardStopId))];
-    const routesInvolved = [...new Set(rides.map((r) => r.routeId).filter((x): x is string => !!x))];
-    const stopAgg = new Map<string, Agg>(); // `${stop}|${route}|${how}`
-    const routeAgg = new Map<string, Agg>(); // `${route}|${how}`
-    if (routesInvolved.length > 0) {
+    /**
+     * KEYED BY AGENCY, AND ASKED PER AGENCY.
+     *
+     * These maps used to be keyed `${stop}|${route}|${how}` with the rows fetched for
+     * `modeAgency` alone — safe while a plan could only ever be one agency's, and wrong
+     * the moment the two-leg tier spans several. Two distinct failures, both silent:
+     * a MiWay route `26` would read TTC's route-26 history and print TTC's grade beside
+     * a MiWay bus, and MiWay's own history could never be reached at all because it was
+     * never queried. Same bug class as the `routeMetaFor` collision noted below, and the
+     * reason this one is worth spelling out: the FIX for that one was to pass the
+     * agency, and these maps quietly did not.
+     *
+     * Demo Mode is why the lookup agency is `obsAgencyFor` rather than the ride's own id:
+     * observations are written under `modeAgency` for whichever agency this poller
+     * observes, and under the ride's own agency for every other one.
+     */
+    const obsAgencyFor = (agencyId: string) => (agencyId === staticAgency ? modeAgency : agencyId);
+    const byAgg = new Map<string, { stops: Set<string>; routes: Set<string> }>();
+    for (const r of rides) {
+      if (!r.routeId) continue;
+      const key = obsAgencyFor(r.agency);
+      let e = byAgg.get(key);
+      if (!e) { e = { stops: new Set(), routes: new Set() }; byAgg.set(key, e); }
+      e.stops.add(r.boardStopId);
+      e.routes.add(r.routeId);
+    }
+    const stopAgg = new Map<string, Agg>(); // `${agency}|${stop}|${route}|${how}`
+    const routeAgg = new Map<string, Agg>(); // `${agency}|${route}|${how}`
+    await Promise.all([...byAgg].map(async ([aggAgency, { stops, routes }]) => {
+      const stopsInvolved = [...stops];
+      const routesInvolved = [...routes];
       const [sRows, rRows] = await Promise.all([
         db.query<{ stop_id: string; route_id: string; hour_of_week: number; n: number; p25: number; p50: number; p75: number }>(
           `SELECT stop_id, route_id, hour_of_week, n, p25, p50, p75 FROM agg_delay
            WHERE agency=$1 AND stop_id = ANY($2::text[]) AND route_id = ANY($3::text[])`,
-          [modeAgency, stopsInvolved, routesInvolved]),
+          [aggAgency, stopsInvolved, routesInvolved]),
         db.query<{ route_id: string; hour_of_week: number; n: number; p25: number; p50: number; p75: number }>(
           `SELECT route_id, hour_of_week, n, p25, p50, p75 FROM agg_delay_route
-           WHERE agency=$1 AND route_id = ANY($2::text[])`, [modeAgency, routesInvolved]),
+           WHERE agency=$1 AND route_id = ANY($2::text[])`, [aggAgency, routesInvolved]),
       ]);
       for (const r of sRows.rows) {
-        stopAgg.set(`${r.stop_id}|${r.route_id}|${r.hour_of_week}`, { n: Number(r.n), p25: Number(r.p25), p50: Number(r.p50), p75: Number(r.p75) });
+        stopAgg.set(`${aggAgency}|${r.stop_id}|${r.route_id}|${r.hour_of_week}`, { n: Number(r.n), p25: Number(r.p25), p50: Number(r.p50), p75: Number(r.p75) });
       }
       for (const r of rRows.rows) {
-        routeAgg.set(`${r.route_id}|${r.hour_of_week}`, { n: Number(r.n), p25: Number(r.p25), p50: Number(r.p50), p75: Number(r.p75) });
+        routeAgg.set(`${aggAgency}|${r.route_id}|${r.hour_of_week}`, { n: Number(r.n), p25: Number(r.p25), p50: Number(r.p50), p75: Number(r.p75) });
       }
-    }
+    }));
 
     const candidates: RideCandidateDto[] = [];
     for (const r of rides) {
@@ -1392,15 +1418,21 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       if (!board || !alight) continue;
       const meta = routeMetaFor(typeof metaAgency === 'string' ? metaAgency : metaAgency(r), r.routeId);
       const how = hourOfWeek(r.departureMs);
-      const sAgg = r.routeId ? stopAgg.get(`${r.boardStopId}|${r.routeId}|${how}`) ?? null : null;
-      const rAgg = r.routeId ? routeAgg.get(`${r.routeId}|${how}`) ?? null : null;
+      const aggAgency = obsAgencyFor(r.agency);
+      const sAgg = r.routeId ? stopAgg.get(`${aggAgency}|${r.boardStopId}|${r.routeId}|${how}`) ?? null : null;
+      const rAgg = r.routeId ? routeAgg.get(`${aggAgency}|${r.routeId}|${how}`) ?? null : null;
       const ev = selectEvidence(sAgg, rAgg);
       const hasEst = ev.bucket !== 'none' && ev.p50 != null;
       const liveEtaMs = Math.abs(r.departureMs - now) < LIVE_ETA_MAX_SKEW_MS
         ? poller.getLivePredictionMs(r.tripId, r.boardStopId)
         : null;
       const grade = hasEst ? gradeFor(ev.bucket, ev.n, spreadMinutes(ev.p25 as number, ev.p75 as number)) : null;
-      const cell = r.routeId ? forecast.get(`${r.routeId}|${how}`) : undefined;
+      // The ghost forecast is built for THIS poller's agency only (see `kickForecast`),
+      // and its cells are keyed by bare route id — so applying it to another agency's leg
+      // would hand a MiWay route its TTC namesake's ghost history. No forecast for an
+      // agency this process does not observe is the honest answer, and it is also the
+      // true one: nothing has been observed to forecast from.
+      const cell = r.routeId && aggAgency === modeAgency ? forecast.get(`${r.routeId}|${how}`) : undefined;
       const ghostRisk = cell ? ghostRiskFor(cell.ghosts, cell.scheduled, WINDOW_DAYS) : null;
 
       const c: RideCandidateDto = {
@@ -1516,14 +1548,17 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       // both ends of it.
       const fromAgencies = seeded.filter((a) => idsFor(boardStops, a).length > 0);
       const toAgencies = seeded.filter((a) => idsFor(alightStops, a).length > 0);
-      const leg1: RawRide[] = [];
-      for (const a of fromAgencies) leg1.push(...await legRides(a, idsFor(boardStops, a), 'board', windowMs));
-      if (leg1.length === 0) return [];
-      const leg2: RawRide[] = [];
-      for (const a of toAgencies) {
-        leg2.push(...await legRides(a, idsFor(alightStops, a), 'alight', windowMs + TWO_LEG_HORIZON_MS));
-      }
-      if (leg2.length === 0) return [];
+      // Both halves, every agency, in parallel. These probes are the widest statements
+      // the planner issues and they run on EVERY journey the ride tier refuses, which on
+      // a multi-agency deployment is most cross-boundary ones — serialising ten of them
+      // made the refusal path the slowest thing in the app. They are independent reads.
+      const [leg1Sets, leg2Sets] = await Promise.all([
+        Promise.all(fromAgencies.map((a) => legRides(a, idsFor(boardStops, a), 'board', windowMs))),
+        Promise.all(toAgencies.map((a) => legRides(a, idsFor(alightStops, a), 'alight', windowMs + TWO_LEG_HORIZON_MS))),
+      ]);
+      const leg1 = leg1Sets.flat();
+      const leg2 = leg2Sets.flat();
+      if (leg1.length === 0 || leg2.length === 0) return [];
 
       // Coordinates for every stop a transfer could happen at — the free end of each
       // leg. One query, both agencies' worth, keyed by (agency, stop) because two

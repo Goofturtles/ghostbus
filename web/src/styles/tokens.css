@@ -97,6 +97,12 @@
      near-black background it only reaches ~4:1, and the reference's accent reads
      visibly brighter than the wordmark fill. This is the one used for words. */
   --accent: #b168e0;
+  /* ACCENT AS TEXT. `--accent` is tuned as a FILL — behind white glyphs, as a badge, as a
+     border — where 4.46:1 against `--surface` is fine because nothing small is set in it.
+     Used as small text (`.plan-date`) it lands just under the 4.5:1 floor, so accent-
+     coloured type reads off this instead: same hue, lifted until it clears. Light mode's
+     accent is already 7.53:1 as text and needs no second value. */
+  --accent-text: #c58ae8;
   /* RAISED 0.70 -> 0.88. `.glass` has exactly two consumers, both modal dialogs that sit
      over the live map (the search sheet and the settings sheet), so it is a SURFACE, not a
      tint. At 0.70 under a 24px blur it did not suppress `--route-red` (#ff4d4d), the most
@@ -146,6 +152,7 @@
   --bg-deep: #e8e6e5;
   --side-bg: #ececeb;
   --accent: #7b2f9e;
+  --accent-text: var(--accent);
   --surface: #fdfdfd;
   --surface-solid: #ffffff;
   --surface-2: #f1f0ef;
