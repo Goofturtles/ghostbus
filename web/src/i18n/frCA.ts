@@ -4,7 +4,8 @@ import type { Dict } from './en';
 const frCA: Dict = {
   brand: { ghost: 'Ghost', bus: 'Bus' },
   tagline: 'L’horaire est une promesse. GhostBus vous dit la vérité.',
-  nav: { nearby: 'À proximité', plan: 'Trajet', saved: 'Enregistrés', alerts: 'Alertes', primary: 'Principal' },
+  // Trois onglets. « À proximité » a disparu — voir la note sur `Tab` dans store.ts.
+  nav: { plan: 'Trajet', saved: 'Enregistrés', alerts: 'Alertes', primary: 'Principal' },
   search: {
     placeholder: 'Où allez-vous?',
     hint: '⌘K',
@@ -475,6 +476,64 @@ const frCA: Dict = {
     transferWait: 'Puis attendez {{min}} min',
     basisTransfer: 'La correspondance est vérifiée avec les deux horaires publiés à un pas lent, avec 90 secondes de marge — elle tient donc même sans vous presser.',
     defaultLocationNote: 'Planifié depuis une position par défaut tant que vous ne partagez pas la vôtre.',
+    // ---- le menu d’options ----
+    fromYou: 'Depuis votre position',
+    fromDefault: 'Depuis une position par défaut',
+    optionsEyebrow: '{{count}} façon de s’y rendre',
+    optionsEyebrow_other: '{{count}} façons de s’y rendre',
+    moreOptions: '{{count}} autre option non affichée',
+    moreOptions_other: '{{count}} autres options non affichées',
+    go: 'ALLER',
+    goSub: 'Partez à {{time}}',
+    /**
+     * ---- pourcentages ----
+     *
+     * Chaque chaîne ici décrit un nombre qui n’apparaît que lorsque de vraies
+     * observations l’ont payé (voir lib/likelihood.ts). Aucune ne peut servir à une
+     * estimation, ni s’afficher à côté d’un départ à l’horaire seulement.
+     */
+    pctConnection: '{{pct}} % de chances d’avoir cette correspondance',
+    pctOnTime: '{{pct}} % à l’heure',
+    pctConnectionShort: 'de chances d’avoir cette correspondance',
+    pctOnTimeShort: 'à l’heure',
+    pctConnectionDef: 'À quelle fréquence le premier trajet a été assez en retard pour manquer le second, celui-ci étant tenu à son horaire.',
+    pctOnTimeDef: 'À l’heure signifie un départ dans les {{min}} min suivant l’heure publiée.',
+    pctBasisStop: 'D’après {{n}} observations de cette ligne à cet arrêt au cours des {{days}} derniers jours.',
+    pctBasisRoute: 'D’après {{n}} observations de cette ligne au cours des {{days}} derniers jours.',
+    pctMethod: 'Calculé à partir de la dispersion observée des retards, et non de la position actuelle du véhicule. GhostBus voit la moitié centrale de cette dispersion, pas ses extrémités : il n’annonce donc jamais plus de 95 % ni moins de 5 %.',
+    pctAria: '{{label}}. {{defn}} {{source}}',
+  },
+  /** Le tableau d’un arrêt — ouvert en touchant un arrêt sur la carte, ou par recherche. */
+  stopSheet: {
+    label: 'Départs de {{stop}}',
+    thisStop: 'cet arrêt',
+    bodyLabel: 'Départs et leurs preuves',
+  },
+  /**
+   * Mode ALLER. La formulation évite une chose avant tout : cet écran ne sait pas si la
+   * personne est réellement montée à bord, alors il décrit où en est le PLAN, jamais où
+   * elle se trouve. Voir l’en-tête de components/JourneyView.tsx.
+   */
+  journey: {
+    eyebrow: 'En route vers',
+    exit: 'Terminer',
+    dialogLabel: 'Votre trajet vers {{dest}}',
+    bodyLabel: 'Étapes du trajet et preuves',
+    progressLabel: 'Progression dans ce trajet',
+    nowTag: 'Maintenant',
+    notLeftYet: 'Partez à {{time}}',
+    leaveIn: 'C’est dans {{min}} min.',
+    inMin: 'dans {{min}} min',
+    at: 'à {{time}}',
+    departed: 'parti',
+    onBoard: 'À bord du {{route}}',
+    transferring: 'Correspondance à {{stop}}',
+    walkingToDest: 'Marche vers {{dest}}',
+    arrived: 'Vous devriez y être',
+    arrivedBody: 'Ce plan se termine à {{dest}}.',
+    planClockNote: 'Voici où le plan vous situe — GhostBus ne peut pas voir si vous êtes monté à bord.',
+    evScheduledBoarding: 'Embarquement prévu à {{time}}',
+    basis: 'GhostBus suit la marche vers votre premier arrêt à partir de votre propre position et du flux de véhicules en direct. Une fois à bord, il ne peut plus vous voir : chaque étape suivante relève de l’horloge du plan face à l’horaire de l’agence, et non d’une affirmation sur l’endroit où vous êtes.',
   },
   alerts: {
     title: 'Alertes',

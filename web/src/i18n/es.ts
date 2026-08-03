@@ -4,7 +4,8 @@ import type { Dict } from './en';
 const es: Dict = {
   brand: { ghost: 'Ghost', bus: 'Bus' },
   tagline: 'El horario es una promesa. GhostBus te dice la verdad.',
-  nav: { nearby: 'Cerca', plan: 'Ruta', saved: 'Guardados', alerts: 'Alertas', primary: 'Principal' },
+  // Tres pestañas. «Cerca» ya no existe — ver la nota sobre `Tab` en store.ts.
+  nav: { plan: 'Ruta', saved: 'Guardados', alerts: 'Alertas', primary: 'Principal' },
   search: {
     placeholder: '¿A dónde vas?',
     hint: '⌘K',
@@ -475,6 +476,64 @@ const es: Dict = {
     transferWait: 'Después espera {{min}} min',
     basisTransfer: 'La conexión se verifica con ambos horarios publicados a paso lento, con 90 segundos de margen — así se mantiene aunque no vayas con prisa.',
     defaultLocationNote: 'Planificado desde una ubicación predeterminada hasta que compartas la tuya.',
+    // ---- el menú de opciones ----
+    fromYou: 'Desde tu ubicación',
+    fromDefault: 'Desde una ubicación predeterminada',
+    optionsEyebrow: '{{count}} forma de llegar',
+    optionsEyebrow_other: '{{count}} formas de llegar',
+    moreOptions: '{{count}} opción más sin mostrar',
+    moreOptions_other: '{{count}} opciones más sin mostrar',
+    go: 'IR',
+    goSub: 'Sal a las {{time}}',
+    /**
+     * ---- porcentajes ----
+     *
+     * Cada cadena aquí describe un número que solo aparece cuando lo respaldan
+     * observaciones reales (ver lib/likelihood.ts). Ninguna sirve para una estimación,
+     * ni puede mostrarse junto a una salida basada solo en el horario.
+     */
+    pctConnection: '{{pct}} % de que hagas esta conexión',
+    pctOnTime: '{{pct}} % puntual',
+    pctConnectionShort: 'de que hagas esta conexión',
+    pctOnTimeShort: 'puntual',
+    pctConnectionDef: 'Con qué frecuencia el primer viaje ha llegado lo bastante tarde como para perder el segundo, manteniendo este último en su horario.',
+    pctOnTimeDef: 'Puntual significa salir dentro de los {{min}} min siguientes a la hora publicada.',
+    pctBasisStop: 'A partir de {{n}} observaciones de esta línea en esta parada durante los últimos {{days}} días.',
+    pctBasisRoute: 'A partir de {{n}} observaciones de esta línea durante los últimos {{days}} días.',
+    pctMethod: 'Calculado con la dispersión observada de los retrasos, no con dónde está el vehículo ahora mismo. GhostBus ve la mitad central de esa dispersión, no sus extremos, así que nunca informa por encima del 95 % ni por debajo del 5 %.',
+    pctAria: '{{label}}. {{defn}} {{source}}',
+  },
+  /** El tablero de una parada — se abre tocando una parada en el mapa o buscándola. */
+  stopSheet: {
+    label: 'Salidas desde {{stop}}',
+    thisStop: 'esta parada',
+    bodyLabel: 'Salidas y sus pruebas',
+  },
+  /**
+   * Modo IR. La redacción cuida sobre todo una cosa: esta pantalla no sabe si la persona
+   * subió de verdad, así que describe dónde va el PLAN, nunca dónde está ella. Ver la
+   * cabecera de components/JourneyView.tsx.
+   */
+  journey: {
+    eyebrow: 'De camino a',
+    exit: 'Terminar',
+    dialogLabel: 'Tu viaje a {{dest}}',
+    bodyLabel: 'Pasos del viaje y pruebas',
+    progressLabel: 'Progreso de este viaje',
+    nowTag: 'Ahora',
+    notLeftYet: 'Sal a las {{time}}',
+    leaveIn: 'Eso es en {{min}} min.',
+    inMin: 'en {{min}} min',
+    at: 'a las {{time}}',
+    departed: 'ya salió',
+    onBoard: 'A bordo del {{route}}',
+    transferring: 'Transbordo en {{stop}}',
+    walkingToDest: 'Caminando a {{dest}}',
+    arrived: 'Deberías estar allí',
+    arrivedBody: 'Este plan termina en {{dest}}.',
+    planClockNote: 'Aquí es donde el plan te sitúa — GhostBus no puede ver si subiste.',
+    evScheduledBoarding: 'Embarque previsto a las {{time}}',
+    basis: 'GhostBus sigue la caminata hasta tu primera parada con tu propia ubicación y el flujo de vehículos en vivo. Una vez a bordo no puede verte, así que cada paso posterior es el reloj del plan frente al horario de la agencia, no una afirmación sobre dónde estás.',
   },
   alerts: {
     title: 'Alertas',

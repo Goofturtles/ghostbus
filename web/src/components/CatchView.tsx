@@ -16,21 +16,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { DepartureDto } from '@shared/types';
-import { api, type Bbox } from '@/lib/api';
 import { useLive, liveNow } from '@/hooks/useLive';
-import { useTick } from '@/hooks/useTick';
 import { useStore, paceMps } from '@/store';
+import { useCatchEngine, nextTrackedOf } from '@/hooks/useCatchEngine';
 import { fmtClock, fmtDistance } from '@/lib/format';
-import { computeVerdict, haversineM, type Point, type VehicleFix, type VerdictKind } from '@/lib/catch';
+import { type Point, type VerdictKind } from '@/lib/catch';
 import { RouteBadge } from './Primitives';
 import { WalkerIcon, SignalIcon, ClockIcon, WarningIcon, LocateIcon } from './icons';
 
-/** Same cadence as the map's vehicle layer. */
-const VEH_POLL_MS = 5000;
-/** Box around the boarding stop, roughly ±5.5 km. A vehicle further out than that
- *  is not one this rider is about to catch, and a bigger box is a bigger payload. */
-const BOX_LAT = 0.05;
-const BOX_LON = 0.065;
 /** Show the fix age in seconds below this, in minutes above it. Sits above the
  *  ~106s a healthy fix reaches on this feed (see STALE_FIX_MS), so a perfectly
  *  good position is never described in minutes. */
@@ -45,51 +38,10 @@ interface Props {
 
 export function CatchView({ dep, onClose }: Props) {
   const { t } = useTranslation();
-  useTick(1000);
   const arrivals = useLive((s) => s.arrivals);
-  /**
-   * TWO REASONS A FIX STOPS BEING EVIDENCE, and they must not share a sentence.
-   *
-   * For the VERDICT the distinction is irrelevant: either way the position we hold can no
-   * longer be refreshed, so it stops counting. `staleFix` keeps that logic exactly as it
-   * was.
-   *
-   * For the COPY the distinction is everything. This component used to fold both into one
-   * flag and then reach for "the vehicle feed is down" — announcing an agency outage when
-   * the real cause was our own rate limiter or our own restart. `ourFault` is what splits
-   * the message, so we only ever say "the TTC feed is down" when our server is reachable
-   * and its own health says exactly that. See DECISIONS §45.
-   */
-  const ourFault = useLive((s) => s.apiFailure != null);
-  /**
-   * `feeds.vehicles == null` means THE AGENCY PUBLISHES NO VEHICLE FEED — not that its feed
-   * is down. Reporting "the vehicle feed is down" for an agency that never had one would be
-   * the §45 attribution bug wearing a new costume: blaming an agency for an outage that is
-   * not happening. Such an agency simply has no live-vehicle promise to break, so the view
-   * falls back to scheduled times without accusing anybody. The TTC publishes all three
-   * feeds, so this reads exactly as it did before.
-   */
-  const agencyFeedDown = useLive((s) => s.apiFailure == null && s.health != null
-    && s.health.feeds.vehicles != null && s.health.feeds.vehicles.status !== 'ok');
-  const staleFix = ourFault || agencyFeedDown;
   const pace = useStore((s) => s.pace);
   const imperial = useStore((s) => s.units) === 'imperial';
   const ref = useRef<HTMLDivElement>(null);
-
-  // ---------------- the rider's own live position ----------------
-  const [rider, setRider] = useState<Point | null>(null);
-  const [geoNonce, setGeoNonce] = useState(0);
-  useEffect(() => {
-    if (!('geolocation' in navigator)) return;
-    const id = navigator.geolocation.watchPosition(
-      (p) => setRider({ lat: p.coords.latitude, lon: p.coords.longitude }),
-      // Denied, timed out, or position-unavailable all land here. The rider's
-      // position is then simply unknown — we never substitute one.
-      () => setRider(null),
-      { enableHighAccuracy: true, timeout: 10_000, maximumAge: 5_000 },
-    );
-    return () => navigator.geolocation.clearWatch(id);
-  }, [geoNonce]);
 
   // ---------------- the boarding stop ----------------
   // Latched on the first board that carries coordinates and then held. `arrivals`
@@ -107,76 +59,24 @@ export function CatchView({ dep, onClose }: Props) {
     setBoardingId(arrivals.stopId);
   }, [arrivals, boarding]);
 
-  // ---------------- the live board row for THIS trip ----------------
-  // Re-found by tripId on every arrivals refresh. When it is no longer there, the
-  // run has left the live board and the verdict degrades to 'gone'.
-  const live = arrivals?.departures.find((d) => d.tripId === dep.tripId) ?? null;
-  const arrivalMs = live?.liveEtaMs ?? null;
+  // ---------------- the live machinery ----------------
+  // All of it — the rider's watched position, the vehicle poll, the board lookup and the
+  // verdict — lives in useCatchEngine, shared with the in-progress journey view so the two
+  // surfaces cannot answer "do I make it?" differently. See that file for why it moved.
+  const {
+    verdict: v, live, arrivalMs, fix, everSeen, ourFault, agencyFeedDown, noStop, retryGeo,
+  } = useCatchEngine({
+    tripId: dep.tripId, routeId: dep.routeId, stop: boarding, stopId: boardingId,
+  });
 
   // The next departure of this route that the feed is actually tracking — offered
   // when this one is missed or has vanished. Never an invented time. Computed on
   // every tick rather than memoised on `arrivals`, so the offer cannot go stale
   // between the 30s board refreshes.
   const now = liveNow();
-  const nextTracked = arrivals?.departures
-    .filter((d) => d.routeId === dep.routeId && d.tripId !== dep.tripId && d.liveEtaMs != null && d.liveEtaMs > now)
-    .sort((a, b) => (a.liveEtaMs as number) - (b.liveEtaMs as number))[0] ?? null;
+  const nextTracked = nextTrackedOf(arrivals, dep.routeId, dep.tripId, now);
 
-  // ---------------- the vehicle's live position ----------------
-  // The vehicle feed identifies vehicles by route, not by run, so this is the
-  // closest tracked vehicle of this route to the boarding stop — labelled as
-  // exactly that, never as "your bus". The last fix is kept so that when it stops
-  // refreshing we can say how old it is instead of silently dropping it.
-  const [fix, setFix] = useState<VehicleFix | null>(null);
-  const [everSeen, setEverSeen] = useState(false);
-  useEffect(() => {
-    if (!boarding || !dep.routeId) return;
-    const stop = boarding;
-    const box: Bbox = [stop.lon - BOX_LON, stop.lat - BOX_LAT, stop.lon + BOX_LON, stop.lat + BOX_LAT];
-    let alive = true;
-    // Monotonic: a slow response must never overwrite a newer fix with an older
-    // one, which would make the age jump backwards.
-    let seq = 0;
-    const poll = async () => {
-      if (document.hidden) return;
-      const mine = ++seq;
-      try {
-        const res = await api.vehicles(box);
-        if (!alive || mine !== seq) return;
-        let best: VehicleFix | null = null;
-        let bestD = Infinity;
-        for (const v of res.vehicles) {
-          if (v.routeId !== dep.routeId) continue;
-          const d = haversineM({ lat: v.lat, lon: v.lon }, stop);
-          if (d < bestD) { bestD = d; best = { lat: v.lat, lon: v.lon, ts: v.ts }; }
-        }
-        if (best) { setFix(best); setEverSeen(true); }
-      } catch { /* transient — the next tick retries, and the fix ages honestly meanwhile */ }
-    };
-    void poll();
-    const timer = window.setInterval(() => void poll(), VEH_POLL_MS);
-    const onVis = () => { if (!document.hidden) void poll(); };
-    document.addEventListener('visibilitychange', onVis);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-      document.removeEventListener('visibilitychange', onVis);
-    };
-  }, [dep.routeId, boarding]);
-
-  // ---------------- the verdict ----------------
   const mps = paceMps(pace);
-  // The walk the map drew to THIS stop, when it drew one. `walkFor` refuses a leg
-  // measured to any other stop, so a verdict is never timed on somebody else's walk.
-  const walkLeg = useStore((s) => s.walkLeg);
-  const measuredWalk = boardingId != null && walkLeg?.stopId === boardingId ? walkLeg : null;
-  const v = computeVerdict({
-    nowMs: now, rider, stop: boarding, paceMps: mps, arrivalMs, vehicle: fix,
-    feedDown: staleFix, walk: measuredWalk,
-  });
-  // 'noGeo' covers two different absences; only one of them is about the rider.
-  const noStop = boarding == null && rider != null;
-
   const short = dep.shortName ?? dep.routeId ?? '—';
   const nextLabel = nextTracked?.liveEtaMs != null ? fmtClock(nextTracked.liveEtaMs) : null;
 
@@ -314,7 +214,7 @@ export function CatchView({ dep, onClose }: Props) {
             <h2 className="catch-headline balance">{headline}</h2>
             {detail && <p className="catch-detail balance">{detail}</p>}
             {v.kind === 'noGeo' && !noStop && (
-              <button className="btn btn-primary catch-retry" onClick={() => setGeoNonce((n) => n + 1)}>
+              <button className="btn btn-primary catch-retry" onClick={retryGeo}>
                 <LocateIcon width={15} height={15} />
                 <span>{t('catch.useLocation')}</span>
               </button>

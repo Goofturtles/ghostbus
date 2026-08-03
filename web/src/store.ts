@@ -2,12 +2,24 @@ import { create } from 'zustand';
 import { setLocale, type LocaleId } from './i18n';
 import { pushRecent, type RecentPlace } from './lib/search';
 import type { MeasuredWalk } from './lib/walk';
+import type { Journey } from './lib/journey';
 
 // Everything personal lives here and in localStorage — never on the server.
 export type Theme = 'system' | 'light' | 'dark';
 export type Quality = 'auto' | 'full' | 'reduced' | 'lite';
 export type Pace = 'slow' | 'average' | 'fast';
-export type Tab = 'nearby' | 'plan' | 'saved' | 'alerts';
+/**
+ * THE NEARBY TAB IS GONE, and with it the stop-board-first home.
+ *
+ * It was a feed of "buses near you", which is a list nobody opens an app to read: a rider
+ * standing somewhere already knows what is around them, and what they actually want is to
+ * get somewhere. So the home is now the map plus the journey planner, and a stop board is
+ * reached the way a map makes you reach one — by tapping a stop, or by searching it. That
+ * is an interaction, not a feed, and `stopSheet` below is where it lands.
+ *
+ * `plan` is first, and is the tab a cold start opens on.
+ */
+export type Tab = 'plan' | 'saved' | 'alerts';
 /** What the search sheet is being opened FOR. Same UI, two destinations for the pick. */
 export type SearchMode = 'stop' | 'destination';
 export type AccessProfile = 'none' | 'wheelchair' | 'walker' | 'stroller' | 'lowVision' | 'slower';
@@ -158,6 +170,25 @@ interface State {
   walkLeg: MeasuredWalk | null;
   mapExpanded: boolean;
   locale: LocaleId;
+  /**
+   * THE STOP BOARD, as a surface you open rather than a feed you are handed.
+   *
+   * True while the board for `selectedStopId` is on screen. Opened by tapping a stop on
+   * the map or picking one out of search — the two ways a rider actually asks for a
+   * specific stop. Session-only: a board restored on launch would be a stop nobody asked
+   * about, which is the thing the Nearby tab was doing wrong.
+   */
+  stopSheet: boolean;
+  /**
+   * THE JOURNEY THE RIDER PRESSED GO ON, or null.
+   *
+   * Frozen at the moment they committed: the steps, their instants, and the option's own
+   * evidence. It is deliberately NOT re-planned underneath them — a journey that silently
+   * swapped itself for a better one mid-walk would be answering a question nobody asked
+   * twice. What IS live is the layer on top: the catch verdict, the boarding stop's live
+   * board, and the clock. Session-only, for the same reason `planTarget` is.
+   */
+  journey: Journey | null;
 
   setTab: (t: Tab) => void;
   selectStop: (id: string) => void;
@@ -181,11 +212,14 @@ interface State {
   setPlanUnresolved: (v: boolean) => void;
   setWalkLeg: (v: MeasuredWalk | null) => void;
   setMapExpanded: (v: boolean) => void;
+  openStopSheet: (v: boolean) => void;
+  startJourney: (j: Journey) => void;
+  endJourney: () => void;
 }
 
 export const useStore = create<State>((set, get) => ({
   city: 'toronto',
-  tab: 'nearby',
+  tab: 'plan',
   /**
    * NO STOP IS SELECTED AT COLD START, and the empty string is the honest value.
    *
@@ -231,6 +265,8 @@ export const useStore = create<State>((set, get) => ({
   walkLeg: null,
   mapExpanded: false,
   locale: (localStorage.getItem('gb.lang') as LocaleId) || 'en',
+  stopSheet: false,
+  journey: null,
 
   setTab: (tab) => set({ tab }),
   selectStop: (selectedStopId) => set({ selectedStopId }),
@@ -290,6 +326,21 @@ export const useStore = create<State>((set, get) => ({
     }
   },
   setMapExpanded: (mapExpanded) => set({ mapExpanded }),
+  // The board replaces the other sheets for the same reason About replaces Settings and
+  // Search replaces both: two focus traps deep is a keyboard dead end.
+  openStopSheet: (stopSheet) => set(
+    stopSheet ? { stopSheet, settingsOpen: false, aboutOpen: false, searchMode: null } : { stopSheet: false },
+  ),
+  /**
+   * Committing to a journey takes the whole screen, so it closes everything that could sit
+   * on top of it. Nothing else about the plan is disturbed: `planTarget` stays, so exiting
+   * returns the rider to the same menu of options they chose from rather than to a blank
+   * planner asking them where they are going all over again.
+   */
+  startJourney: (journey) => set({
+    journey, stopSheet: false, settingsOpen: false, aboutOpen: false, searchMode: null,
+  }),
+  endJourney: () => set({ journey: null }),
 }));
 
 // ---- side effects that touch <html> ----

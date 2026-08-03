@@ -4,6 +4,9 @@ import './i18n';
 import './styles/tokens.css';
 import './styles/global.css';
 import './styles/app.css';
+// After app.css on purpose: the journey surfaces reuse its primitives (.plan-leg,
+// .state-card, .dep-list) and a few rules here refine them, so they must land later.
+import './styles/journey.css';
 import { initClientState } from './store';
 import { registerServiceWorker } from './pwa';
 import App from './App';

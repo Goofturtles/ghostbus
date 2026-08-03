@@ -248,7 +248,10 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
     } else {
       store.rememberStop(remembered);
       useLive.getState().openStop({ ...place, agency: place.agency, lat, lon });
-      store.setTab('nearby');
+      // Searching a stop is one of the two ways a rider asks for a board (the other is
+      // tapping it on the map), so it opens the board rather than dropping them on a tab
+      // and leaving them to notice the selection changed.
+      store.openStopSheet(true);
     }
     close();
   }, [mode, close]);

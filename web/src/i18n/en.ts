@@ -2,7 +2,8 @@
 const en = {
   brand: { ghost: 'Ghost', bus: 'Bus' },
   tagline: 'The schedule is a promise. GhostBus tells you the truth.',
-  nav: { nearby: 'Nearby', plan: 'Plan', saved: 'Saved', alerts: 'Alerts', primary: 'Primary' },
+  // Three tabs. 'Nearby' is gone — see the note on `Tab` in store.ts.
+  nav: { plan: 'Plan', saved: 'Saved', alerts: 'Alerts', primary: 'Primary' },
   search: {
     placeholder: 'Where to?',
     hint: '⌘K',
@@ -523,6 +524,64 @@ const en = {
     transferStayAt: 'Stay at {{stop}}',
     transferWait: 'Then wait {{min}} min',
     basisTransfer: 'The connection is checked against both published schedules at a slow walking pace, with 90 seconds to spare — so it holds even if you are not hurrying.',
+    // ---- the options menu ----
+    fromYou: 'From your location',
+    fromDefault: 'From a default location',
+    optionsEyebrow: '{{count}} way to get there',
+    optionsEyebrow_other: '{{count}} ways to get there',
+    moreOptions: '{{count}} more option not shown',
+    moreOptions_other: '{{count}} more options not shown',
+    go: 'GO',
+    goSub: 'Leave by {{time}}',
+    /**
+     * ---- percentages ----
+     *
+     * Every string here describes a number that only ever appears when real observations
+     * paid for it (see lib/likelihood.ts). None of them may be reused for an estimate,
+     * and none may be shown beside a schedule-only departure.
+     */
+    pctConnection: '{{pct}}% you make this connection',
+    pctOnTime: '{{pct}}% on time',
+    pctConnectionShort: 'you make this connection',
+    pctOnTimeShort: 'on time',
+    pctConnectionDef: 'How often the first ride has run late enough to miss the second, with the second held to its schedule.',
+    pctOnTimeDef: 'On time means departing within {{min}} min of the published time.',
+    pctBasisStop: 'From {{n}} observations of this route at this stop over the last {{days}} days.',
+    pctBasisRoute: 'From {{n}} observations of this route over the last {{days}} days.',
+    pctMethod: 'Read off the observed spread of delays, not off where the vehicle is right now. GhostBus can see the middle half of that spread, not its tails, so it never reports above 95% or below 5%.',
+    pctAria: '{{label}}. {{defn}} {{source}}',
+  },
+  /** The stop board — reached by tapping a stop on the map, or searching one. */
+  stopSheet: {
+    label: 'Departures from {{stop}}',
+    thisStop: 'this stop',
+    bodyLabel: 'Departures and their evidence',
+  },
+  /**
+   * GO mode. The wording is careful about one thing above all: this screen does not know
+   * whether the rider actually boarded, so it describes where the PLAN is, never where
+   * they are. See the header of components/JourneyView.tsx.
+   */
+  journey: {
+    eyebrow: 'On your way to',
+    exit: 'End',
+    dialogLabel: 'Your journey to {{dest}}',
+    bodyLabel: 'Journey steps and evidence',
+    progressLabel: 'Progress through this journey',
+    nowTag: 'Now',
+    notLeftYet: 'Leave by {{time}}',
+    leaveIn: 'That is in {{min}} min.',
+    inMin: 'in {{min}} min',
+    at: 'at {{time}}',
+    departed: 'departed',
+    onBoard: 'Riding the {{route}}',
+    transferring: 'Changing at {{stop}}',
+    walkingToDest: 'Walking to {{dest}}',
+    arrived: 'You should be there',
+    arrivedBody: 'This plan ends at {{dest}}.',
+    planClockNote: "This is where the plan says you are — GhostBus can't see whether you boarded.",
+    evScheduledBoarding: 'Scheduled boarding {{time}}',
+    basis: "GhostBus tracks the walk to your first stop from your own position and the live vehicle feed. After you board it has no way to see you, so every step past that is the plan's own clock against the agency's schedule — not a claim about where you are.",
   },
   alerts: {
     title: 'Alerts',

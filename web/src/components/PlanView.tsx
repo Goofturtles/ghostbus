@@ -1,8 +1,23 @@
-// The Plan tab — a real single-ride planner.
+// THE HOME. The map is above it, the journey planner is this, and there is no longer a
+// feed of nearby buses anywhere in the app.
 //
-// This tab used to render a PlaceholderView reading "Trip planning is designed — it
-// isn't wired up in this build yet". It is wired up now, against /api/plan, and every
-// number on screen comes from the agency's published schedule.
+// What replaced the Nearby tab is not just "Plan moved to the front". Three things that
+// were load-bearing about that panel and are NOT about any one stop moved here with it,
+// because they are facts about the app's relationship with the rider rather than about a
+// board:
+//
+//   · the location-permission entry point (which also carries the iOS compass grant —
+//     see useLive.requestLocation; it must stay on a real tap);
+//   · the honest out-of-coverage card, which is the one thing standing between a rider in
+//     Mississauga and a downtown Toronto board presented as theirs;
+//   · the three feed-attribution banners — demo, ours, theirs — kept strictly apart
+//     exactly as DECISIONS §45 requires.
+//
+// The stop board itself did not move here. It became StopBoardSheet, opened by tapping a
+// stop on the map or picking one out of search.
+//
+// Every number on screen still comes from the agency's published schedule or from
+// observations GhostBus actually recorded.
 //
 // THE SCOPE IS DELIBERATE AND STATED. GhostBus plans ONE ride where one ride does it,
 // and AT MOST TWO joined by a single short walk where one will not. It never goes to a
@@ -12,7 +27,7 @@
 // the planner says so and offers a maps app instead.
 //
 // The five outcomes are five different facts and are never collapsed into one shrug:
-//   ride        · a real single-ride plan, below.
+//   ride        · real single-ride options, ranked.
 //   twoLeg      · two rides and the walk between them, each leg with its own evidence.
 //   transfer    · neither one ride nor two walkable ones link the two ends.
 //   noService   · a direct ride exists, but none departs in the window searched.
@@ -20,20 +35,19 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { PlanResponse, RideCandidateDto } from '@shared/types';
+import type { PlanResponse } from '@shared/types';
 import { api } from '@/lib/api';
 import { useLive, liveNow } from '@/hooks/useLive';
 import { useTick } from '@/hooks/useTick';
 import { useStore, paceMps } from '@/store';
-import { fmtClock, fmtDistance, fmtServiceDate } from '@/lib/format';
+import { fmtDistance } from '@/lib/format';
+import { transitDirectionsUrl } from '@/lib/plan';
+import { buildOptions, type OptionList } from '@/lib/journey';
+import { PlanOptions } from './PlanOptions';
+import { SavedPlacesSection } from './SavedPlaces';
+import { OfflineCard } from './OfflineCard';
 import {
-  pickBestRide, buildRidePlan, transitDirectionsUrl, pickBestItinerary,
-  type RidePlan, type ItineraryPlan,
-} from '@/lib/plan';
-import { parseHeadsign } from '@/lib/headsign';
-import { RouteBadge } from './Primitives';
-import {
-  SearchIcon, WalkerIcon, RouteIcon, FlagIcon, ClockIcon, WarningIcon, PinIcon,
+  SearchIcon, RouteIcon, FlagIcon, ClockIcon, WarningIcon, PinIcon, LocateIcon,
   ChevronIcon, CloseIcon, ArrowRightIcon,
 } from './icons';
 
@@ -64,6 +78,7 @@ export function PlanView() {
   const nearby = useLive((s) => s.nearby);
   const geoStatus = useLive((s) => s.geoStatus);
   const online = useLive((s) => s.online);
+  const requestLocation = useLive((s) => s.requestLocation);
 
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
   // Same monotonic guard the rest of the app uses: a slow reply for a destination the
@@ -104,42 +119,38 @@ export function PlanView() {
   }, [target, geo]);
 
   const now = liveNow();
-  const best = useMemo<RidePlan | null>(() => {
-    if (phase.kind !== 'done' || phase.res.outcome !== 'ride') return null;
-    return pickBestRide(phase.res.candidates, { nowMs: now, paceMps: paceMps(pace) });
-    // `now` deliberately excluded: re-picking every tick would let the chosen ride
-    // hop between options mid-read. useTick already re-renders the times below.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase, pace]);
 
   /**
-   * The two-leg answer, chosen exactly as `best` is: soonest at the destination, and
-   * re-picked only when the response or the pace changes, never on the clock tick.
-   */
-  const bestItinerary = useMemo<ItineraryPlan | null>(() => {
-    if (phase.kind !== 'done' || phase.res.outcome !== 'twoLeg') return null;
-    return pickBestItinerary(phase.res.itineraries, { nowMs: now, paceMps: paceMps(pace) });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase, pace]);
-
-  /**
-   * THE SAME PLAN, RE-TIMED ON THE WALK THE MAP ACTUALLY DREW.
+   * THE MENU, not a verdict.
    *
-   * `best` above is chosen on the straight-line estimate that every candidate shares,
-   * and it must stay that way — see `PlanOptions.boardWalk` for the oscillation that
-   * ranking on a measured walk would cause. This re-times the chosen one, and only the
-   * chosen one, so the leave-by printed under the first leg belongs to the path drawn
-   * beside it. When the map has measured nothing, `walkFor` finds no match and this is
-   * `best` with its estimate intact.
+   * Every reachable option the server offered, ranked by when the rider actually arrives.
+   * `now` is deliberately excluded from the dependencies for the same reason the single
+   * best pick always excluded it: re-ranking every tick would let the list reorder itself
+   * under the reader's thumb. `useTick` still re-renders the countdowns on the cards.
    */
   const walkLeg = useStore((s) => s.walkLeg);
-  const shown = useMemo<RidePlan | null>(() => {
-    if (!best) return null;
-    return buildRidePlan(best.candidate, { nowMs: now, paceMps: paceMps(pace), boardWalk: walkLeg });
-    // `now` excluded for the same reason it is excluded above: a plan that re-times
-    // itself every tick moves under the reader's eye.
+  const options = useMemo<OptionList>(() => {
+    if (phase.kind !== 'done') return { options: [], hiddenCount: 0, totalCount: 0 };
+    return buildOptions(phase.res, { nowMs: now, paceMps: paceMps(pace), boardWalk: walkLeg });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [best, walkLeg, pace]);
+  }, [phase, pace, walkLeg]);
+
+  /**
+   * WHICH OPTION THE RIDER IS READING — lifted out of the list so the MAP can follow it.
+   *
+   * The map draws its beaded walk path to the selected stop, so if the rider opens the
+   * third option the line under their feet has to become that option's first leg. Left
+   * inside the list this would be a purely visual expansion while the map kept drawing a
+   * walk to a different journey's boarding stop.
+   *
+   * Reset to the best option whenever the menu itself changes, so a selection can never
+   * outlive the plan it belonged to. Keyed on the ids rather than the array, because the
+   * memo above produces a fresh array on every re-plan even when the answer is identical.
+   */
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const optionsKey = options.options.map((o) => o.id).join('|');
+  useEffect(() => { setSelectedId(options.options[0]?.id ?? null); }, [optionsKey]);
+  const selected = options.options.find((o) => o.id === selectedId) ?? options.options[0] ?? null;
 
   const clear = useCallback(() => setPlanTarget(null), [setPlanTarget]);
 
@@ -147,74 +158,55 @@ export function PlanView() {
    * A resolved plan takes the map with it: the selected stop becomes the plan's own
    * BOARDING stop.
    *
-   * This is not decoration. On the desktop split the map stays mounted beside this
-   * panel and draws its beaded walk path from the rider to whatever stop is selected
-   * — so after a rider searches a stop across town, the map keeps drawing a walk to
-   * it, and a 7 km dotted trail beside a trip plan reads as a suggested route. Moving
-   * the selection to the boarding stop makes that path the plan's own first leg,
-   * which is exactly what it is meant to depict.
+   * This is not decoration. On the desktop split the map stays mounted beside this panel
+   * and draws its beaded walk path from the rider to whatever stop is selected — so after
+   * a rider searches a stop across town, the map keeps drawing a walk to it, and a 7 km
+   * dotted trail beside a trip plan reads as a suggested route. Moving the selection to
+   * the boarding stop makes that path the plan's own first leg, which is exactly what it
+   * is meant to depict.
+   *
+   * Only the boarding stop of the FIRST ride: a transfer happens out in the network, and
+   * drawing a path to it would depict a walk the rider has not started.
    */
-  // A two-leg plan has a first leg to draw like any other — the walk to where the rider
-  // boards. Only the boarding stop of the FIRST ride: the transfer happens out in the
-  // network, and drawing a path to it would depict a walk the rider has not started.
-  const boardStop = best?.candidate.board ?? bestItinerary?.leg1.candidate.board ?? null;
+  const boardStop = selected == null
+    ? null
+    : selected.kind === 'ride'
+      ? selected.plan.candidate.board
+      : selected.plan.leg1.candidate.board;
 
   /**
-   * AND THE MIRROR OF THAT: any plan that is NOT a usable ride takes the map's geometry away.
+   * AND THE MIRROR OF THAT: any plan that is NOT a usable option takes the map's geometry
+   * away.
    *
    * Without this, the previous plan's first leg stayed drawn — a beaded walk path to a
    * boarding stop belonging to a different journey — sitting directly under a message
    * saying this journey has no answer. A route-like line beside a message saying there is
    * no route is exactly the kind of confident-sounding fiction this tab exists to refuse.
    *
-   * THIS CONDITION HAS NOW BEEN WRONG TWICE, in the same way both times: it enumerated the
-   * failures it had thought of instead of the one success it can actually depict.
-   *
-   *   First miss  — it only covered `outcome !== 'ride'`, so a `ride` whose candidates were
-   *                 all uncatchable kept its geometry.
-   *   Second miss — it was gated on `phase.kind === 'done'`, so a plan fetch that FAILED
-   *                 (`phase.kind === 'error'`: server unreachable, throttled, restarting)
-   *                 could never set it. A tester killed the server mid-session and got the
-   *                 prior plan's full walk path drawn beneath "Can't reach the planner."
-   *                 The `Phase` union makes `'error'` payload-free, so `'done'` is false by
-   *                 construction there — the effect computed `false` for every network
-   *                 failure, and `setPlanTarget` had already cleared the flag when the
-   *                 re-plan began, so nothing could ever set it back.
-   *
-   * So it is inverted: there is exactly ONE state in which a first leg exists to draw — a
-   * resolved ride with a catchable candidate — and every other state a pending destination
-   * can be in (loading, errored, or answered badly) is unresolved. New `Phase` variants are
-   * unresolved by default rather than by remembering to add them here.
+   * THIS CONDITION HAS BEEN WRONG TWICE, in the same way both times: it enumerated the
+   * failures somebody had thought of instead of the one success it can actually depict.
+   * So it stays inverted — there is exactly ONE state in which a first leg exists to draw,
+   * and every other state a pending destination can be in (loading, errored, or answered
+   * with nothing reachable) is unresolved by construction rather than by remembering to
+   * add it here.
    *
    * Scoped to `target`, because with no destination chosen there is no question on screen
-   * and therefore nothing to contradict: the map goes back to its ordinary depiction of the
-   * rider and their own nearest stop, which is honest precisely because nothing is claiming
-   * to be a plan.
+   * and therefore nothing to contradict.
    */
-  const resolved = phase.kind === 'done' && (
-    (phase.res.outcome === 'ride' && best != null)
-    || (phase.res.outcome === 'twoLeg' && bestItinerary != null));
+  const resolved = phase.kind === 'done' && options.options.length > 0;
   const unresolved = target != null && !resolved;
 
   /**
    * The selection follows the plan in BOTH directions.
    *
    * The truthy branch alone left `selectedStopId` pinned to a stale boarding stop when a
-   * re-plan failed: `best` (and so `boardStop`) goes null, but nothing un-selected the old
-   * stop, so the map's boarding annotation kept naming a stop from a journey that no longer
-   * has an answer. Falling back to the rider's own nearest stop returns the map to the
+   * re-plan failed. Falling back to the rider's own nearest stop returns the map to the
    * picture it shows when no plan exists at all — which is the truthful thing to show when
    * no plan exists at all.
    *
    * SETTLED outcomes only. `unresolved` deliberately includes `loading` so the geometry
    * disappears the instant a new question is asked, but re-selecting on `loading` would
-   * bounce the selection to the nearest stop and back on every single re-plan — a visible
-   * stop-card flicker plus two wasted requests each time. A pending question suppresses the
-   * drawing; only a finished one moves the pin.
-   *
-   * `nearby` is read reactively rather than through `getState()`: on a cold start the geo
-   * fix resolves before the nearby query returns, so a `getState()` read would see an empty
-   * list, and nothing would re-run the effect when the stops actually arrived.
+   * bounce the selection to the nearest stop and back on every single re-plan.
    */
   const settled = phase.kind === 'done' || phase.kind === 'error';
   const nearest = nearby[0] ?? null;
@@ -230,14 +222,10 @@ export function PlanView() {
   }, [boardStop, unresolved, settled, nearest]);
 
   /**
-   * `target` is a dependency, and without it this desynced permanently.
-   *
-   * `setPlanTarget` resets the store flag to `false` the moment a new destination is picked.
-   * If the previous plan was ALSO unresolved (transfer -> transfer, the commonest case for a
-   * rider trying several destinations), `unresolved` stays `true` across that change, React
-   * sees an unchanged dep, the effect never re-runs — and the store keeps the `false` the
-   * store itself wrote. The map then draws the old walk path under the new refusal: exactly
-   * the defect this whole block exists to prevent, reintroduced by a stale dependency.
+   * `target` is a dependency, and without it this desynced permanently: `setPlanTarget`
+   * resets the store flag to `false` the moment a new destination is picked, and if the
+   * previous plan was ALSO unresolved React would see an unchanged dep, never re-run, and
+   * the store would keep the `false` it wrote itself.
    */
   useEffect(() => {
     useStore.getState().setPlanUnresolved(unresolved);
@@ -247,32 +235,59 @@ export function PlanView() {
 
   return (
     <div className="plan-panel">
+      <FeedBanners />
+
+      {/* The location entry point. It carries the iOS compass grant too (see
+          useLive.requestLocation), which is why it must stay a real tap and can never be
+          fired automatically. */}
+      {geoStatus === 'default' && (
+        <button className="loc-note" onClick={requestLocation}>
+          <LocateIcon width={15} height={15} aria-hidden />
+          <span>{t('empty.defaultLocation')}</span>
+        </button>
+      )}
+
+      <OutOfCoverageCard />
+
       <header className="plan-head">
         <h2 className="plan-title">{t('plan.title')}</h2>
         <p className="plan-sub">{t('plan.sub')}</p>
       </header>
 
-      {/* The destination picker — the same search sheet the top bar opens. */}
-      <div className="plan-dest">
-        <button
-          className="plan-dest-btn"
-          aria-haspopup="dialog"
-          onClick={() => openSearch('destination')}
-        >
-          <span className="plan-dest-glyph" aria-hidden><SearchIcon width={18} height={18} /></span>
-          <span className="plan-dest-text truncate">
-            {target ? target.name : t('plan.chooseDestination')}
+      {/* Origin, then destination — the shape every trip planner uses. The origin is
+          STATED rather than assumed, so a default location can never quietly masquerade
+          as one the rider gave. */}
+      <div className="plan-route">
+        <div className="plan-from">
+          <span className="plan-from-glyph" aria-hidden><LocateIcon width={16} height={16} /></span>
+          <span className="plan-from-text truncate">
+            {geoStatus === 'granted' ? t('plan.fromYou') : t('plan.fromDefault')}
           </span>
-          <ChevronIcon width={17} height={17} aria-hidden />
-        </button>
-        {target && (
-          <button className="plan-dest-clear" aria-label={t('plan.clearDestination')} onClick={clear}>
-            <CloseIcon width={17} height={17} />
+        </div>
+
+        <div className="plan-dest">
+          <button
+            className="plan-dest-btn"
+            aria-haspopup="dialog"
+            onClick={() => openSearch('destination')}
+          >
+            <span className="plan-dest-glyph" aria-hidden><SearchIcon width={18} height={18} /></span>
+            <span className="plan-dest-text truncate">
+              {target ? target.name : t('plan.chooseDestination')}
+            </span>
+            <ChevronIcon width={17} height={17} aria-hidden />
           </button>
-        )}
+          {target && (
+            <button className="plan-dest-clear" aria-label={t('plan.clearDestination')} onClick={clear}>
+              <CloseIcon width={17} height={17} />
+            </button>
+          )}
+        </div>
       </div>
 
-      {!target && <PlanIdle recents={recentTrips} />}
+      {!target && !online && <OfflineCard />}
+
+      {!target && online && <PlanIdle recents={recentTrips} />}
 
       {target && !geo && (
         <PlanState glyph={<WarningIcon width={24} height={24} />} tone="warn" title={t('plan.noGeoTitle')} body={t('plan.noGeoBody')} />
@@ -297,10 +312,10 @@ export function PlanView() {
         <PlanOutcomeView
           res={phase.res}
           widened={phase.widened}
-          best={shown}
-          bestItinerary={bestItinerary}
+          options={options}
+          selectedId={selected?.id ?? null}
+          onSelect={setSelectedId}
           imperial={imperial}
-          now={now}
           destinationName={target.name}
         />
       )}
@@ -308,6 +323,112 @@ export function PlanView() {
       {geoStatus === 'default' && target && (
         <p className="plan-fineprint">{t('plan.defaultLocationNote')}</p>
       )}
+
+      {!target && <SavedPlacesSection />}
+    </div>
+  );
+}
+
+/**
+ * THE THREE ATTRIBUTION STATES, kept strictly apart — moved here verbatim from the Nearby
+ * panel, because they are facts about whether anything on this screen can be trusted and
+ * they could not go down with the tab that used to host them. See DECISIONS §45.
+ *
+ *   isDemo      (c) the server is replaying a recording. Stated FIRST, because a
+ *                   recording's feeds are honestly `ok` and the badge is the only thing
+ *                   that stops that reading as live.
+ *   apiFailure  (a) OUR server: throttled, restarting, or unreachable. Ours to fix, and it
+ *                   is retrying by itself. NEVER mentions the agency.
+ *   feedTrouble (b) our server is reachable and ITS OWN health says an agency feed is down
+ *                   or stale. The only state allowed to name the TTC.
+ */
+function FeedBanners() {
+  const { t } = useTranslation();
+  const apiFailure = useLive((s) => s.apiFailure);
+  const feedTrouble = useLive((s) => s.apiFailure == null && s.health != null && !s.health.ok);
+  const isDemo = useLive((s) => s.health?.mode === 'demo');
+
+  return (
+    <>
+      {isDemo && (
+        <div className="feed-banner feed-banner-demo" role="status">
+          <span className="demo-badge">{t('status.demoBadge')}</span>
+          <span>{t('status.demoNote', { agency: t('agency.short') })}</span>
+        </div>
+      )}
+      {!isDemo && apiFailure != null && (
+        <div className="feed-banner feed-banner-ours" role="status">
+          <WarningIcon width={15} height={15} aria-hidden />
+          <span>{t('status.catchingUpDetail')}</span>
+        </div>
+      )}
+      {!isDemo && feedTrouble && (
+        <div className="feed-banner" role="status">
+          <WarningIcon width={15} height={15} aria-hidden />
+          <span>{t('status.feedDownGeneric')}</span>
+        </div>
+      )}
+    </>
+  );
+}
+
+/**
+ * THE RIDER IS SOMEWHERE WE DO NOT COVER — and nothing here substitutes a location.
+ *
+ * The bug this closes, reported by a rider and now homed on the front page: spoofed to
+ * Mississauga, the default-location banner disappeared — so they believed their location
+ * had taken effect — and a downtown Toronto board stayed on screen as though it were
+ * theirs. The only way back to the default view is the button below, which says what it
+ * does, and the view it returns to relabels itself honestly.
+ *
+ * The coverage claim is GENERATED from what is actually seeded, never hardcoded: a
+ * hand-maintained "GhostBus only covers the TTC" would have become false the first time an
+ * agency was added with nobody editing it.
+ */
+function OutOfCoverageCard() {
+  const { t, i18n } = useTranslation();
+  const outOfCoverage = useLive((s) => s.outOfCoverage);
+  const health = useLive((s) => s.health);
+  const requestLocation = useLive((s) => s.requestLocation);
+  const useDefaultLocation = useLive((s) => s.useDefaultLocation);
+  const imperial = useStore((s) => s.units) === 'imperial';
+
+  if (!outOfCoverage) return null;
+  const near = outOfCoverage.nearest;
+  const covered = health?.agencies ?? [];
+  const agencyNames = covered.length > 0
+    ? new Intl.ListFormat(i18n.language, { style: 'long', type: 'conjunction' })
+      .format(covered.map((a) => a.name))
+    : null;
+  const nearAgency = near ? covered.find((a) => a.id === near.agency)?.name ?? near.agency : null;
+
+  return (
+    <div className="state-card state-down" role="status">
+      <div className="state-glyph" aria-hidden><WarningIcon width={22} height={22} /></div>
+      <h3 className="state-title">
+        {t('empty.noCoverageTitle', { dist: fmtDistance(outOfCoverage.radiusM, imperial) })}
+      </h3>
+      <p className="state-body">
+        {near && near.distanceM != null
+          ? t('empty.noCoverageNearest', {
+            stop: near.name ?? t('stop.code', { code: near.stopId }),
+            agency: nearAgency ?? near.agency,
+            dist: fmtDistance(near.distanceM, imperial),
+          })
+          : agencyNames
+            ? t('empty.noCoverageUnknown', { agencies: agencyNames })
+            : t('empty.noCoverageTitle', { dist: fmtDistance(outOfCoverage.radiusM, imperial) })}
+      </p>
+      <button className="btn btn-primary" onClick={useDefaultLocation}>
+        {t('empty.noCoverageAction')}
+      </button>
+      {/* Geolocation is a one-shot fix, so nothing re-queries as the rider moves — and
+          without this the card is a dead end for somebody who has since walked or driven
+          back into the service area. */}
+      <button className="btn btn-quiet" onClick={requestLocation}>
+        {t('empty.noCoverageRetry')}
+      </button>
+      <p className="state-body state-fine">{t('empty.noCoverageActionNote')}</p>
     </div>
   );
 }
@@ -359,20 +480,11 @@ function PlanIdle({ recents }: { recents: ReturnType<typeof useStore.getState>['
 }
 
 /**
- * M8: the glyph and the tile it sits in have to agree.
- *
- * Every outcome rendered a `<WarningIcon>` inside the DEFAULT `.state-glyph`, whose tile is
- * `--brand-soft` / `--brand` — so a transfer refusal wore the same purple tile as the idle
- * "choose a destination" prompt and as the app's own selection accent, and a genuine
- * planner ERROR wore it too. A warning triangle in the brand colour is neither a warning nor
- * a brand mark.
- *
- * `tone` names what the card actually is:
+ * `tone` names what the card actually is, because a warning triangle in the brand colour
+ * is neither a warning nor a brand mark:
  *   'neutral'  a normal answer that happens not to be a ride (transfer, no service, no
- *              stops nearby). Brand tile, and NOT a warning triangle — see the call sites.
- *   'warn'     something is actually wrong (no location fix, planner unreachable). Amber
- *              tile via the existing `.state-down`, which the out-of-coverage card already
- *              uses correctly.
+ *              stops nearby). Brand tile, and NOT a warning triangle.
+ *   'warn'     something is actually wrong (no location fix, planner unreachable). Amber.
  */
 function PlanState({ glyph, title, body, tone = 'neutral', children }: {
   glyph: React.ReactNode; title: string; body: string;
@@ -388,40 +500,16 @@ function PlanState({ glyph, title, body, tone = 'neutral', children }: {
   );
 }
 
-function PlanOutcomeView({ res, widened, best, bestItinerary, imperial, now, destinationName }: {
+function PlanOutcomeView({ res, widened, options, selectedId, onSelect, imperial, destinationName }: {
   res: PlanResponse;
   widened: boolean;
-  best: RidePlan | null;
-  bestItinerary: ItineraryPlan | null;
+  options: OptionList;
+  selectedId: string | null;
+  onSelect: (id: string | null) => void;
   imperial: boolean;
-  now: number;
   destinationName: string;
 }) {
   const { t } = useTranslation();
-
-  if (res.outcome === 'twoLeg') {
-    // Every itinerary the server offered starts with a walk the rider cannot make in
-    // time. Same fact as the single-ride tier's version of this, and the same wording:
-    // the options exist, the rider's own pace is what puts them out of reach.
-    if (!bestItinerary) {
-      return (
-        <PlanState
-          glyph={<ClockIcon width={24} height={24} />}
-          title={t('plan.unreachableTitle')}
-          body={t('plan.unreachableBodyTwoLeg', { count: res.itineraries.length })}
-        />
-      );
-    }
-    return (
-      <ItineraryCard
-        plan={bestItinerary}
-        imperial={imperial}
-        now={now}
-        destinationName={destinationName}
-        widened={widened}
-      />
-    );
-  }
 
   if (res.outcome === 'transfer') {
     return (
@@ -430,16 +518,12 @@ function PlanOutcomeView({ res, widened, best, bestItinerary, imperial, now, des
         title={t('plan.transferTitle')}
         body={t('plan.transferBody')}
       >
-        {/* The disclosure comes BEFORE the control it qualifies — which is also the only
-            arrangement that makes its own wording true. `plan.transferFine` says "The link
-            below…", and `PlanState` renders children after the body, so with the link first
-            the caption pointed at something above it, in all three locales. An app that
-            argues it does not print false statements should not mis-state where its own
-            button is. Reordering beats rewording: a privacy disclosure belongs before the
-            action it describes, not after the rider has already tapped it. */}
+        {/* The disclosure comes BEFORE the control it qualifies, which is also the only
+            arrangement that makes its own wording true: `plan.transferFine` says "The link
+            below…". */}
         <p className="plan-fineprint">{t('plan.transferFine')}</p>
-        {/* Destination only — the rider's own position is the one thing this app
-            promises never to hand to anyone else, and a maps app already knows it. */}
+        {/* Destination only — the rider's own position is the one thing this app promises
+            never to hand to anyone else, and a maps app already knows it. */}
         <a
           className="btn btn-quiet plan-maps"
           href={transitDirectionsUrl(res.to)}
@@ -473,270 +557,32 @@ function PlanOutcomeView({ res, widened, best, bestItinerary, imperial, now, des
     );
   }
 
-  // outcome === 'ride'
-  if (!best) {
+  /**
+   * The server found options and this rider's own pace puts every one of them out of
+   * reach. Two different sentences for the two tiers, because they fail differently: a
+   * direct ride simply leaves before you get there, while a connection can also come apart
+   * once the first leg's own delay is counted.
+   */
+  if (options.options.length === 0) {
     return (
       <PlanState
-        glyph={<WalkerIcon width={24} height={24} />}
+        glyph={<ClockIcon width={24} height={24} />}
         title={t('plan.unreachableTitle')}
-        body={t('plan.unreachableBody', { count: res.candidates.length })}
+        body={res.outcome === 'twoLeg'
+          ? t('plan.unreachableBodyTwoLeg', { count: res.itineraries.length })
+          : t('plan.unreachableBody', { count: res.candidates.length })}
       />
     );
   }
 
-  return <RidePlanCard plan={best} imperial={imperial} now={now} destinationName={destinationName} widened={widened} />;
-}
-
-/**
- * A leg's evidence line: a letter only when the sample earns one, the honest sentence
- * when it does not, and the ghost-risk chip when the route×hour cell is genuinely elevated.
- *
- * ONE COMPONENT, TWO CALLERS, ON PURPOSE. A two-leg itinerary's whole point is that its
- * legs are routinely NOT equally knowable — a live-tracked TTC bus and a schedule-only
- * Milton coach — so each leg states its own evidence. Rendering that from a second copy
- * of this markup is how the two would drift into disagreeing about what a grade means.
- */
-function LegEvidence({ c }: { c: RideCandidateDto }) {
-  const { t } = useTranslation();
   return (
-    <>
-      <p className="plan-leg-evidence">
-        {c.grade ? (
-          <>
-            <span className={`grade-chip grade-${c.grade.letter}`} role="img"
-              aria-label={t('eta.gradeAria', { grade: c.grade.letter, n: c.grade.n, spread: c.grade.spreadMin })}>
-              {c.grade.letter}
-            </span>
-            <span className="evidence-chip">{t('eta.evidence', { spread: c.grade.spreadMin, n: c.grade.n })}</span>
-          </>
-        ) : (
-          <>
-            <span className="grade-chip grade-untracked" role="img" aria-label={t('eta.untracked')}>
-              {t('eta.untrackedMark')}
-            </span>
-            <span className="evidence-chip evidence-thin">{t('eta.scheduleOnly')}</span>
-          </>
-        )}
-      </p>
-      {c.ghostRisk && (
-        <p className={`forecast-chip forecast-${c.ghostRisk.level}`}
-          aria-label={t(c.ghostRisk.level === 'high' ? 'forecast.ariaHigh' : 'forecast.ariaElevated', {
-            v: c.ghostRisk.ghosts, o: c.ghostRisk.n, days: c.ghostRisk.windowDays,
-          })}>
-          <WarningIcon width={13} height={13} aria-hidden />
-          <span>
-            {t(c.ghostRisk.level === 'high' ? 'forecast.chipHigh' : 'forecast.chipElevated', {
-              v: c.ghostRisk.ghosts, o: c.ghostRisk.n,
-            })}
-          </span>
-        </p>
-      )}
-    </>
-  );
-}
-
-/** One ride inside an itinerary: the route, when to board and leave, and its evidence. */
-function ItineraryRideLeg({ leg, boardMs }: { leg: RideCandidateDto; boardMs: number }) {
-  const { t } = useTranslation();
-  const short = leg.shortName ?? leg.routeId ?? '—';
-  const destination = parseHeadsign(leg.directionLabel).destination || leg.directionLabel;
-  const rideSec = Math.max(0, Math.round((leg.arrivalMs - leg.departureMs) / 1000));
-  return (
-    <li className="plan-leg plan-leg-ride">
-      <span className="plan-leg-glyph plan-leg-glyph-ride" aria-hidden><RouteIcon width={18} height={18} /></span>
-      <div className="plan-leg-text">
-        <p className="plan-leg-line plan-ride-id">
-          <RouteBadge color={leg.color} short={short} size="sm" />
-          <span className="plan-ride-dest">{destination}</span>
-        </p>
-        <p className="plan-leg-sub">
-          {t('plan.rideDetail', {
-            board: fmtClock(boardMs),
-            alight: fmtClock(boardMs + rideSec * 1000),
-            count: leg.stopsRidden,
-          })}
-        </p>
-        <p className="plan-leg-sub">{t('plan.alightAt', { stop: leg.alight.name ?? leg.alight.stopId })}</p>
-        <LegEvidence c={leg} />
-      </div>
-    </li>
-  );
-}
-
-/**
- * TWO RIDES AND THE WALK BETWEEN THEM.
- *
- * Deliberately the same `<ol className="plan-legs">` vocabulary as the single-ride card,
- * because it is the same kind of claim — a sequence of things the rider does — and giving
- * a transfer its own visual language would suggest it is a different kind of answer. It
- * is not; it is one more row between the two rides.
- *
- * The transfer WAIT is a row of its own rather than a number folded into the total, for
- * the reason §53's spec gives: standing on a platform for eleven minutes is the part of a
- * connection a rider most needs to see before agreeing to it.
- */
-function ItineraryCard({ plan, imperial, now, destinationName, widened }: {
-  plan: ItineraryPlan; imperial: boolean; now: number; destinationName: string; widened: boolean;
-}) {
-  const { t } = useTranslation();
-  const min = (sec: number) => Math.max(1, Math.round(sec / 60));
-  const it = plan.itinerary;
-  const sameDay = new Date(plan.leg1.boardMs).toDateString() === new Date(now).toDateString();
-  const board1 = plan.leg1.candidate.board;
-
-  return (
-    <section className="plan-result" role="status" aria-label={t('plan.twoLegResultLabel')}>
-      <div className="plan-summary">
-        <h3 className="sr-only">{t('plan.twoLegResultLabel')}</h3>
-        <span className="eyebrow">{widened ? t('plan.nextServiceEyebrow') : t('plan.twoLegEyebrow')}</span>
-        <p className="plan-total">{t('plan.doorToDoor', { min: min(plan.totalSec) })}</p>
-        <p className="plan-arrive">
-          {t('plan.arriveAt', { time: fmtClock(plan.doorMs) })}
-          {!sameDay && <span className="plan-date"> · {fmtServiceDate(plan.leg1.boardMs)}</span>}
-        </p>
-        {/* Two agencies is a fact about the RISK a rider is taking on, not trivia: two
-            schedules, and neither operator holds the other's vehicle. */}
-        {it.crossAgency && <p className="plan-arrive plan-cross-agency">{t('plan.twoLegCrossAgency')}</p>}
-      </div>
-
-      <ol className="plan-legs">
-        <li className="plan-leg plan-leg-walk">
-          <span className="plan-leg-glyph" aria-hidden><WalkerIcon width={18} height={18} /></span>
-          <div className="plan-leg-text">
-            <p className="plan-leg-line">
-              {t(plan.leg1.toStop.kind === 'routed' ? 'plan.walkTo' : 'plan.walkToEst', {
-                dist: fmtDistance(plan.leg1.toStop.distanceM, imperial),
-                min: min(plan.leg1.toStop.seconds),
-                stop: board1.name ?? board1.stopId,
-              })}
-            </p>
-            <p className="plan-leg-sub">{t('plan.leaveBy', { time: fmtClock(plan.leaveByMs) })}</p>
-          </div>
-        </li>
-
-        <ItineraryRideLeg leg={it.legs[0]} boardMs={plan.leg1.boardMs} />
-
-        <li className="plan-leg plan-leg-walk plan-leg-transfer">
-          <span className="plan-leg-glyph" aria-hidden><WalkerIcon width={18} height={18} /></span>
-          <div className="plan-leg-text">
-            <p className="plan-leg-line">
-              {it.transfer.sameStop
-                ? t('plan.transferStayAt', { stop: it.transfer.to.name ?? it.transfer.to.stopId })
-                : t('plan.transferWalkTo', {
-                  dist: fmtDistance(it.transfer.distanceM, imperial),
-                  min: min(plan.transferWalkSec),
-                  stop: it.transfer.to.name ?? it.transfer.to.stopId,
-                })}
-            </p>
-            <p className="plan-leg-sub">{t('plan.transferWait', { min: min(plan.transferWaitSec) })}</p>
-          </div>
-        </li>
-
-        <ItineraryRideLeg leg={it.legs[1]} boardMs={plan.leg2.boardMs} />
-
-        <li className="plan-leg plan-leg-walk">
-          <span className="plan-leg-glyph" aria-hidden><FlagIcon width={18} height={18} /></span>
-          <div className="plan-leg-text">
-            <p className="plan-leg-line">
-              {t('plan.walkFromEst', {
-                dist: fmtDistance(plan.leg2.fromStop.distanceM, imperial),
-                min: min(plan.leg2.fromStop.seconds),
-                dest: destinationName,
-              })}
-            </p>
-          </div>
-        </li>
-      </ol>
-
-      <p className="plan-basis">
-        {t('plan.basisRide')}
-        {plan.leg1.boardIsPredicted ? ` ${t('plan.basisPredicted')}` : ` ${t('plan.basisScheduled')}`}
-        {' '}{t('plan.basisTransfer')}
-        {' '}{t('plan.basisSingleRide')}
-      </p>
-    </section>
-  );
-}
-
-function RidePlanCard({ plan, imperial, now, destinationName, widened }: {
-  plan: RidePlan; imperial: boolean; now: number; destinationName: string; widened: boolean;
-}) {
-  const { t } = useTranslation();
-  const c = plan.candidate;
-  const short = c.shortName ?? c.routeId ?? '—';
-  const destination = parseHeadsign(c.directionLabel).destination || c.directionLabel;
-  const min = (sec: number) => Math.max(1, Math.round(sec / 60));
-  const sameDay = new Date(plan.boardMs).toDateString() === new Date(now).toDateString();
-
-  return (
-    <section className="plan-result" role="status" aria-label={t('plan.resultLabel')}>
-      {/* The headline claim, and the two things that qualify it. */}
-      <div className="plan-summary">
-        <h3 className="sr-only">{t('plan.resultLabel')}</h3>
-        <span className="eyebrow">{widened ? t('plan.nextServiceEyebrow') : t('plan.summaryEyebrow')}</span>
-        <p className="plan-total">{t('plan.doorToDoor', { min: min(plan.totalSec) })}</p>
-        <p className="plan-arrive">
-          {t('plan.arriveAt', { time: fmtClock(plan.doorMs) })}
-          {!sameDay && <span className="plan-date"> · {fmtServiceDate(plan.boardMs)}</span>}
-        </p>
-      </div>
-
-      <ol className="plan-legs">
-        <li className="plan-leg plan-leg-walk">
-          <span className="plan-leg-glyph" aria-hidden><WalkerIcon width={18} height={18} /></span>
-          <div className="plan-leg-text">
-            <p className="plan-leg-line">
-              {t(plan.toStop.kind === 'routed' ? 'plan.walkTo' : 'plan.walkToEst', {
-                dist: fmtDistance(plan.toStop.distanceM, imperial),
-                min: min(plan.toStop.seconds),
-                stop: c.board.name ?? c.board.stopId,
-              })}
-            </p>
-            <p className="plan-leg-sub">{t('plan.leaveBy', { time: fmtClock(plan.leaveByMs) })}</p>
-          </div>
-        </li>
-
-        <li className="plan-leg plan-leg-ride">
-          <span className="plan-leg-glyph plan-leg-glyph-ride" aria-hidden><RouteIcon width={18} height={18} /></span>
-          <div className="plan-leg-text">
-            <p className="plan-leg-line plan-ride-id">
-              <RouteBadge color={c.color} short={short} size="sm" />
-              <span className="plan-ride-dest">{destination}</span>
-            </p>
-            <p className="plan-leg-sub">
-              {t('plan.rideDetail', {
-                board: fmtClock(plan.boardMs),
-                alight: fmtClock(plan.boardMs + plan.rideSec * 1000),
-                count: c.stopsRidden,
-              })}
-            </p>
-            <p className="plan-leg-sub">
-              {t('plan.alightAt', { stop: c.alight.name ?? c.alight.stopId })}
-            </p>
-            <LegEvidence c={c} />
-          </div>
-        </li>
-
-        <li className="plan-leg plan-leg-walk">
-          <span className="plan-leg-glyph" aria-hidden><FlagIcon width={18} height={18} /></span>
-          <div className="plan-leg-text">
-            <p className="plan-leg-line">
-              {t(plan.fromStop.kind === 'routed' ? 'plan.walkFrom' : 'plan.walkFromEst', {
-                dist: fmtDistance(plan.fromStop.distanceM, imperial),
-                min: min(plan.fromStop.seconds),
-                dest: destinationName,
-              })}
-            </p>
-          </div>
-        </li>
-      </ol>
-
-      {/* What this plan is, and what it is not. Both stated, not implied. */}
-      <p className="plan-basis">
-        {t('plan.basisRide')}
-        {plan.boardIsPredicted ? ` ${t('plan.basisPredicted')}` : ` ${t('plan.basisScheduled')}`}
-        {' '}{t('plan.basisSingleRide')}
-      </p>
-    </section>
+    <PlanOptions
+      list={options}
+      selectedId={selectedId}
+      onSelect={onSelect}
+      imperial={imperial}
+      destinationName={destinationName}
+      widened={widened}
+    />
   );
 }

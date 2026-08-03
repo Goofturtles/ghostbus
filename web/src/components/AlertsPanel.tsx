@@ -53,7 +53,7 @@ export function GhostEventCard({ event }: { event: GhostEventDto }) {
   const { t } = useTranslation();
   useTick(30_000);
   const arrivals = useLive((s) => s.arrivals);
-  const setTab = useStore((s) => s.setTab);
+  const openStopSheet = useStore((s) => s.openStopSheet);
   const selectStop = useStore((s) => s.selectStop);
 
   const now = liveNow();
@@ -80,9 +80,9 @@ export function GhostEventCard({ event }: { event: GhostEventDto }) {
 
   const viewAlternatives = () => {
     // Real navigation only: when we could name the stop the follow-up departs from, take
-    // the rider there; otherwise just open Nearby at wherever they already are.
+    // the rider to its board; otherwise open the board for wherever they already are.
     if (nextTracked) selectStop(nextTracked.stopId);
-    setTab('nearby');
+    openStopSheet(true);
   };
 
   return (

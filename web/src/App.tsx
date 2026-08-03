@@ -6,7 +6,6 @@ import { useLive } from './hooks/useLive';
 import { useMedia, DESKTOP_QUERY } from './hooks/useMedia';
 import { TopBar, MobileTopStrip } from './components/TopBar';
 import { TabBar } from './components/TabBar';
-import { NearbyPanel } from './components/NearbyPanel';
 import { AlertsPanel } from './components/AlertsPanel';
 import { SavedPanel } from './components/SavedPlaces';
 import { SettingsSheet } from './components/SettingsSheet';
@@ -14,6 +13,8 @@ import { AboutSheet } from './components/AboutSheet';
 import { CatchView } from './components/CatchView';
 import { SearchSheet } from './components/SearchSheet';
 import { PlanView } from './components/PlanView';
+import { StopBoardSheet } from './components/StopBoardSheet';
+import { JourneyView } from './components/JourneyView';
 import { LayersIcon } from './components/icons';
 
 // The real map (maplibre-gl) is code-split so it never lands in the initial JS
@@ -67,8 +68,8 @@ function useSearchShortcuts(): void {
 export default function App() {
   const { t } = useTranslation();
   const tab = useStore((s) => s.tab);
-  const setTab = useStore((s) => s.setTab);
   const mapExpanded = useStore((s) => s.mapExpanded);
+  const journey = useStore((s) => s.journey);
   const start = useLive((s) => s.start);
   const isDesktop = useMedia(DESKTOP_QUERY);
 
@@ -81,12 +82,15 @@ export default function App() {
   // Stable so CatchView's focus-management effect never re-runs on an App render.
   const closeCatch = useCallback(() => setCatching(null), []);
 
-  const openRoute = () => setTab('plan');
-
-  // On the desktop split the map is the right-hand half of the app and stays
-  // mounted across tab changes. On a phone it is a card inside the nearby
-  // column, so it mounts and unmounts with that tab exactly as before.
-  const showMap = isDesktop || tab === 'nearby';
+  /**
+   * THE MAP IS THE HOME'S OWN SURFACE.
+   *
+   * On the desktop split it is the right-hand half of the app and stays mounted across
+   * every tab. On a phone it is a card above the journey planner — which is the home now,
+   * so this is `plan` where it used to be `nearby`. Saved and Alerts are lists with no
+   * geography to show, and mounting a WebGL canvas behind them costs a phone real battery.
+   */
+  const showMap = isDesktop || tab === 'plan';
 
   return (
     <div className={`app ${mapExpanded ? 'map-is-expanded' : ''}`}>
@@ -107,11 +111,6 @@ export default function App() {
         <div className="pane-side">
           <main className="side-scroll" aria-label={t(`nav.${tab}`)}>
             <div className="side-inner">
-              {tab === 'nearby' && (
-                <div className="reveal">
-                  <NearbyPanel onOpen={openRoute} onCatch={setCatching} />
-                </div>
-              )}
               {tab === 'plan' && (
                 <div className="reveal"><PlanView /></div>
               )}
@@ -132,7 +131,13 @@ export default function App() {
       <SearchSheet />
       <SettingsSheet />
       <AboutSheet />
+      {/* The stop board, reached by tapping a stop on the map or picking one out of
+          search. Catch still opens from a row on it, exactly as it did from Nearby. */}
+      <StopBoardSheet onCatch={setCatching} />
       {catching && <CatchView dep={catching} onClose={closeCatch} />}
+      {/* GO mode sits above everything: a rider walking to a bus is not also reading a
+          departure board. */}
+      {journey && <JourneyView />}
     </div>
   );
 }

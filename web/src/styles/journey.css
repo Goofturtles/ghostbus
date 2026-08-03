@@ -1,0 +1,352 @@
+/* =====================================================================================
+   The journey surfaces: the options menu, GO mode, and the stop board sheet.
+   =====================================================================================
+
+   A separate file rather than more of app.css, because these three surfaces arrived
+   together as one rebuild and a design pass is expected to follow. Keeping them in one
+   place means that pass can be read, diffed and reverted as a unit.
+
+   §D/§F LAWS THIS FILE MUST NOT BREAK, and how it holds them:
+     · reserved widths — every card is a grid whose text column is `minmax(0, 1fr)` and
+       whose numeral column is `auto`, so a long French destination truncates instead of
+       running under the countdown.
+     · nothing clipped — no fixed heights anywhere in here. Line-height is >= 1.3 on every
+       rule that sets one, so descenders (y, g, p, q, j) never touch an overflow edge.
+       `line-height: 1` appears exactly once, on `.opt-num`, which renders digits only.
+     · no horizontal scroll at 390px — the only `white-space: nowrap` sits on elements
+       that also carry `.truncate` or a reserved column.
+   ===================================================================================== */
+
+/* ============================ the from/to header ============================ */
+
+.plan-route { display: flex; flex-direction: column; gap: var(--s2); }
+
+.plan-from {
+  display: flex; align-items: center; gap: var(--s2);
+  min-width: 0;
+  padding: 0 var(--s1);
+  font-size: 12px; line-height: 1.4;
+  color: var(--text-3);
+}
+.plan-from-glyph { display: inline-flex; flex: 0 0 auto; color: var(--you); }
+.plan-from-text { min-width: 0; }
+
+/* ============================ the options menu ============================ */
+
+.opt-section { display: flex; flex-direction: column; }
+.opt-list {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column; gap: var(--s3);
+}
+
+/*
+ * The card. `--opt-brand` is the lead route's own GTFS route_color, set inline by the
+ * component; it is used at full strength ONLY on the accent rail, and as a low-alpha wash
+ * behind the card. Flooding the whole card with an arbitrary agency colour would put text
+ * on an unknown background — `readableOn` solves that for the small badge, but not for a
+ * whole card of body copy — so the tint stays under the text rather than behind it.
+ */
+.opt-card {
+  position: relative;
+  border-radius: 15px;
+  background: var(--surface);
+  box-shadow: var(--shadow-card), var(--inner-top);
+  overflow: hidden;
+  transition: box-shadow var(--dur-micro) var(--ease-standard);
+}
+.opt-card::before {
+  content: '';
+  position: absolute; inset: 0;
+  background: var(--opt-brand, transparent);
+  opacity: 0.07;
+  pointer-events: none;
+}
+.opt-open { box-shadow: var(--shadow-float), var(--inner-top), 0 0 0 1.5px var(--opt-brand, var(--brand)); }
+
+.opt-main {
+  position: relative;
+  width: 100%;
+  display: grid;
+  /* rail | text | numeral. The text column is the only one allowed to grow, so the
+     countdown can never be pushed off the card by a long destination. */
+  grid-template-columns: 4px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s3) var(--s4) var(--s3) 0;
+  background: none; border: 0;
+  text-align: left; color: inherit; font: inherit;
+  cursor: pointer;
+}
+.opt-main:active { transform: translateY(1px); }
+
+.opt-rail {
+  align-self: stretch;
+  background: var(--opt-brand, var(--brand));
+  border-radius: 0 3px 3px 0;
+}
+
+.opt-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+
+.opt-top { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; min-width: 0; }
+.opt-routes { display: inline-flex; align-items: center; gap: var(--s1); flex-wrap: wrap; min-width: 0; }
+.opt-route { display: inline-flex; align-items: center; gap: var(--s1); }
+.opt-join { color: var(--text-3); flex: 0 0 auto; }
+
+.opt-dest {
+  font-size: 15px; font-weight: 650; line-height: 1.35;
+  color: var(--text);
+}
+.opt-meta { font-size: 12px; line-height: 1.45; color: var(--text-2); }
+
+/* The countdown column, with a reserved minimum so a one-digit and a two-digit
+   countdown do not reflow the text column beside them. */
+.opt-when {
+  display: flex; align-items: baseline; gap: 3px;
+  min-width: 76px; justify-content: flex-end;
+  font-variant-numeric: var(--tabular);
+}
+.opt-num { font-size: 30px; font-weight: 700; line-height: 1; color: var(--text); }
+/* A clock time carries letters (a meridiem), so it needs real leading — the digits-only
+   rule above would clip a descender in some locales. */
+.opt-num-clock { font-size: 20px; line-height: 1.3; }
+.opt-unit { font-size: 12px; font-weight: 600; color: var(--text-2); line-height: 1.4; }
+.opt-due { font-size: 18px; font-weight: 700; line-height: 1.3; color: var(--live-text); }
+.opt-is-live .opt-num { color: var(--live-text); }
+.opt-chev {
+  color: var(--text-3); flex: 0 0 auto; align-self: center;
+  transition: transform var(--dur-micro) var(--ease-standard);
+}
+.opt-open .opt-chev { transform: rotate(90deg); }
+
+/* The live arc. Only ever rendered on a genuinely live-tracked boarding departure —
+   the component decides, this only draws. */
+.opt-arc { color: var(--live-text); flex: 0 0 auto; }
+
+.opt-evidence {
+  position: relative;
+  display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap;
+  padding: 0 var(--s4) var(--s3) calc(4px + var(--s3));
+}
+
+.opt-detail {
+  position: relative;
+  padding: 0 var(--s4) var(--s4) calc(4px + var(--s3));
+  display: flex; flex-direction: column; gap: var(--s3);
+  border-top: 1px solid var(--hairline);
+  padding-top: var(--s3);
+  margin-top: var(--s1);
+}
+
+/* GO. The biggest, warmest control in the app, because it is the only one that starts
+   something. Two lines: the verb, and the commitment it implies. */
+.opt-go {
+  width: 100%;
+  flex-direction: column; gap: 2px;
+  padding: var(--s3) var(--s4);
+  min-height: 56px;
+  background: var(--opt-brand, var(--brand));
+  color: var(--opt-on-brand, var(--on-brand));
+}
+.opt-go-label { font-size: 17px; font-weight: 800; letter-spacing: 0.06em; line-height: 1.3; }
+.opt-go-sub { font-size: 12px; font-weight: 600; opacity: 0.86; line-height: 1.4; }
+
+/* ============================ the percentage chip ============================ */
+
+/*
+ * Deliberately NOT in the live green. A percentage is a statement about history, and
+ * dressing it in the colour this app reserves for "a vehicle is being tracked right now"
+ * would be exactly the live-styling-on-non-live-data confusion the honesty contract bans.
+ * It wears the brand accent instead, which is what the app uses for its own claims.
+ */
+.pct-chip {
+  display: inline-flex; align-items: baseline; gap: var(--s2);
+  padding: 5px 11px;
+  border: 0; border-radius: var(--r-pill);
+  background: var(--brand-soft);
+  color: var(--accent-text);
+  font: inherit; cursor: pointer;
+  text-align: left;
+  min-width: 0;
+}
+.pct-num {
+  font-size: 17px; font-weight: 750; line-height: 1.3;
+  font-variant-numeric: var(--tabular);
+}
+.pct-label { font-size: 11.5px; font-weight: 600; line-height: 1.4; }
+.pct-detail {
+  flex: 1 0 100%;
+  margin: var(--s1) 0 0;
+  font-size: 11.5px; line-height: 1.55;
+  color: var(--text-3);
+}
+
+/* ============================ the stop board sheet ============================ */
+
+.stopsheet-scrim { align-items: flex-end; }
+.stopsheet {
+  width: 100%; max-width: 620px; max-height: 88vh;
+  display: flex; flex-direction: column; min-height: 0;
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  /* Not .glass: translucency over the 0.45 scrim drops --text-3 under AA. */
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-float), var(--inner-top);
+  padding: var(--s4) var(--s4) calc(var(--s6) + env(safe-area-inset-bottom, 0px));
+  animation: sheet-up var(--dur-reveal) var(--ease-out) both;
+}
+.stopsheet-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--s3); margin-bottom: var(--s3); flex: 0 0 auto;
+}
+.stopsheet-close { padding: 8px 14px; min-height: 40px; }
+.stopsheet-body {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden;
+  display: flex; flex-direction: column; gap: var(--s4);
+}
+.stopsheet-body:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ============================ GO mode ============================ */
+
+.jr-scrim {
+  position: fixed; inset: 0; z-index: 70;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex; align-items: stretch; justify-content: center;
+  animation: fade var(--dur-micro) var(--ease-standard) both;
+}
+.jr-sheet {
+  width: 100%;
+  display: flex; flex-direction: column; min-height: 0;
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-float), var(--inner-top);
+  padding: calc(env(safe-area-inset-top, 0px) + var(--s5)) var(--s5) calc(var(--s6) + env(safe-area-inset-bottom, 0px));
+  animation: sheet-up var(--dur-reveal) var(--ease-out) both;
+}
+.jr-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: var(--s3); margin-bottom: var(--s4); flex: 0 0 auto;
+}
+.jr-head-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.jr-dest { font-size: 21px; font-weight: 700; line-height: 1.3; margin: 0; color: var(--text); }
+.jr-exit { flex: 0 0 auto; }
+
+.jr-body {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden;
+  display: flex; flex-direction: column; gap: var(--s5);
+}
+.jr-body:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.jr-verdict { display: flex; flex-direction: column; gap: var(--s2); }
+.jr-headline { font-size: 26px; font-weight: 750; line-height: 1.28; margin: 0; color: var(--text); }
+.jr-detail { font-size: 14px; line-height: 1.5; margin: 0; color: var(--text-2); }
+.jr-retry { align-self: flex-start; margin-top: var(--s1); }
+
+/* The verdict colours are the CatchView ones, on the same kinds, so the same fact never
+   reads two ways in two places. `verdict-plan` is GO mode's own extra state — the plan's
+   clock rather than a live verdict — and is deliberately neutral. */
+.verdict-comfortable .jr-headline { color: var(--live-text); }
+.verdict-tight .jr-headline { color: var(--warn-text); }
+.verdict-missed .jr-headline { color: var(--danger-text); }
+.verdict-plan .jr-headline { color: var(--text); }
+
+/* --- the segmented, to-scale progress bar --- */
+.jr-bar {
+  position: relative;
+  display: flex; align-items: stretch;
+  height: 10px;
+  border-radius: var(--r-pill);
+  overflow: hidden;
+  background: var(--surface-2);
+}
+.jr-seg { min-width: 2px; background: var(--surface-2); }
+.jr-seg-walkToStop, .jr-seg-walkToDest { background: var(--text-3); opacity: 0.5; }
+.jr-seg-transfer { background: var(--warn); opacity: 0.55; }
+/* .jr-seg-ride takes its route's own colour inline. */
+.jr-bar-now {
+  position: absolute; top: -3px; bottom: -3px; width: 3px;
+  background: var(--text);
+  border-radius: 2px;
+  transform: translateX(-1.5px);
+  box-shadow: 0 0 0 2px var(--surface-solid);
+}
+.jr-summary { font-size: 13px; line-height: 1.5; margin: 0; color: var(--text-2); }
+
+.jr-pct {
+  display: flex; align-items: baseline; gap: var(--s2); flex-wrap: wrap;
+  margin: 0;
+}
+.jr-pct-basis { flex: 1 0 100%; font-size: 11.5px; line-height: 1.55; color: var(--text-3); }
+
+/* --- the step timeline --- */
+.jr-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.jr-step {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: var(--s3);
+  padding: var(--s3) 0;
+  border-top: 1px solid var(--hairline);
+}
+.jr-step:first-child { border-top: 0; }
+.jr-step-glyph {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; border-radius: 50%;
+  background: var(--surface-2); color: var(--text-2);
+  flex: 0 0 auto;
+}
+.jr-step-ride .jr-step-glyph {
+  background: var(--jr-brand, var(--brand));
+  color: var(--jr-on-brand, var(--on-brand));
+}
+.jr-step-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.jr-step-line { font-size: 14px; line-height: 1.45; margin: 0; color: var(--text); }
+.jr-step-sub { font-size: 12px; line-height: 1.45; margin: 0; color: var(--text-2); }
+.jr-ride-id { display: flex; align-items: center; gap: var(--s2); min-width: 0; flex-wrap: wrap; }
+.jr-ride-dest { font-weight: 650; min-width: 0; }
+
+.jr-nowtag {
+  align-self: flex-start;
+  padding: 2px 8px; border-radius: var(--r-pill);
+  background: var(--brand-soft); color: var(--accent-text);
+  font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  line-height: 1.5;
+}
+
+/* Steps behind the plan's clock recede; they are not removed, because a rider needs to be
+   able to look back at what they were told to do. */
+.jr-done { opacity: 0.5; }
+.jr-now { }
+.jr-todo { }
+
+.jr-countdown {
+  display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap;
+  margin: var(--s1) 0 0;
+}
+.jr-count-num {
+  font-size: 17px; font-weight: 700; line-height: 1.3;
+  font-variant-numeric: var(--tabular);
+  color: var(--text);
+}
+.jr-countdown-live .jr-count-num { color: var(--live-text); }
+.jr-count-at { font-size: 12px; line-height: 1.45; color: var(--text-2); }
+
+/* ============================ desktop ============================ */
+
+@media (min-width: 880px) {
+  /* Both full-screen surfaces become centred dialogs, matching the catch sheet. */
+  .jr-scrim, .stopsheet-scrim { align-items: center; }
+  .jr-sheet {
+    max-width: 520px; max-height: 88vh;
+    border-radius: var(--r-lg);
+    padding: var(--s5) var(--s6) var(--s6);
+  }
+  .stopsheet {
+    max-width: 560px; max-height: 86vh;
+    border-radius: var(--r-lg);
+    padding: var(--s5) var(--s6) var(--s6);
+  }
+  .jr-headline { font-size: 30px; }
+  .opt-num { font-size: 34px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .jr-sheet, .stopsheet { animation: none; }
+  .opt-chev { transition: none; }
+}

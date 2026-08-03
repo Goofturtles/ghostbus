@@ -52,14 +52,15 @@ function useSavedRows() {
 function SavedRow({ agency, stopId, title, sub }: { agency: string; stopId: string; title: string; sub: string | null }) {
   const { t } = useTranslation();
   const selectStop = useStore((s) => s.selectStop);
-  const setTab = useStore((s) => s.setTab);
+  const openStopSheet = useStore((s) => s.openStopSheet);
   const toggleSaved = useStore((s) => s.toggleSaved);
 
   return (
     <li className="saved-row">
       <button
         className="saved-open"
-        onClick={() => { selectStop(stopId); setTab('nearby'); }}
+        // The board is a surface you open now, not a tab you are sent to.
+        onClick={() => { selectStop(stopId); openStopSheet(true); }}
         aria-label={t('a11y.openStop', { name: title })}
       >
         <span className="saved-tile" aria-hidden><PinIcon width={17} height={17} /></span>

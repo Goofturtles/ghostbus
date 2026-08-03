@@ -1,10 +1,16 @@
 import { useTranslation } from 'react-i18next';
 import { useStore, type Tab } from '@/store';
 import { useLive } from '@/hooks/useLive';
-import { PinIcon, RouteIcon, BookmarkIcon, BellIcon } from './icons';
+import { RouteIcon, BookmarkIcon, BellIcon } from './icons';
 
-const TABS: { id: Tab; Icon: typeof PinIcon; key: string }[] = [
-  { id: 'nearby', Icon: PinIcon, key: 'nav.nearby' },
+/**
+ * THREE TABS. Nearby is gone — see the note on `Tab` in store.ts for why a feed of
+ * "buses near you" was the wrong thing to open an app on.
+ *
+ * Plan is first and is the home. Nothing in the CSS counts these (`.tab` is
+ * `flex: 1 1 0`), so the bar rebalances itself.
+ */
+const TABS: { id: Tab; Icon: typeof RouteIcon; key: string }[] = [
   { id: 'plan', Icon: RouteIcon, key: 'nav.plan' },
   { id: 'saved', Icon: BookmarkIcon, key: 'nav.saved' },
   { id: 'alerts', Icon: BellIcon, key: 'nav.alerts' },

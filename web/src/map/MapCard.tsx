@@ -15,7 +15,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import * as maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import type { VehicleDto, RouteShapeResponse } from '@shared/types';
+import type { VehicleDto, RouteShapeResponse, StopDto } from '@shared/types';
 import { api, type Bbox } from '@/lib/api';
 import { useLive, selectedNearbyStop, DEFAULT_LOCATION, isBackedOff, noteFailure } from '@/hooks/useLive';
 import { compassHeading, subscribeCompass } from '@/hooks/useCompassHeading';
@@ -143,6 +143,9 @@ export default function MapCard() {
 
   const geo = useLive((s) => s.geo);
   const arrivals = useLive((s) => s.arrivals);
+  /** The stops a rider can tap to open a board — the interaction that replaced the
+   *  Nearby feed. Real rows from /api/stops/nearby; see `applyNearbyStops`. */
+  const nearbyStops = useLive((s) => s.nearby);
   /** The next REAL scheduled service at this same real stop, which `useLive` probes
    *  for whenever the live board is empty. Used only to pick which route line to
    *  draw — see `focusRoute`. */
@@ -184,6 +187,9 @@ export default function MapCard() {
   const themeInitedRef = useRef(false);
   const selectedRef = useRef<VehicleDto | null>(null);
   selectedRef.current = selected;
+  /** The tappable stops, held in a ref so the `idle` retry can read the current set
+   *  without re-binding a listener every time the nearby query returns. */
+  const stopsGeoRef = useRef<StopDto[]>([]);
 
   // Boarding stop + walk math (used by markers + walk path).
   const boarding = useMemo(() => {
@@ -396,6 +402,8 @@ export default function MapCard() {
     // this may hang off: see the contract on `resolveWalkLeg`. A successful route is
     // cached per endpoint pair, so every later idle is a free lookup.
     map.on('idle', () => applyWalk(map));
+    // The tappable stops land the moment the style has installed their source.
+    map.on('idle', () => applyNearbyStops(map));
     // Trees are re-planted from whatever roads are on screen, so they can only be
     // recomputed when the camera SETTLES. `idle` is the exact "nothing is moving
     // and every tile has landed" signal; doing this per frame would be absurd.
@@ -458,26 +466,66 @@ export default function MapCard() {
     map.on('styledata', installOnce);
     map.on('load', installOnce);
 
-    // vehicle selection with a generous hit radius (no precision taps)
+    /**
+     * TWO THINGS ARE TAPPABLE, and vehicles win a tie.
+     *
+     * A generous 14px hit box, because these are thumb targets and precision taps on a
+     * moving map are a usability tax. Vehicles are queried first and answered first: a
+     * vehicle is drawn ON TOP of the stops, so a tap that finds both was aimed at the
+     * thing on top. Only when no vehicle is under the thumb does a stop answer.
+     *
+     * A stop tap opens that stop's board — the interaction that replaced the Nearby feed.
+     */
     map.on('click', (e: maplibregl.MapMouseEvent) => {
       const pad = 14;
-      const feats = map.queryRenderedFeatures(
-        [[e.point.x - pad, e.point.y - pad], [e.point.x + pad, e.point.y + pad]],
-        { layers: ['vehicles'] },
-      );
-      if (feats.length === 0) { deselect(); return; }
-      // nearest to the tap
-      let best = feats[0], bestD = Infinity;
-      for (const f of feats) {
-        const c = (f.geometry as GeoJSON.Point).coordinates;
-        const p = map.project(c as LngLat);
-        const d = (p.x - e.point.x) ** 2 + (p.y - e.point.y) ** 2;
-        if (d < bestD) { bestD = d; best = f; }
+      const box: [maplibregl.PointLike, maplibregl.PointLike] = [
+        [e.point.x - pad, e.point.y - pad], [e.point.x + pad, e.point.y + pad],
+      ];
+      const nearest = (feats: maplibregl.MapGeoJSONFeature[]) => {
+        let best = feats[0], bestD = Infinity;
+        for (const f of feats) {
+          const c = (f.geometry as GeoJSON.Point).coordinates;
+          const p = map.project(c as LngLat);
+          const d = (p.x - e.point.x) ** 2 + (p.y - e.point.y) ** 2;
+          if (d < bestD) { bestD = d; best = f; }
+        }
+        return best;
+      };
+
+      const vehicleHits = map.queryRenderedFeatures(box, { layers: ['vehicles'] });
+      if (vehicleHits.length > 0) {
+        selectVehicle(nearest(vehicleHits).properties as unknown as VehicleDto);
+        return;
       }
-      selectVehicle(best.properties as unknown as VehicleDto);
+
+      const stopHits = map.getLayer('nearby-stops')
+        ? map.queryRenderedFeatures(box, { layers: ['nearby-stops'] })
+        : [];
+      if (stopHits.length > 0) {
+        const p = nearest(stopHits).properties as {
+          stopId?: string; agency?: string; name?: string | null; lat?: number; lon?: number;
+        } | null;
+        // The pair identifies a stop; an id alone does not (2,824 stop_ids are shared
+        // between the TTC and YRT). A feature missing either is not opened at all.
+        if (p && typeof p.stopId === 'string' && typeof p.agency === 'string') {
+          useLive.getState().openStop({
+            agency: p.agency,
+            stopId: p.stopId,
+            name: typeof p.name === 'string' ? p.name : null,
+            lat: typeof p.lat === 'number' ? p.lat : null,
+            lon: typeof p.lon === 'number' ? p.lon : null,
+          });
+          useStore.getState().openStopSheet(true);
+          return;
+        }
+      }
+
+      deselect();
     });
     map.on('mouseenter', 'vehicles', () => { map.getCanvas().style.cursor = 'pointer'; });
     map.on('mouseleave', 'vehicles', () => { map.getCanvas().style.cursor = ''; });
+    map.on('mouseenter', 'nearby-stops', () => { map.getCanvas().style.cursor = 'pointer'; });
+    map.on('mouseleave', 'nearby-stops', () => { map.getCanvas().style.cursor = ''; });
 
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
@@ -527,6 +575,8 @@ export default function MapCard() {
     if (!map.getSource('walk-path')) map.addSource('walk-path', { type: 'geojson', data: emptyFC() });
     if (!map.getSource('route-shape')) map.addSource('route-shape', { type: 'geojson', data: emptyFC() });
     if (!map.getSource('route-stops')) map.addSource('route-stops', { type: 'geojson', data: emptyFC() });
+    // The stops a rider can actually tap. See the layer below.
+    if (!map.getSource('nearby-stops')) map.addSource('nearby-stops', { type: 'geojson', data: emptyFC() });
     if (!map.getSource('vehicles')) map.addSource('vehicles', { type: 'geojson', data: vehFCRef.current, promoteId: 'id' });
     if (!map.getSource('marker-blockers')) map.addSource('marker-blockers', { type: 'geojson', data: emptyFC() });
 
@@ -644,6 +694,35 @@ export default function MapCard() {
           'circle-color': thm === 'dark' ? '#FBE2E4' : '#FFF3F3',
           'circle-stroke-color': redCasing,
           'circle-stroke-width': 1.1,
+          'circle-opacity': 0.95,
+        },
+      });
+    }
+    /**
+     * THE STOPS YOU CAN TAP — and the only reason the Nearby tab could be deleted.
+     *
+     * With the stop-board-first home gone, a rider needs a way to ask for a specific
+     * stop's departures. Search is one; this is the other, and it is the one that makes
+     * the map an instrument rather than an illustration.
+     *
+     * DELIBERATELY A CIRCLE LAYER, NOT DOM MARKERS. §D1 forbids floating map elements
+     * (the stop card, the You card, the route badge, the walker node) from ever
+     * intersecting, and each new floating card is another collision to manage. Circles
+     * live on the canvas exactly as the `route-stops` ticks already do, so this adds no
+     * new floating furniture and nothing to collide.
+     *
+     * `minzoom: 14` keeps them out of the city-scale view, where a scatter of dots would
+     * be noise rather than an affordance. The radius is generously bigger than the route
+     * ticks because these are targets, not decoration.
+     */
+    if (!map.getLayer('nearby-stops')) {
+      map.addLayer({
+        id: 'nearby-stops', type: 'circle', source: 'nearby-stops', minzoom: 14,
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 14, 4, 17, 7],
+          'circle-color': thm === 'dark' ? '#E8E6F5' : '#FFFFFF',
+          'circle-stroke-color': purple,
+          'circle-stroke-width': 2,
           'circle-opacity': 0.95,
         },
       });
@@ -1586,6 +1665,40 @@ export default function MapCard() {
     dots.setData({
       type: 'FeatureCollection',
       features: r.stops.map((s) => ({ type: 'Feature', properties: { id: s.stopId }, geometry: { type: 'Point', coordinates: [s.lon, s.lat] } })),
+    });
+  }
+
+  /**
+   * PUBLISH THE TAPPABLE STOPS — real rows from /api/stops/nearby, nothing synthesised.
+   *
+   * The boarding stop is EXCLUDED, because it already has its own DOM marker with a pin
+   * dot; a circle underneath would double-draw the same stop at the same coordinates and
+   * read as two stops a metre apart. A stop the API returned without coordinates is
+   * dropped rather than placed at a guess.
+   *
+   * `agency` rides along in the feature properties for the reason it rides along
+   * everywhere else in this app: a bare stop_id is ambiguous across the seeded agencies,
+   * and the click handler refuses to open a stop it cannot identify by the pair.
+   */
+  useEffect(() => {
+    stopsGeoRef.current = nearbyStops
+      .filter((s) => s.lat != null && s.lon != null && s.stopId !== boarding?.id);
+    const m = mapRef.current;
+    if (m) applyNearbyStops(m);
+  }, [nearbyStops, boarding]);
+
+  function applyNearbyStops(map: maplibregl.Map) {
+    // Same contract as applyRoute: setData is safe whenever the source exists, and the
+    // source may not exist yet on the first pass — the `idle` handler retries.
+    const src = map.getSource('nearby-stops') as maplibregl.GeoJSONSource | undefined;
+    if (!src) return;
+    src.setData({
+      type: 'FeatureCollection',
+      features: stopsGeoRef.current.map((s) => ({
+        type: 'Feature' as const,
+        properties: { stopId: s.stopId, agency: s.agency, name: s.name, lat: s.lat, lon: s.lon },
+        geometry: { type: 'Point' as const, coordinates: [s.lon as number, s.lat as number] },
+      })),
     });
   }
 

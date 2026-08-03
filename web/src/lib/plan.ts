@@ -225,6 +225,19 @@ export interface ItineraryPlan {
    * second one leaves. The card would print leg 1 alighting AFTER leg 2 boards.
    */
   connectionHolds: boolean;
+  /**
+   * THE SLACK AS PUBLISHED — leg 2's scheduled departure, minus leg 1's scheduled arrival,
+   * minus the transfer walk at this rider's pace. Seconds.
+   *
+   * Deliberately NOT `transferWaitSec`, which is measured on the instants this plan is
+   * actually built on and therefore already has any live delay priced into it. This one is
+   * the question "how much lateness would it take to break this connection?", and the only
+   * honest answer to that is measured against the timetable both operators published —
+   * which is also the only frame the historical delay distribution is expressed in.
+   *
+   * It is what `connectionLikelihood` is given, and nothing else reads it.
+   */
+  scheduledSlackSec: number;
   leaveByMs: number;
   doorMs: number;
   /** walk + ride + transfer walk + wait + ride + walk. */
@@ -255,12 +268,20 @@ export function buildItineraryPlan(it: ItineraryDto, opts: PlanOptions): Itinera
   const transferGapSec = Math.round((leg2.boardMs - leg1AlightMs) / 1000);
   const transferWalkSec = walkLegSeconds('direct', it.transfer.distanceM, opts.paceMps);
 
+  // Published timetable only — see the field's note. `legs[0].arrivalMs` is leg 1's
+  // scheduled arrival at the transfer stop and `legs[1].departureMs` leg 2's scheduled
+  // departure from it, both straight off the agencies' own schedules.
+  const scheduledSlackSec = Math.round(
+    (it.legs[1].departureMs - it.legs[0].arrivalMs) / 1000,
+  ) - transferWalkSec;
+
   return {
     itinerary: it,
     leg1,
     leg2,
     transferWalkSec,
     transferGapSec,
+    scheduledSlackSec,
     // Floored at zero so a broken connection cannot render as a negative wait; the
     // itinerary is refused by `connectionHolds` below rather than shown with a 0.
     transferWaitSec: Math.max(0, transferGapSec - transferWalkSec),
@@ -279,6 +300,23 @@ export function buildItineraryPlan(it: ItineraryDto, opts: PlanOptions): Itinera
     // this side of the wire: a connection the rider cannot make is not a connection.
     reachable: leg1.reachable && transferGapSec >= transferWalkSec,
   };
+}
+
+/**
+ * Every itinerary as a plan, soonest door-arrival first — the two-leg tier's answer to
+ * `allRidePlans`, and the list the options view ranks.
+ *
+ * Same order, same tie-break, and deliberately UNFILTERED for the same reason
+ * `allRidePlans` is: the caller decides what an unreachable option is worth showing, and
+ * a list function that silently drops rows is a list function nobody can audit.
+ */
+export function allItineraryPlans(
+  itineraries: readonly ItineraryDto[],
+  opts: PlanOptions,
+): ItineraryPlan[] {
+  return itineraries
+    .map((it) => buildItineraryPlan(it, opts))
+    .sort((a, b) => a.doorMs - b.doorMs || a.leaveByMs - b.leaveByMs);
 }
 
 /** The best itinerary: soonest at the destination, ties to the later departure. */
