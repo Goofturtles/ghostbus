@@ -4749,3 +4749,89 @@ have been false; declaring it `null` would have hidden a credit the publisher as
 politely. The field's doc now names the four real cases and each descriptor's comment
 says which it is — the same move as §45: when the truth has more cases than the type
 comment, fix the comment, never round the truth to fit it.
+
+## §53 — Five days of `obs=0`: a sweep that could not tell withdrawn evidence from unearned evidence
+
+`ghostbus.tech` ran for five days accumulating **zero** delay observations on every
+agency, while every feed reported healthy and `/api/health` reported `ok: true`. This is
+the post-mortem, and the one-line version is that §(the third-path section)'s `demoteUnvalidated()`
+asked a broader question than the defect it was written for.
+
+### What the box actually showed
+
+The engine was not failing. It was computing observations and **dropping every one of
+them**, which is what the `xwalkOccurrenceCoverage` gate is supposed to do below 50%
+coverage. Occurrence coverage, daily maximum, from the production journal:
+
+| Jul 30 | Jul 31 | Aug 01 | Aug 02 | Aug 03 |
+|---:|---:|---:|---:|---:|
+| **50.0%** | **50.0%** | 46.1% | 43.9% | 43.7% |
+
+It cleared the gate on the first two days — 200,643 observations, the last of them at
+09:04 on Jul 31 — and then ratcheted down and never returned. The join rate decayed with
+it, 43% to 0.1%, because bindings that cannot be credited cannot validate anything either.
+
+### The ratchet
+
+`runCycle` clears the entire pattern credit store at every service-day rollover, **by
+design**: binding credit is evidence about the service that ran, not about the board. The
+comment at that clear says the patterns still running "re-earn it within a couple of
+cycles".
+
+`demoteUnvalidated()` then ran on the next cycle and asked `validationSufficient(validationFor(stop))`.
+That predicate answers null for **two unrelated situations**: a pattern the consistency
+gate REJECTED, and a pattern that simply has no credit yet. At 4 a.m. almost nothing is
+running to re-earn anything, so the sweep demoted a slice of the crosswalk every night.
+
+And every crosswalk entry is upserted to `rt_stop_xwalk` on every cycle — so each night's
+demotion **persisted into the next day**, under one 6-week board tag. A nightly reset that
+was meant to be an accounting boundary became a one-way loss.
+
+### The fix, and why it is a narrowing rather than a new rule
+
+The sweep now triggers on **distrust** — permanent, order-independent, and the only thing
+in this engine that actually means "an audit withdrew this" — via a new
+`anyDistrusted()` on the credit store. It never triggers on the absence of credit that
+the rollover is entitled to reset.
+
+This is not a weakened gate. It is the sweep finally matching its own stated purpose:
+this document already described defect 3 as *"a stop stops being proposed the moment its
+RT pattern is QUARANTINED"*. Quarantine was always the trigger; `validationFor` was just
+a broader proxy for it that nobody noticed was broader, because on a single-day test run
+the credit store is never cleared and the two questions have identical answers. **The bug
+was invisible to every test that did not span a service-day boundary**, which is all of
+them.
+
+Confirmed in production: coverage recovered 43.7% -> 52.7% within three cycles of the
+deploy, the gate flipped from `SUPPRESSED` to `publishing`, and the observation counter
+started climbing for the first time in five days.
+
+### What else this cost, and the two things that made it expensive to find
+
+**Poller and engine log lines carried no agency id.** Seven pollers interleaved their
+cycle lines into one journal with nothing but a cycle number to tell them apart, and the
+cycle numbers drift apart on backoff. Attributing a symptom to an agency took longer than
+diagnosing it. Both now print `[poller:ttc]` / `[engine:go]`.
+
+**Suppression was invisible above the log.** `/api/health` reported `ok: true` throughout,
+because it was true — every feed *was* arriving. `health.delayEngine` now carries
+`{suppressed, reason, gate}`, the engine's own sentence passed through verbatim so the
+endpoint and the log can never drift into two accounts of one refusal.
+
+### The unrelated fault found in the same session, recorded here so it is not re-diagnosed
+
+The same box was at **96% disk**: `pg_wal` held 87 GB across 5,514 segments after 4.7 days,
+against a 2.1 GB database. PGlite is Postgres compiled to WASM and run single-process —
+**the background checkpointer does not exist**, so nothing ever services the checkpoint
+request `max_wal_size` raises. The GUC was set to 1 GB and simply never acted on; not one
+segment had been recycled since boot.
+
+A clean shutdown reclaimed all 86 GB in 3.2 seconds, which is the whole diagnosis:
+checkpoints work, nothing was asking for one. `ALTER SYSTEM` + `pg_reload_conf()` is not
+an alternative — verified against a throwaway datadir, `SHOW` still reports the boot value,
+because there is no postmaster to signal. The hourly aggregation tick now also issues
+`CHECKPOINT`, independently of the aggregation so neither failure costs the other.
+
+**The two faults are not related.** WAL growth is driven by writes the engine makes
+whether or not the gate lets observations through — which is exactly why the box was
+filling up during five days of publishing nothing at all.
