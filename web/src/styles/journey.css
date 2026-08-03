@@ -276,12 +276,20 @@
 .jr-seg-walkToStop, .jr-seg-walkToDest { background: var(--text-3); opacity: 0.5; }
 .jr-seg-transfer { background: var(--warn); opacity: 0.55; }
 /* .jr-seg-ride takes its route's own colour inline. */
+/*
+ * FLUSH WITH THE BAR, not overhanging it.
+ *
+ * This was `top: -3px; bottom: -3px` with a 2px ring, meaning 16px of marker inside a
+ * 10px box whose `overflow` is `hidden` — so the overhang was clipped away and never
+ * rendered, and the clip probe correctly flagged the bar as an element whose content
+ * does not fit. The overflow is not optional (it is what rounds the segment ends), so
+ * the marker is what gives way. A 3px bar of `--text` against a route colour is legible
+ * without needing to escape its own container.
+ */
 .jr-bar-now {
-  position: absolute; top: -3px; bottom: -3px; width: 3px;
+  position: absolute; top: 0; bottom: 0; width: 3px;
   background: var(--text);
-  border-radius: 2px;
   transform: translateX(-1.5px);
-  box-shadow: 0 0 0 2px var(--surface-solid);
 }
 .jr-summary { font-size: 13px; line-height: 1.5; margin: 0; color: var(--text-2); }
 
