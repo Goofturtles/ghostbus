@@ -115,7 +115,7 @@ test('failureKind never guesses "the feed is down" for an unrecognised throw', a
 // real dictionaries, so adding a fourth state or re-wording a string cannot quietly
 // reintroduce an accusation against the agency.
 
-/** The key NearbyPanel/Primitives choose for a given failure. Mirrors their branches. */
+/** The key PlanView/Primitives choose for a given failure. Mirrors their branches. */
 function copyKeysFor(kind: ApiFailureKind | null, health: { ok: boolean; mode: 'live' | 'demo' } | null): string[] {
   if (health?.mode === 'demo') return ['status.demoBadge', 'status.demoNote'];
   if (kind != null) {

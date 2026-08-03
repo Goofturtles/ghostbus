@@ -3,6 +3,11 @@ import { useTranslation } from 'react-i18next';
 import { useLive, liveNow } from '@/hooks/useLive';
 import { useTick } from '@/hooks/useTick';
 import { SignalIcon } from './icons';
+// The contrast maths lives in lib/contrast.ts so it can be unit-tested without the i18n
+// runtime this file drags in. Re-exported because the rest of the app imports it here.
+import { readableOn } from '@/lib/contrast';
+
+export { readableOn, onBrandPair, AA_NORMAL, type BrandPair } from '@/lib/contrast';
 
 export function Wordmark({ className }: { className?: string }) {
   const { t } = useTranslation();
@@ -12,23 +17,6 @@ export function Wordmark({ className }: { className?: string }) {
       <span className="wm-bus">{t('brand.bus')}</span>
     </span>
   );
-}
-
-/** Text color that stays legible on any GTFS route_color — picks whichever of
- *  white / near-black yields the higher WCAG contrast ratio against the badge. */
-function relLum(r: number, g: number, b: number): number {
-  const f = (c: number) => { c /= 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
-  return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
-}
-function contrast(l1: number, l2: number): number {
-  return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
-}
-export function readableOn(hex: string): string {
-  const h = hex.replace('#', '');
-  if (h.length < 6) return '#ffffff';
-  const bg = relLum(parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16));
-  const white = relLum(255, 255, 255), dark = relLum(20, 22, 29);
-  return contrast(bg, dark) > contrast(bg, white) ? '#14161d' : '#ffffff';
 }
 
 export function RouteBadge({ color, short, size = 'md' }: { color: string; short: string; size?: 'sm' | 'md' | 'lg' }) {

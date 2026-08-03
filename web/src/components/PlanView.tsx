@@ -181,7 +181,7 @@ export function PlanView() {
    */
   const walkLeg = useStore((s) => s.walkLeg);
   const options = useMemo<OptionList>(() => {
-    if (phase.kind !== 'done') return { options: [], hiddenCount: 0, totalCount: 0 };
+    if (phase.kind !== 'done') return { options: [], hiddenCount: 0, totalCount: 0, asOfMs: 0 };
     return buildOptions(phase.res, { nowMs: now, paceMps: paceMps(pace), boardWalk: walkLeg });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, pace, walkLeg]);

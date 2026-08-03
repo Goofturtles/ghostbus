@@ -46,7 +46,7 @@ function claimText(t: ReturnType<typeof useTranslation>['t'], event: GhostEventD
   return t(ghostCopyKey(event.kind), { time: fmtClock(event.scheduledStartMs) });
 }
 
-/** The reference's red alert card. Exported because Nearby shows one too — the
+/** The reference's red alert card. Exported because the stop board shows one too — the
  *  mockup places it directly under the departures — and both must be the same
  *  card built from the same real ghost event, not a second lookalike. */
 export function GhostEventCard({ event }: { event: GhostEventDto }) {

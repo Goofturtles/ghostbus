@@ -120,6 +120,16 @@ export interface OptionList {
   hiddenCount: number;
   /** reachable options in total, before the cap. */
   totalCount: number;
+  /**
+   * WHEN THE DATA BEHIND THESE OPTIONS WAS TRUE — the server's own clock for the response
+   * they were built from, not the moment this ran.
+   *
+   * Carried because a live prediction has a shelf life. `RideCandidateDto.liveEtaMs` is a
+   * snapshot, and once a rider presses GO the journey is frozen and nothing refreshes it,
+   * so the only way the in-progress view can tell a current prediction from a
+   * forty-minute-old one is to know when it was taken.
+   */
+  asOfMs: number;
 }
 
 export function buildOptions(res: PlanResponse, opts: PlanOptions): OptionList {
@@ -150,6 +160,9 @@ export function buildOptions(res: PlanResponse, opts: PlanOptions): OptionList {
     options: all.slice(0, MAX_OPTIONS),
     hiddenCount: Math.max(0, all.length - MAX_OPTIONS),
     totalCount: all.length,
+    // The SERVER's clock for this response. Using the client's would silently re-date the
+    // predictions to now, which is the exact fiction the field exists to prevent.
+    asOfMs: res.serverNowMs,
   };
 }
 
@@ -193,13 +206,22 @@ export interface Journey {
   doorMs: number;
   totalSec: number;
   destinationName: string;
+  /** When the plan data this was built from was true — see `OptionList.asOfMs`. The
+   *  in-progress view ages the frozen live predictions against it. */
+  dataAsOfMs: number;
 }
 
 const stopName = (s: { name: string | null; stopId: string }): string | null => s.name ?? s.stopId;
 
-/** One option, laid out on the clock. The instants are the plan's own — nothing here
- *  re-times anything, so the card and the live view count down to the same second. */
-export function toJourney(option: PlanOption, destinationName: string): Journey {
+/**
+ * THE STEP GEOMETRY ALONE — walk, ride, transfer, ride, walk, on the clock.
+ *
+ * Split out from `toJourney` because the options list's time axis needs the SHAPE of a
+ * journey without committing to one, and it holds no data provenance to hand over. Making
+ * it pass a placeholder would defeat the point of `dataAsOfMs` being required: the whole
+ * value of that field is that a caller cannot forget it.
+ */
+export function journeySteps(option: PlanOption, destinationName: string): JourneyStep[] {
   const steps: JourneyStep[] = [];
 
   if (option.kind === 'ride') {
@@ -253,17 +275,24 @@ export function toJourney(option: PlanOption, destinationName: string): Journey 
     });
   }
 
+  // A feed row that makes a step end before it starts would otherwise draw a negative
+  // segment on the progress bar. Clamped rather than dropped: the step is real, its
+  // duration is what the schedule made of it.
+  return steps.map((s) => (s.endMs < s.startMs ? { ...s, endMs: s.startMs } : s));
+}
+
+/** One option, laid out on the clock. The instants are the plan's own — nothing here
+ *  re-times anything, so the card and the live view count down to the same second. */
+export function toJourney(option: PlanOption, destinationName: string, dataAsOfMs: number): Journey {
   return {
     kind: option.kind,
     option,
-    // A feed row that makes a step end before it starts would otherwise draw a negative
-    // segment on the progress bar. Clamped rather than dropped: the step is real, its
-    // duration is what the schedule made of it.
-    steps: steps.map((s) => (s.endMs < s.startMs ? { ...s, endMs: s.startMs } : s)),
+    steps: journeySteps(option, destinationName),
     leaveByMs: option.plan.leaveByMs,
     doorMs: option.plan.doorMs,
     totalSec: option.plan.totalSec,
     destinationName,
+    dataAsOfMs,
   };
 }
 

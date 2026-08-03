@@ -422,9 +422,8 @@
 .map-note { font-size: 14px; font-weight: 600; color: var(--text-2); }
 
 /* ============================ sections ============================ */
-/* Shared column rhythm. Named for the panel that is gone; the plan panel and the
-   stop-board sheet are what use it now. */
-.nearby-panel, .plan-panel { display: flex; flex-direction: column; gap: var(--s4); }
+/* Shared column rhythm for the plan panel and the stop-board sheet. */
+.plan-panel { display: flex; flex-direction: column; gap: var(--s4); }
 .gb-section { display: flex; flex-direction: column; }
 
 /* The reference sets its labels TIGHT above their content: 8px, not a full gap. */
@@ -1532,11 +1531,12 @@
   .plan-legs > .plan-leg,
   .plan-summary,
   .search-rows > .search-row:nth-child(n),
-  /* The options list joins the same flattening as it joins the same cascade. Note
-     `.dep-list > .dep-card` (above) has staggered delays and is NOT in this list —
-     a pre-existing gap, left alone because this pass has no other reason to be in
-     that rule, but it is the same defect. */
-  .opt-list > .opt-card:nth-child(n) { animation-delay: 0ms !important; }
+  .opt-list > .opt-card:nth-child(n),
+  /* `.dep-list > .dep-card` was flagged here as a known gap and left alone because
+     nothing then reached it on a reduced-motion path worth the edit. StopBoardSheet
+     changed that: the board is now a surface a rider opens deliberately, so its
+     staggered rows are squarely in front of somebody who asked for less motion. */
+  .dep-list > .dep-card:nth-child(n) { animation-delay: 0ms !important; }
 }
 
 /* ======================================================================== */
@@ -1605,7 +1605,7 @@
     background: linear-gradient(to bottom, transparent, var(--side-bg));
   }
 
-  .nearby-panel, .plan-panel { gap: var(--s5); }
+  .plan-panel { gap: var(--s5); }
   .section-head { margin-bottom: var(--s2); }
 
   /* CURRENT STOP is a card on the sidebar. */

@@ -4,7 +4,7 @@
 // This is a shared module rather than a plain hook because its two halves live in
 // different components: the permission has to be asked from a user GESTURE (iOS refuses
 // otherwise, silently), and the gesture the app already has is the "use my location" tap
-// in NearbyPanel — while the thing that draws the heading is the map's You marker. One
+// on the home panel — while the thing that draws the heading is the map's You marker. One
 // module-level source, many subscribers, exactly one listener on the device.
 //
 // THREE HONESTY RULES, in the same spirit as the rest of the app:

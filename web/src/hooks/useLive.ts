@@ -139,7 +139,6 @@ interface LiveState {
   geoStatus: GeoStatus;
 
   nearby: StopDto[];
-  nearbyLoading: boolean;
   /**
    * THE RIDER IS SOMEWHERE WE DO NOT COVER, and we know how far the nearest stop is.
    *
@@ -248,7 +247,6 @@ export const useLive = create<LiveState>((set, get) => ({
   geo: null,
   geoStatus: 'pending',
   nearby: [],
-  nearbyLoading: false,
   outOfCoverage: null,
   pickedStop: null,
   arrivals: null,
@@ -454,11 +452,10 @@ async function loadNearby(
   set: (p: Partial<LiveState>) => void,
   get: () => LiveState,
 ): Promise<void> {
-  set({ nearbyLoading: true });
   try {
     const res = await api.nearby(lat, lon, NEARBY_RADIUS_M);
     noteOk();
-    set({ nearby: res.stops, nearbyLoading: false });
+    set({ nearby: res.stops });
 
     /**
      * NOTHING IN RANGE OF A FIX THE RIDER ACTUALLY GRANTED.
@@ -498,7 +495,6 @@ async function loadNearby(
     noteFailure(e);
     // A FAILED nearby query is not evidence of no coverage — it is evidence of no answer,
     // which `apiFailure` already reports honestly. Leave `outOfCoverage` alone.
-    set({ nearbyLoading: false });
     get().refetchArrivals();
   }
 }

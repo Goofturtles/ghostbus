@@ -20,12 +20,13 @@
 // instead — the live board's prediction where the run is tracked, the timetable where it
 // is not, marked as such either way.
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useStore, paceMps } from '@/store';
 import { useLive, liveNow, selectedNearbyStop } from '@/hooks/useLive';
 import { useCatchEngine, nextTrackedOf } from '@/hooks/useCatchEngine';
 import { journeyProgress, type Journey, type JourneyStep, optionLikelihood } from '@/lib/journey';
+import { STALE_FIX_MS } from '@/lib/catch';
 import { fmtClock, fmtDistance } from '@/lib/format';
 import { RouteBadge, readableOn } from './Primitives';
 import {
@@ -340,6 +341,46 @@ export function JourneyView() {
     }
   })();
 
+  /**
+   * ---------------- polite announcement on every verdict change ----------------
+   *
+   * KEYED ON THE VERDICT KIND, NOT ON THE TEXT. This rendered the headline straight into
+   * a `role="status"` region, and `catch.vTight` interpolates SECONDS — so during exactly
+   * the moment a rider most needs to concentrate ("pick up the pace — about 90 s of
+   * buffer") the live region re-announced once per second and became unusable. The verdict
+   * changes maybe a handful of times in a whole journey; the countdown changes 60 times a
+   * minute, and only one of those is news.
+   *
+   * Lifted from CatchView, which already solved this, rather than solved a second time:
+   * the two screens are announcing the same machine's output.
+   *
+   * `phase` is part of the key as well as `v.kind`, because GO mode has states CatchView
+   * does not — not-yet-left, riding, transferring, arrived — and moving between them is a
+   * genuine change worth speaking even when the underlying catch verdict has not moved.
+   */
+  const [announced, setAnnounced] = useState('');
+  const lastKey = useRef<string | null>(null);
+  // Returning to a state the rider was already in produces the identical string; React
+  // would bail out of the re-render and the reader would say nothing. The alternating
+  // zero-width space guarantees the text node actually changes.
+  const nudge = useRef(0);
+  /**
+   * Before the rider has set off, `headline` and `detail` say "leave by X / that is in N
+   * min" and do not consult the verdict at all — so a comfortable<->tight flip at the
+   * 120 s boundary, or unseen<->atStop as a vehicle drops off the feed, would change this
+   * key and re-speak a byte-identical sentence. The verdict only earns a place in the key
+   * once it is actually the thing being read out.
+   */
+  const announceKey = beforeFirstRide && progress.index >= 0
+    ? `catch:${v.kind}:${progress.index}`
+    : `plan:${progress.index}`;
+  useEffect(() => {
+    if (announceKey === lastKey.current) return;
+    lastKey.current = announceKey;
+    nudge.current += 1;
+    setAnnounced(`${headline}${detail ? `. ${detail}` : ''}${nudge.current % 2 ? '​' : ''}`);
+  }, [announceKey, headline, detail]);
+
   const kmh = (paceMps(pace) * 3.6).toFixed(1);
   const freshness = engine.ourFault
     ? t('catch.evApiDown')
@@ -383,7 +424,7 @@ export function JourneyView() {
             )}
           </section>
 
-          <p className="sr-only" role="status">{`${headline}${detail ? `. ${detail}` : ''}`}</p>
+          <p className="sr-only" role="status">{announced}</p>
 
           <ProgressBar j={j} fraction={progress.fraction} />
           <p className="jr-summary">
@@ -420,12 +461,28 @@ export function JourneyView() {
                * so a run that has left the board degrades to its scheduled instant rather
                * than resurrecting the stale prediction the plan was built with.
                *
-               * A later ride has no board loaded, but the plan response carried its own
-               * `liveEtaMs` if the agency was tracking it, and refusing to say so would
-               * under-claim: the run genuinely is being tracked. Anything without one
-               * counts down to the plan's instant and wears the SCHEDULED chip.
+               * A LATER RIDE'S PREDICTION IS FROZEN, AND FROZEN PREDICTIONS EXPIRE. The
+               * journey is captured at GO and never re-planned, so `candidate.liveEtaMs`
+               * is a snapshot of what the feed said at that instant and nothing refreshes
+               * it. Rendered ungated, leg 2 still wore a LIVE pill forty minutes later,
+               * counting down to a prediction made before the rider had even boarded leg 1
+               * — the app's strongest truth claim attached to its most stale number.
+               *
+               * So it ages out, against the same STALE_FIX_MS boundary lib/catch.ts already
+               * uses to decide when a position has stopped being evidence and become a
+               * memory. The reuse is deliberate, not an accident of importing a nearby
+               * constant: both answer the same question about a different quantity — how
+               * long may we keep asserting something we can no longer refresh?
+               *
+               * It IS aggressive. Nothing re-plans a committed journey, so leg 2 loses its
+               * live mark roughly two and a half minutes after GO and spends the rest of
+               * the trip on the timetable. That is the honest reading: after that point
+               * GhostBus genuinely does not know whether the prediction still holds, and
+               * the SCHEDULED chip says exactly that.
                */
-              const liveMs = isFirstRide ? engine.arrivalMs : (s.candidate?.liveEtaMs ?? null);
+              const predictionAge = now - j.dataAsOfMs;
+              const frozenLive = predictionAge <= STALE_FIX_MS ? (s.candidate?.liveEtaMs ?? null) : null;
+              const liveMs = isFirstRide ? engine.arrivalMs : frozenLive;
               return (
                 <StepRow key={i} step={s} state={state as 'done' | 'now' | 'todo'} imperial={imperial}>
                   {s.kind === 'ride' && s.startMs > now && (

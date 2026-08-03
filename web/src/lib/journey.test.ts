@@ -10,7 +10,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { RideCandidateDto, ItineraryDto, PlanResponse } from '../../../shared/types.ts';
 import {
-  buildOptions, toJourney, journeyProgress, nextRideStep, optionIsLive, optionLikelihood,
+  buildOptions, toJourney, journeySteps, journeyProgress, nextRideStep, optionIsLive, optionLikelihood,
   optionLegs, optionBoardMs, MAX_OPTIONS, buildTimeAxis, axisFrac,
 } from './journey.ts';
 import { buildRidePlan, buildItineraryPlan } from './plan.ts';
@@ -292,7 +292,7 @@ test('more published slack can only ever raise the connection percentage', () =>
 test('a single ride lays out as walk, ride, walk — contiguous and in order', () => {
   const c = candidate({ tripId: 'T', departureMs: T0 + 600_000, arrivalMs: T0 + 1_800_000 });
   const plan = buildRidePlan(c, opts);
-  const j = toJourney({ kind: 'ride', id: 'x', plan }, 'Dundas West');
+  const j = toJourney({ kind: 'ride', id: 'x', plan }, 'Dundas West', T0);
 
   assert.deepEqual(j.steps.map((s) => s.kind), ['walkToStop', 'ride', 'walkToDest']);
   assert.equal(j.steps[0].startMs, plan.leaveByMs);
@@ -312,7 +312,7 @@ test('a two-leg itinerary lays out as walk, ride, transfer, ride, walk — conti
     leg2Dep: T0 + 1_800_000, leg2Arr: T0 + 2_400_000,
   });
   const plan = buildItineraryPlan(it, opts);
-  const j = toJourney({ kind: 'twoLeg', id: 'x', plan }, 'Somewhere');
+  const j = toJourney({ kind: 'twoLeg', id: 'x', plan }, 'Somewhere', T0);
 
   assert.deepEqual(j.steps.map((s) => s.kind),
     ['walkToStop', 'ride', 'transfer', 'ride', 'walkToDest']);
@@ -334,7 +334,7 @@ test('the timeline totals exactly what the plan claims — no second arithmetic'
     leg2Dep: T0 + 1_800_000, leg2Arr: T0 + 2_400_000,
   });
   const plan = buildItineraryPlan(it, opts);
-  const j = toJourney({ kind: 'twoLeg', id: 'x', plan }, 'Somewhere');
+  const j = toJourney({ kind: 'twoLeg', id: 'x', plan }, 'Somewhere', T0);
   const spanned = j.steps.reduce((sum, s) => sum + (s.endMs - s.startMs), 0);
   assert.equal(Math.round(spanned / 1000), plan.totalSec);
 });
@@ -342,7 +342,7 @@ test('the timeline totals exactly what the plan claims — no second arithmetic'
 test('progress reports where the PLAN is, and clamps at both ends', () => {
   const c = candidate({ tripId: 'T', departureMs: T0 + 600_000, arrivalMs: T0 + 1_800_000 });
   const plan = buildRidePlan(c, opts);
-  const j = toJourney({ kind: 'ride', id: 'x', plan }, 'Dundas West');
+  const j = toJourney({ kind: 'ride', id: 'x', plan }, 'Dundas West', T0);
 
   const before = journeyProgress(j, plan.leaveByMs - 60_000);
   assert.equal(before.index, -1);
@@ -368,7 +368,7 @@ test('progress never runs backwards as the clock advances', () => {
     leg1Dep: T0 + 600_000, leg1Arr: T0 + 1_200_000,
     leg2Dep: T0 + 1_800_000, leg2Arr: T0 + 2_400_000,
   });
-  const j = toJourney({ kind: 'twoLeg', id: 'x', plan: buildItineraryPlan(it, opts) }, 'S');
+  const j = toJourney({ kind: 'twoLeg', id: 'x', plan: buildItineraryPlan(it, opts) }, 'S', T0);
   let lastIndex = -2, lastFraction = -1;
   for (let ms = j.leaveByMs - 120_000; ms <= j.doorMs + 120_000; ms += 5_000) {
     const p = journeyProgress(j, ms);
@@ -378,13 +378,41 @@ test('progress never runs backwards as the clock advances', () => {
   }
 });
 
+test('the options carry the SERVER clock they were true at, not the moment they were built', () => {
+  // The in-progress view ages leg 2's frozen live prediction against this. Re-dating it to
+  // the client's `now` would silently make every stale prediction look fresh — which is
+  // the exact fiction the field exists to prevent.
+  const res = rideRes([
+    candidate({ tripId: 'T', departureMs: T0 + 600_000, arrivalMs: T0 + 1_200_000 }),
+  ]);
+  const list = buildOptions({ ...res, serverNowMs: T0 - 45_000 }, opts);
+  assert.equal(list.asOfMs, T0 - 45_000);
+});
+
+test('a journey carries its data provenance through, unchanged', () => {
+  const c = candidate({ tripId: 'T', departureMs: T0 + 600_000, arrivalMs: T0 + 1_800_000 });
+  const plan = buildRidePlan(c, opts);
+  const asOf = T0 - 90_000;
+  const j = toJourney({ kind: 'ride', id: 'x', plan }, 'Dundas West', asOf);
+  assert.equal(j.dataAsOfMs, asOf);
+});
+
+test('journeySteps and toJourney describe the same journey', () => {
+  // The options list's time axis reads `journeySteps` while GO mode reads `toJourney`, and
+  // the two drawing different geometry for one option is exactly the drift splitting them
+  // could have introduced.
+  const c = candidate({ tripId: 'T', departureMs: T0 + 600_000, arrivalMs: T0 + 1_800_000 });
+  const o = { kind: 'ride' as const, id: 'x', plan: buildRidePlan(c, opts) };
+  assert.deepEqual(journeySteps(o, 'Dundas West'), toJourney(o, 'Dundas West', T0).steps);
+});
+
 test('the next ride to catch is the next one that has not departed, then nothing', () => {
   const it = itinerary({
     leg1Dep: T0 + 600_000, leg1Arr: T0 + 1_200_000,
     leg2Dep: T0 + 1_800_000, leg2Arr: T0 + 2_400_000,
   });
   const plan = buildItineraryPlan(it, opts);
-  const j = toJourney({ kind: 'twoLeg', id: 'x', plan }, 'S');
+  const j = toJourney({ kind: 'twoLeg', id: 'x', plan }, 'S', T0);
 
   assert.equal(nextRideStep(j, T0)?.step.candidate?.tripId, 'T1');
   assert.equal(nextRideStep(j, plan.leg1.boardMs + 1)?.step.candidate?.tripId, 'T2');
@@ -433,7 +461,7 @@ test('every step of every option lies inside the axis it was laid out on', () =>
   const axis = buildTimeAxis(options);
   assert.ok(axis);
   for (const o of options) {
-    for (const s of toJourney(o, 'somewhere').steps) {
+    for (const s of journeySteps(o, 'somewhere')) {
       assert.ok(s.startMs >= axis.t0 && s.endMs <= axis.t1,
         `step ${s.kind} ${s.startMs}..${s.endMs} outside ${axis.t0}..${axis.t1}`);
     }

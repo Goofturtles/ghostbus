@@ -26,14 +26,14 @@ import type { RideCandidateDto } from '@shared/types';
 import type { Likelihood } from '@/lib/likelihood';
 import {
   type PlanOption, type OptionList, type TimeAxis, optionLegs, optionIsLive, optionLikelihood,
-  optionBoardMs, toJourney, buildTimeAxis, axisFrac,
+  optionBoardMs, toJourney, journeySteps, buildTimeAxis, axisFrac,
 } from '@/lib/journey';
 import { useStore } from '@/store';
 import { useTick } from '@/hooks/useTick';
 import { liveNow } from '@/hooks/useLive';
 import { fmtClock, fmtDistance, fmtServiceDate } from '@/lib/format';
 import { parseHeadsign } from '@/lib/headsign';
-import { RouteBadge, readableOn } from './Primitives';
+import { RouteBadge, onBrandPair } from './Primitives';
 import { splitClock } from './DepartureRow';
 import { WalkerIcon, RouteIcon, FlagIcon, WarningIcon, ArrowRightIcon, ChevronIcon } from './icons';
 
@@ -321,7 +321,7 @@ function OptionDetail({ o, imperial, destinationName }: {
 function OptionAxis({ axis, o, destinationName }: {
   axis: TimeAxis; o: PlanOption; destinationName: string;
 }) {
-  const steps = toJourney(o, destinationName).steps;
+  const steps = journeySteps(o, destinationName);
   const pct = (ms: number) => `${(axisFrac(axis, ms) * 100).toFixed(3)}%`;
   return (
     <div className="opt-axis" aria-hidden>
@@ -350,9 +350,9 @@ function OptionAxis({ axis, o, destinationName }: {
   );
 }
 
-function OptionCard({ o, expanded, onToggle, imperial, destinationName, now, axis }: {
+function OptionCard({ o, expanded, onToggle, imperial, destinationName, now, axis, asOfMs }: {
   o: PlanOption; expanded: boolean; onToggle: () => void;
-  imperial: boolean; destinationName: string; now: number; axis: TimeAxis | null;
+  imperial: boolean; destinationName: string; now: number; axis: TimeAxis | null; asOfMs: number;
 }) {
   const { t } = useTranslation();
   const startJourney = useStore((s) => s.startJourney);
@@ -373,11 +373,22 @@ function OptionCard({ o, expanded, onToggle, imperial, destinationName, now, axi
    * routes.txt, which is real published data about that route and not a decoration we
    * assigned. It is applied as a tint rather than a flood so the text on top keeps its
    * ordinary contrast, and the accent rail carries the colour at full strength.
+   *
+   * THE GO BUTTON IS THE EXCEPTION, and it gets its own background. It is the one place
+   * the route colour is a large filled plate carrying two lines of text, and a great many
+   * real transit colours cannot carry text at all: `readableOn` maximises over white and
+   * near-black, and that maximum bottoms out at 4.269:1 around relative luminance 0.198 —
+   * under AA, with no foreground able to rescue it. The TTC's own 504 red sits in that
+   * trough. `onBrandPair` keeps the hue and nudges the lightness until the pair genuinely
+   * clears, and returns a de-emphasised tone that clears too. See lib/contrast.ts.
    */
   const brand = `#${lead.color.replace('#', '')}`;
+  const go = onBrandPair(lead.color);
   const style = {
     '--opt-brand': brand,
-    '--opt-on-brand': readableOn(lead.color),
+    '--opt-go-bg': go.bg,
+    '--opt-go-fg': go.fg,
+    '--opt-go-fg-muted': go.fgMuted,
   } as React.CSSProperties;
 
   const destination = parseHeadsign(lead.directionLabel).destination || lead.directionLabel;
@@ -469,7 +480,7 @@ function OptionCard({ o, expanded, onToggle, imperial, destinationName, now, axi
 
           <button
             className="btn btn-primary opt-go"
-            onClick={() => startJourney(toJourney(o, destinationName))}
+            onClick={() => startJourney(toJourney(o, destinationName, asOfMs))}
           >
             <span className="opt-go-label">{t('plan.go')}</span>
             <span className="opt-go-sub">{t('plan.goSub', { time: fmtClock(o.plan.leaveByMs) })}</span>
@@ -540,6 +551,7 @@ export function PlanOptions({ list, selectedId, onSelect, imperial, destinationN
             destinationName={destinationName}
             now={now}
             axis={axis}
+            asOfMs={list.asOfMs}
           />
         ))}
       </ul>

@@ -234,8 +234,8 @@ export const useStore = create<State>((set, get) => ({
    * The selection is made by `loadNearby`, which picks the nearest real stop the
    * agency actually returned. Until that resolves there is genuinely no stop, and the
    * app already handles that state: `refetchArrivals` returns early on a falsy id, so
-   * no request is made for a stop nobody chose, and `NearbyPanel` shows its loading
-   * state off `nearbyLoading` rather than off a board that was never requested.
+   * no request is made for a stop nobody chose, and `StopBoardSheet` shows its skeleton
+   * off the absence of a board rather than off a board that was never requested.
    */
   selectedStopId: '',
   routeFocusId: null,
