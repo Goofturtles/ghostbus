@@ -4835,3 +4835,146 @@ because there is no postmaster to signal. The hourly aggregation tick now also i
 **The two faults are not related.** WAL growth is driven by writes the engine makes
 whether or not the gate lets observations through — which is exactly why the box was
 filling up during five days of publishing nothing at all.
+
+---
+
+## §54 — Two agencies published into nothing, and the rest bound against two calendars at once
+
+Two separate diseases, found in one session, sharing one symptom: **bindings are born and
+never activate**. They are unrelated and are recorded separately.
+
+- **TTC** (and every learned agency): `births` climbed, `pending` climbed, `active` sat at
+  **0-1**, against ~700-900 four days earlier.
+- **Brampton and Burlington**: gates OPEN, crosswalk coverage 99.2% and 85.4%,
+  `directTripIdMatch` 96.8% and 100% — and `patterns 0/0 resolved`, `births=0`, `obs=0`,
+  every cycle since they were added.
+
+### What it took to see either: the counters that did not exist
+
+`lockPendingBirths` has four exits and **three of them are silent `continue`s** — no RT
+pattern yet, pattern not resolved, origin stop not confirmed. The fourth, refusal, kept its
+counters in a struct no log line and no endpoint ever read. So the engine's worst-looking
+state, `pending` climbing while `active` is zero, had no explanation available above the
+log. §53's own post-mortem said this in as many words about a different layer, and it was
+still true one layer down.
+
+A per-cycle `lockPath` block now prints where each pending birth stopped, beside the
+cumulative refusal ledger. It landed the TTC diagnosis in **one cycle**:
+
+    lock unres=148 noPat=0 originUnconf=308 scored=345 locked=1
+    refused(cum) noSlot=17 amb=319 hw=0 inactive=8 midroute=826
+
+345 births reached the origin lock, 1 locked, and essentially all of the rest were
+`refused_ambiguous`. The margin test was firing on nearly every trip in the city.
+
+### Disease 1 — the engine was handed two service calendars for one service date
+
+`originLock` refuses when the runner-up slot sits within `MARGIN_MIN_S`. The runner-ups
+were not real buses. `poller.ts` built the engine's `activeServices` as
+
+    const activeServices = servicesForYmd(day.ymd, day.dow);
+    // A trip that started before midnight is still running on yesterday's service day.
+    for (const s of servicesForYmd(prevDay.ymd, prevDay.dow)) activeServices.add(s);
+
+The comment describes a real problem that this code does not solve, because it was already
+solved: `serviceYmd` is `torontoYmd(now - 4 h)`, so at 01:30 the service date **is**
+yesterday, and one lookup already returns yesterday's services. The union never covered
+anything. What it did was add a **second, complete service calendar** to the set the engine
+filters candidate slots by — so on every day whose `service_id` differs from the previous
+day's, each pattern was scored against two interleaved schedules whose departures sit
+minutes apart. The ambiguity was manufactured by us, and it is worst exactly where the two
+schedules are most alike.
+
+It also **compounded**. `servicesForYmd` returns its cache entry, so `.add()` wrote
+yesterday into today's cached answer permanently, and each rollover unioned an
+already-poisoned set:
+
+| day | service | `activeServices` actually used | TTC `active` |
+|---|---|---|---:|
+| Wed Jul 29 - Fri Jul 31 | weekday `1` | `{1}` | **721 - 935** |
+| Sat Aug 1 | Saturday `2` | `{1,2}` | **149 - 357** |
+| Sun Aug 2 | Sunday `3` | `{1,2,3}` | **74 - 269** |
+| Mon Aug 3 (civic holiday) | holiday `4` | `{1,2,3,4}` | **0 - 13** |
+
+Four whole boards on one service date. The curve reads like a slow decay and is nothing of
+the kind — it is a step per day-of-week boundary, and it would have half-recovered on the
+Tuesday and been misread as fixed. The same poisoned set was also feeding `computeDue`,
+which was scanning yesterday's trips as due today.
+
+**The fix.** One lookup, on one service day, asked with **that service day's own weekday**.
+`serviceDay()` returns `{ymd, dow}` from a single shifted instant so the date and the
+weekday cannot disagree — at 01:30 on a Monday the calendar must be asked about Sunday, and
+deriving the two separately is how they came to disagree at all. `serviceYmd` is now defined
+in terms of it: one definition of the 4 a.m. rollover, not two.
+
+`servicesForYmd` and `EngineCycleInput.activeServices` are now `ReadonlySet`, which makes
+this particular mutation a compile error rather than a five-day outage. That is a stronger
+guarantee than a test, and it is why there is no poller-level test here.
+
+**No gate constant moved.** If a service day genuinely has no seeded trips, `boardIntegrity`
+now fails honestly instead of being masked by the previous day's board.
+
+### Disease 2 — a feed may omit `stop_sequence`, and this engine is built on it
+
+Measured against both live feeds: **0 of 131** Brampton TripUpdates and **0 of 119**
+Burlington TripUpdates carry a single `stop_sequence`, while **131/131** and **119/119**
+carry both `trip_id` and `route_id`. GTFS-realtime makes `stop_sequence` optional — a
+StopTimeUpdate may identify its stop by `stop_id` alone — so the feeds are correct and the
+engine was not. `clusterPatterns` skips a stop without a sequence, so no RT pattern ever
+formed; `captureBirths` skips it too, so no birth was ever captured; with no births there is
+no binding, no settle, and no observation.
+
+*The prior wave's hypothesis that these feeds omit `route_id` is withdrawn. They do not.*
+
+**Recovery, not invention.** The sequence is read off the board, for a trip the board itself
+names, by aligning the feed's stop-id list against the static trip's stop list as a
+contiguous window and requiring that window to be **unique**. Uniqueness is the entire
+safety argument: a loop route visits one stop id twice, so a `stop_id -> stop_sequence` map
+would silently pick the first visit and measure the return leg against the outbound
+departure — self-consistent, invisible, and wrong by the length of the loop. Two matches, or
+none, and nothing is recovered; the trip stays exactly as unusable as it was.
+
+**And then we do not re-guess it.** Having read the static trip to number the stops,
+inferring which static trip it was would be scoring our own arithmetic: pattern resolution
+becomes tautological, and the origin lock could still pick a *neighbouring* slot, pairing
+one trip's numbering with another trip's schedule. `directLock` binds the trip the agency
+named. It is the STAGE 0 fast path the engine has measured every cycle since it was written
+and has never been able to use.
+
+What a direct binding deliberately does **not** claim: `marginS` is null and `agree` is 0,
+because there was no runner-up and no anchor vote, and a fabricated separation would make it
+read as a well-separated origin lock in the same columns. `residS` is measured and persisted
+— but it is the trip's **lateness**, not evidence about the identification, so it is kept
+out of the board-agreement gate and the per-pattern drift breaker. Both of those exist to
+catch an origin lock that slipped by about one headway, which a trip named by id cannot do;
+and feeding real lateness to a gate that suppresses on lateness would let an agency go dark
+by running late, which is the exact inversion this project exists to prevent.
+
+Feeds that publish their own sequences are untouched, field for field.
+
+### Measured on ghostbus.tech, 2026-08-03
+
+| | before | after |
+|---|---:|---:|
+| TTC `bindings active` | 0-1 across 26 cycles | **317 -> 384** in 8 cycles, climbing |
+| TTC `refused_ambiguous` | 319 in 2 cycles | **4** in 8 cycles |
+| TTC `obs+` per cycle | 0 | **29 - 42** |
+| TTC join rate | 0.0% | **22.5%** and climbing |
+| Brampton `patterns resolved` | 0/0 | **58/76** |
+| Brampton `bindings active` | 0 | **9** |
+| Burlington `patterns resolved` | 0/0 | **10/11** |
+| Burlington `bindings active` | 0 | **47** |
+
+`seqFromBoard` reads 86/129 and 72/110: about a third of each feed's trips are refused
+recovery, because their published stop list is not a unique contiguous window of the trip
+the board names. Those refusals are the mechanism working, not a shortfall to be tuned away.
+
+### The review finding worth keeping
+
+An audit of the above caught the one test that could not fail. Five recovery tests passed
+with the numbering off by one **in either direction**, because a wrong sequence still
+produces a pattern, a birth and a binding — every counter they asserted is identical. What a
+wrong sequence changes is which scheduled time the trip is measured against, and nothing
+asserted that. It does now, through `first_stop_resid_s` on a window that starts mid-trip.
+The `lockPath` counters are likewise asserted as a partition, so the next silent `continue`
+someone adds fails a test instead of costing a week.

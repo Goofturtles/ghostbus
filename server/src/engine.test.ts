@@ -634,7 +634,7 @@ test('§54 / lockPath: every pending birth is accounted for by exactly one exit'
     const p = e.getStats().bindings.lockPath;
     sawPending += p.pending;
     assert.equal(
-      p.noPattern + p.patternUnresolved + p.originUnconfirmed + p.quarantined + p.reached,
+      p.noPattern + p.patternUnresolved + p.originUnconfirmed + p.quarantined + p.forked + p.reached,
       p.pending,
       `cycle ${i}: every pending birth took exactly one exit`,
     );

@@ -1013,7 +1013,7 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
         // `pending` climbing while `active` sits at zero is the engine's worst-looking and
         // least-explained state; these two groups are what turn it into a sentence.
         `| lock unres=${d.bindings.lockPath.patternUnresolved} noPat=${d.bindings.lockPath.noPattern} ` +
-        `originUnconf=${d.bindings.lockPath.originUnconfirmed} scored=${d.bindings.lockPath.reached} ` +
+        `originUnconf=${d.bindings.lockPath.originUnconfirmed} forked=${d.bindings.lockPath.forked} scored=${d.bindings.lockPath.reached} ` +
         `locked=${d.bindings.lockPath.locked} ` +
         `| refused(cum) noSlot=${d.bindings.refusedNoSlot} amb=${d.bindings.refusedAmbiguous} ` +
         `hw=${d.bindings.refusedHeadwayBand} inactive=${d.bindings.refusedBoardInactive} ` +

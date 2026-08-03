@@ -142,7 +142,7 @@ export interface DelayEngineStats {
      */
     lockPath: {
       pending: number; noPattern: number; patternUnresolved: number; originUnconfirmed: number;
-      quarantined: number; reached: number; locked: number;
+      quarantined: number; forked: number; reached: number; locked: number;
     };
   };
   obs: SettleCounters & { droppedNoBinding: number; suppressedByGate: number };
@@ -327,7 +327,7 @@ export function createDelayEngine(
         doubleBookRejected: 0, medianFirstStopResidS: null, boardAgreementOk: true,
         lockPath: {
           pending: 0, noPattern: 0, patternUnresolved: 0, originUnconfirmed: 0,
-          quarantined: 0, reached: 0, locked: 0,
+          quarantined: 0, forked: 0, reached: 0, locked: 0,
         },
       },
       obs: { ...emptyCounters(), droppedNoBinding: 0, suppressedByGate: 0 },
@@ -1031,7 +1031,7 @@ export function createDelayEngine(
 
   async function lockPendingBirths(inp: EngineCycleInput, nowS: number): Promise<void> {
     const path = { pending: births.size, noPattern: 0, patternUnresolved: 0, originUnconfirmed: 0,
-      quarantined: 0, reached: 0, locked: 0 };
+      quarantined: 0, forked: 0, reached: 0, locked: 0 };
     stats.bindings.lockPath = path;
     for (const [rtTripId, birth] of [...births]) {
       const pattern = rtPatternByTrip.get(rtTripId);
@@ -1055,6 +1055,7 @@ export function createDelayEngine(
       // a static pattern its own RT pattern disagrees with.
       const inferred = resolvedStatic.get(pattern.rtPatternId);
       if (named && inferred && inferred !== named.patternId) {
+        path.forked++;
         births.delete(rtTripId);
         refusedTrips.set(rtTripId, 'refused_ambiguous');
         stats.bindings.refusedAmbiguous++;
@@ -1651,7 +1652,7 @@ export function createDelayEngine(
     // Set before the guard, never only inside it: an inactive board must read as "nothing
     // was attempted", not as last cycle's attempt.
     stats.bindings.lockPath = { pending: births.size, noPattern: 0, patternUnresolved: 0,
-      originUnconfirmed: 0, quarantined: 0, reached: 0, locked: 0 };
+      originUnconfirmed: 0, quarantined: 0, forked: 0, reached: 0, locked: 0 };
     if (stats.boardActive) {
       try { await lockPendingBirths(inp, nowS); } catch (e) { console.error('[engine] lock failed:', e); }
     }
