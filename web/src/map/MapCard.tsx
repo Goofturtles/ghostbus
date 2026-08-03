@@ -18,6 +18,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import type { VehicleDto, RouteShapeResponse } from '@shared/types';
 import { api, type Bbox } from '@/lib/api';
 import { useLive, selectedNearbyStop, DEFAULT_LOCATION, isBackedOff, noteFailure } from '@/hooks/useLive';
+import { compassHeading, subscribeCompass } from '@/hooks/useCompassHeading';
 import { useStore, resolveTheme, paceMps } from '@/store';
 import { walkLegSeconds, type MeasuredWalk } from '@/lib/walk';
 import { pathMidpoint } from '@/lib/walkRoute';
@@ -1351,6 +1352,37 @@ export default function MapCard() {
     collide();
   }
 
+  /**
+   * Point the facing wedge, or leave it hidden.
+   *
+   * TWO ROTATIONS, and forgetting the second is the classic bug: the compass answers in
+   * WORLD degrees from true north, while the wedge is drawn on a map the rider can spin.
+   * Subtracting the map's bearing converts one into the other, so the wedge keeps
+   * pointing at the real street even while the map turns under it. `hidden` — rather
+   * than a zero-length wedge — is what keeps "no honest reading" visually identical to
+   * the dot that shipped before the compass existed.
+   */
+  function paintWedge(): void {
+    const el = youMarker.current?.getElement().querySelector('.you-wedge') as HTMLElement | null;
+    if (!el) return;
+    const heading = compassHeading();
+    if (heading == null) { el.hidden = true; return; }
+    el.hidden = false;
+    el.style.transform = `translate(-50%, -50%) rotate(${heading - (mapRef.current?.getBearing() ?? 0)}deg)`;
+  }
+
+  // The wedge has two independent reasons to move — the rider turning (compass) and the
+  // map turning (bearing) — and neither is React state, so both are imperative
+  // subscriptions rather than a re-render. Mount-scoped: the marker is looked up fresh
+  // on every call, so this survives the marker being created and destroyed beneath it.
+  useEffect(() => {
+    const map = mapRef.current;
+    const unsubscribe = subscribeCompass(paintWedge);
+    map?.on('rotate', paintWedge);
+    return () => { unsubscribe(); map?.off('rotate', paintWedge); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // You beacon + boarding stop bubble + the walker node on the walk path
   useEffect(() => {
     const map = mapRef.current;
@@ -1369,6 +1401,10 @@ export default function MapCard() {
           // stop in mid-air.
           '<span class="you-disc">' +
             '<span class="you-bloom" aria-hidden="true"></span>' +
+            // Facing wedge. Present in the markup but hidden until a real compass
+            // reading arrives, so there is nothing to add or remove per frame — and
+            // nothing at all to see on a desktop or a denied permission.
+            '<span class="you-wedge" aria-hidden="true" hidden></span>' +
             PERSON_SVG +
             '<span class="you-tip" aria-hidden="true"></span>' +
           '</span>' +
@@ -1393,6 +1429,11 @@ export default function MapCard() {
     } else if (youMarker.current) {
       youMarker.current.remove(); youMarker.current = null;
     }
+
+    // The wedge is redrawn here too, not only from its own subscription: this effect is
+    // what CREATES the marker, and a rider who already granted the compass would
+    // otherwise face a blank wedge until the next reading.
+    paintWedge();
 
     // --- boarding stop: outlined bubble with a purple transit tile, over a pin --
     if (boarding) {

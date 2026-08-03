@@ -214,6 +214,42 @@
   background: var(--you);
   box-shadow: 0 0 0 3px #fff, 0 8px 18px -5px rgba(10, 132, 255, 0.85);
 }
+/* FACING WEDGE — which way the rider is pointed, from the phone's compass.
+   Shown only when a real absolute reading arrives (useCompassHeading enforces
+   that); `hidden` otherwise, which is the exact beacon that shipped before.
+
+   Sized and placed to add NO new overlap: it is a child of `.you-disc`, rotates
+   about the disc's own centre, and its 30px radius stays inside the 96px ground
+   bloom already reserved around the beacon — so it cannot collide with the
+   attached card, the tip, or anything the collision pass measures. Drawn under
+   the glyph (z-index below `.you-disc`'s content, above the bloom) so the person
+   stays the thing you read first.
+
+   The cone is a clip-path triangle rather than a border trick: borders cannot be
+   given the soft blue falloff the rest of the beacon uses, and a gradient inside
+   a clipped box gets it for free. `rotate(0deg)` is NORTH because the triangle is
+   authored pointing up — MapCard subtracts the map bearing before setting it. */
+.map-card .you-wedge {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: -1;
+  /* A SQUARE CENTRED ON THE DISC, with the cone clipped out of its top edge. The
+     square is what rotates, about its own centre — which is the disc's centre — so
+     the cone swings around the beacon instead of spinning on its own tip. Getting
+     this wrong is the obvious bug: rotate a small wedge about ITSELF and it just
+     twirls in place next to the rider. 92px stays inside the 96px ground bloom
+     already reserved above, so the wedge claims no space the beacon did not. */
+  width: 92px;
+  height: 92px;
+  /* completed by MapCard, which appends the rotation: translate(-50%,-50%) rotate() */
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  /* apex at top centre, base at 28% down — its inner edge clears the 34px disc */
+  clip-path: polygon(50% 0%, 66% 28%, 34% 28%);
+  background: linear-gradient(to bottom, rgba(10, 132, 255, 0.82), rgba(10, 132, 255, 0.12));
+}
+
 /* The terminus of the bead path: a small blue-and-white dot floating just above
    the beacon, so the walk path arrives somewhere instead of stopping in mid-air. */
 .map-card .you-tip {

@@ -20,6 +20,7 @@ import type {
 } from '@shared/types';
 import { useStore } from '@/store';
 import { haversineM } from '@/lib/search';
+import { startCompass } from '@/hooks/useCompassHeading';
 
 /**
  * Fallback when geolocation is denied/unavailable: KING ST W AT SPADINA AVE — the
@@ -319,6 +320,11 @@ export const useLive = create<LiveState>((set, get) => ({
   },
 
   requestLocation: () => {
+    // Piggy-backed on this tap ON PURPOSE: iOS only grants the compass from inside a
+    // user gesture, and "use my location" is the one gesture where a rider has already
+    // said they want the app oriented around them. Nothing auto-prompts, and a refusal
+    // costs only the facing wedge — the dot renders exactly as it did before.
+    void startCompass();
     const apply = (lat: number, lon: number, status: GeoStatus) => {
       set({ geo: { lat, lon }, geoStatus: status });
       void loadNearby(lat, lon, status, set, get);
