@@ -1372,16 +1372,17 @@ export default function MapCard() {
   }
 
   // The wedge has two independent reasons to move — the rider turning (compass) and the
-  // map turning (bearing) — and neither is React state, so both are imperative
-  // subscriptions rather than a re-render. Mount-scoped: the marker is looked up fresh
-  // on every call, so this survives the marker being created and destroyed beneath it.
-  useEffect(() => {
-    const map = mapRef.current;
-    const unsubscribe = subscribeCompass(paintWedge);
-    map?.on('rotate', paintWedge);
-    return () => { unsubscribe(); map?.off('rotate', paintWedge); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // map's bearing changing under it — and neither is React state, so both are imperative
+  // subscriptions rather than a re-render. The marker and the map are looked up fresh on
+  // every call, so this survives both being created and destroyed beneath it.
+  //
+  // The map listener is NOT bound here: `mapRef` is still null at mount (the map is built
+  // by a later effect), so binding at mount would silently never attach. It is bound in
+  // the beacon effect below, which by construction runs with a real map. The rider cannot
+  // rotate the map — `dragRotate` is off — but the app itself does, to VOXEL_BEARING and
+  // back whenever voxel mode toggles, and a still rider with a live compass would
+  // otherwise be left with a wedge pointing at the pre-toggle north.
+  useEffect(() => subscribeCompass(paintWedge), []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // You beacon + boarding stop bubble + the walker node on the walk path
   useEffect(() => {
@@ -1432,8 +1433,13 @@ export default function MapCard() {
 
     // The wedge is redrawn here too, not only from its own subscription: this effect is
     // what CREATES the marker, and a rider who already granted the compass would
-    // otherwise face a blank wedge until the next reading.
+    // otherwise face a blank wedge until the next reading. This is also where the map's
+    // own bearing changes are subscribed, because here `map` is real — see the compass
+    // effect above for why binding it at mount does not work.
     paintWedge();
+    map.on('rotate', paintWedge);
+    // Braced: `map.off()` returns the Map, and an effect destructor must return void.
+    const offRotate = () => { map.off('rotate', paintWedge); };
 
     // --- boarding stop: outlined bubble with a purple transit tile, over a pin --
     if (boarding) {
@@ -1493,6 +1499,7 @@ export default function MapCard() {
       frameCamera(true);
     }
     collide();
+    return offRotate;
   }, [geo, boarding, walkMin, walkLeg, walkable, t]);
 
   // A new boarding stop is a new picture: re-frame it (unless the user has taken
