@@ -233,6 +233,19 @@
   display: flex; flex-direction: column; gap: var(--s5);
 }
 .jr-body:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/*
+ * NOTHING IN A SCROLLING COLUMN MAY BE SQUASHED TO FIT IT.
+ *
+ * A flex item defaults to `flex-shrink: 1`, so in a column whose content overflows —
+ * which is every journey worth showing — the browser shrinks its children rather than
+ * letting them scroll. That is not a hypothetical: the segmented progress bar shipped
+ * with `height: 10px` and MEASURED 0 px tall on a real device, its segments correctly
+ * sized to 41 / 287 / 22 px wide and completely invisible.
+ *
+ * Declaring every child unshrinkable is the fix for the whole column at once, rather
+ * than for the one element somebody happened to look at.
+ */
+.jr-body > *, .stopsheet-body > * { flex: 0 0 auto; }
 
 .jr-verdict { display: flex; flex-direction: column; gap: var(--s2); }
 .jr-headline { font-size: 26px; font-weight: 750; line-height: 1.28; margin: 0; color: var(--text); }
@@ -251,6 +264,9 @@
 .jr-bar {
   position: relative;
   display: flex; align-items: stretch;
+  /* Belt and braces with the `.jr-body > *` rule above: this one is the element that
+     actually collapsed, and its height is the whole point of it. */
+  flex: 0 0 auto;
   height: 10px;
   border-radius: var(--r-pill);
   overflow: hidden;
