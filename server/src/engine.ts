@@ -191,6 +191,8 @@ interface Binding {
   agree: number;
   slot: StaticTripSlot;
   tracked: Map<number, TrackedStop>;
+  /** bound by directLock — the agency named the trip; nothing was inferred. */
+  direct: boolean;
 }
 
 export interface DelayEngine {
@@ -383,6 +385,12 @@ export function createDelayEngine(
     index = next;
     boardTag = newBoardTag;
     ready = true;
+    // A board-derived birth's stop_sequences were read off the index we just replaced, and
+    // `directLock` will read the schedule for those sequences off the NEW one. A trip
+    // renumbered between the two boards would then be measured against a stop it is not
+    // at. Births whose sequences came from the FEED are unaffected and are left alone; the
+    // tag-change path below clears everything anyway.
+    for (const [rtTripId, b] of births) if (b.seqFromBoard) births.delete(rtTripId);
     recomputeAmbiguousStops();
     boardStopIds = new Set<string>();
     for (const p of index.patterns.values()) for (const s of p.stops) boardStopIds.add(s);
@@ -658,10 +666,15 @@ export function createDelayEngine(
     for (let t = 0; t < tripUpdates.length; t++) {
       const tu = tripUpdates[t];
       if (tu.stops.length === 0) continue;
-      let hasSeq = false;
-      for (const s of tu.stops) if (s.stopSequence != null) { hasSeq = true; break; }
-      if (hasSeq) continue;
+      // A PARTIALLY numbered trip is counted as needing recovery and then refused. It is
+      // not a feed shape either agency produces, but it is the one shape that could pass
+      // through unseen: `clusterPatterns` would quietly drop only the unnumbered stops and
+      // this would report `needed=0`, which is a claim that nothing was lost.
+      let numbered = 0;
+      for (const s of tu.stops) if (s.stopSequence != null) numbered++;
+      if (numbered === tu.stops.length) continue;
       needed++;
+      if (numbered > 0) continue;
 
       const slot = index.slotsByTrip.get(tu.rtTripId);
       const staticStops = slot ? index.patterns.get(slot.patternId)?.stops : undefined;
@@ -1035,7 +1048,20 @@ export function createDelayEngine(
       // again would be scoring our own arithmetic. See directLock in bind.ts.
       const named = birth.seqFromBoard ? index.slotsByTrip.get(rtTripId) : undefined;
 
-      const staticPatternId = named ? named.patternId : resolvedStatic.get(pattern.rtPatternId);
+      // The two roads must not fork. A repaired trip's RT pattern is built from the named
+      // trip's own stops at the named trip's own sequences, so once the clustering machinery
+      // resolves it, it should resolve to exactly that pattern. If it does not, one of the
+      // two is wrong and we do not know which — so the trip is refused rather than bound to
+      // a static pattern its own RT pattern disagrees with.
+      const inferred = resolvedStatic.get(pattern.rtPatternId);
+      if (named && inferred && inferred !== named.patternId) {
+        births.delete(rtTripId);
+        refusedTrips.set(rtTripId, 'refused_ambiguous');
+        stats.bindings.refusedAmbiguous++;
+        continue;
+      }
+
+      const staticPatternId = named ? named.patternId : inferred;
       if (!staticPatternId) { path.patternUnresolved++; continue; }   // still unresolved; try again next cycle
 
       // The origin stop's identity must be confirmed, or the residual we are about to
@@ -1134,6 +1160,7 @@ export function createDelayEngine(
         rtPatternId: pattern.rtPatternId, staticPatternId,
         confidence: res.confidence ?? 'low', marginS: res.marginS, headwayS: res.headwayS,
         residS: res.residS, agree: res.agree, slot, tracked: new Map(),
+        direct: res.method === 'direct_trip_id',
       });
       claimedStatic.set(res.tripId, rtTripId);
       births.delete(rtTripId);
@@ -1266,7 +1293,14 @@ export function createDelayEngine(
 
       // Per-pattern breaker: a pattern whose rolling residual has drifted past half its own
       // headway is producing self-consistent delays that are wrong by about one headway.
-      if (!patternHealthy(b.headwayS, med(patternResid.get(b.staticPatternId) ?? []))) {
+      //
+      // A DIRECT binding is exempt, and the exemption is about what the breaker measures,
+      // not about trusting the binding more. The rolling residual is filled by ORIGIN LOCKS
+      // on this static pattern, and it detects the one failure an origin lock has: picking
+      // the neighbouring slot. A trip the agency named by id cannot pick a neighbour. Left
+      // in, a direct binding on a static pattern that origin locks had drifted would be
+      // voided for someone else's inference error.
+      if (!b.direct && !patternHealthy(b.headwayS, med(patternResid.get(b.staticPatternId) ?? []))) {
         retractBinding(b, false);
         bindings.delete(rtTripId);
         claimedStatic.delete(b.staticTripId);

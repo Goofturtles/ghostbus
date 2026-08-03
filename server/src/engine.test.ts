@@ -591,3 +591,53 @@ test('§54: a feed that DOES publish stop_sequence is untouched by the recovery'
   await e.runCycle(cycle());
   assert.deepEqual(e.getStats().seqRecovery, { needed: 0, recovered: 0 });
 });
+
+test('§54: the recovered sequence is the STATIC one — pinned through the scheduled time', async () => {
+  // The whole recovery is one piece of arithmetic: static stop list index i is
+  // stop_sequence i+1. Nothing asserted above can see an off-by-one, because a wrong
+  // sequence still produces a pattern, a birth and a binding. What it changes is WHICH
+  // scheduled time the trip is measured against, so that is what this asserts.
+  //
+  // T1 is st1 st2 st3 st4 st6, departing FIRST_DEP_S with a stop every 300 s. Publishing
+  // ['st2','st3','st4'] is a unique window at index 1, so minSeq must be 2 and the schedule
+  // must be times[1] = FIRST_DEP_S + 300. Numbering from 0 would measure against
+  // times[0] — 300 s out — and numbering from 2 would put minSeq at 3, which
+  // `captureBirths` refuses as mid-route, so there would be no binding here to find.
+  const OFFSET = 900;
+  const { db } = await runSeqless([seqlessUpdate('T1', ['st2', 'st3', 'st4'], OFFSET)]);
+  const row = db.writes.find((w) => /INSERT INTO rt_trip_binding/.test(w.sql));
+  assert.ok(row, 'a binding was persisted');
+  const expected = Math.round(
+    (1_800_000_000 + OFFSET - serviceEpochSeconds(SERVICE_DATE, 0)) - (FIRST_DEP_S + 300));
+  assert.equal(row.params[9], expected, 'first_stop_resid_s is measured against times[minSeq-1]');
+});
+
+test('§54 / lockPath: every pending birth is accounted for by exactly one exit', async () => {
+  // The counters exist because three of the four exits are silent `continue`s. A partition
+  // that does not add up is that same invisibility coming back, so it is asserted rather
+  // than assumed — the next `continue` someone adds has to be counted, or this fails.
+  const unborn = (rtTripId: string, rtStops: string[]): EngineTripUpdate => ({
+    ...tripUpdate(rtTripId, rtStops),
+    // Predictions in the future, so captureBirths does not refuse them as mid-route.
+    stops: tripUpdate(rtTripId, rtStops).stops
+      .map((s, j) => ({ ...s, epochS: 1_800_000_000 + 900 + j * 300 })),
+  });
+  const e = createDelayEngine(stubDb(LEARNED()), 'ttc');
+  await e.reloadStatic(BOARD);
+  let sawPending = 0;
+  for (let i = 0; i < 3; i++) {
+    await e.runCycle(cycle({
+      nowMs: 1_800_000_000_000 + i * 45_000,
+      activeServices: new Set(['S1']),
+      tripUpdates: [unborn('RT1', ['a', 'b', 'c', 'd', 'f']), unborn('RT2', ['a', 'b', 'c', 'x'])],
+    }));
+    const p = e.getStats().bindings.lockPath;
+    sawPending += p.pending;
+    assert.equal(
+      p.noPattern + p.patternUnresolved + p.originUnconfirmed + p.quarantined + p.reached,
+      p.pending,
+      `cycle ${i}: every pending birth took exactly one exit`,
+    );
+  }
+  assert.ok(sawPending > 0, 'and there were births to account for');
+});
