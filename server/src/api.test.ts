@@ -1008,7 +1008,30 @@ const PLAN_STOP_ROWS = [
   { agency: 'ttc', stop_id: 'B1', name: 'King St West at Spadina Ave', lat: 43.64537, lon: -79.395811, wheelchair_boarding: 1 },
   { agency: 'ttc', stop_id: 'B2', name: 'King St West at Portland St', lat: 43.644458, lon: -79.399504, wheelchair_boarding: 1 },
   { agency: 'ttc', stop_id: 'A1', name: 'Dundas West Station', lat: 43.656862, lon: -79.453415, wheelchair_boarding: 1 },
+  // TRANSFER STOPS, for the two-leg tier. Roughly 2 km from either endpoint, so the
+  // radius filter can never mistake them for a board or alight stop; X1 and X2 are ~26 m
+  // apart (a walkable transfer) and X3 is ~1.2 km from X1 (past the cap, deliberately).
+  { agency: 'ttc', stop_id: 'X1', name: 'Ossington Ave at Dundas St W', lat: 43.650, lon: -79.420, wheelchair_boarding: 1 },
+  { agency: 'ttc', stop_id: 'X2', name: 'Dundas St W at Ossington Ave', lat: 43.650, lon: -79.41968, wheelchair_boarding: 0 },
+  { agency: 'ttc', stop_id: 'X3', name: 'Nowhere Near Ossington', lat: 43.650, lon: -79.4050, wheelchair_boarding: 0 },
 ];
+
+/** The two-leg probes, tagged in SQL so they are distinguishable from the direct join. */
+const LEG1_FROM_RIDER = 'two-leg:from-rider';
+const LEG2_TO_DESTINATION = 'two-leg:to-destination';
+
+/** A MiWay-shaped first leg: rider's stop B1 out to the transfer stop X1. */
+const LEG1_ROWS = [{
+  trip_id: 'LEG-1', route_id: '501', headsign: 'North to Ossington', direction_id: 0,
+  board_stop: 'B1', board_seq: 5, board_s: 33_000,      // 09:10 local
+  alight_stop: 'X1', alight_seq: 12, alight_s: 33_600,  // 09:20 local
+}];
+/** The onward leg: transfer stop X2 to the destination stop A1. */
+const LEG2_ROWS = [{
+  trip_id: 'LEG-2', route_id: '39', headsign: 'West to Dundas West', direction_id: 1,
+  board_stop: 'X2', board_seq: 2, board_s: 34_200,      // 09:30 local
+  alight_stop: 'A1', alight_seq: 15, alight_s: 35_400,  // 09:50 local
+}];
 
 const planUrl = (o: Record<string, string | number> = {}) => {
   const p = new URLSearchParams({
@@ -1078,6 +1101,69 @@ test('/api/plan says a journey needs a transfer when NO trip links the two stop 
     const body = (await app.inject({ method: 'GET', url: planUrl() })).json() as PlanResponse;
     assert.equal(body.outcome, 'transfer');
     assert.deepEqual(body.candidates, []);
+  } finally {
+    await app.close();
+  }
+});
+
+test('/api/plan stitches TWO rides through a walkable transfer when no single ride does it', async () => {
+  // The direct join is empty and the exists-ever probe finds nothing, so tier 1 was
+  // about to answer 'transfer'. Tier 2 finds the journey the board actually contains.
+  const db = planDb([
+    { when: LEG1_FROM_RIDER, rows: LEG1_ROWS },
+    { when: LEG2_TO_DESTINATION, rows: LEG2_ROWS },
+  ]);
+  const app = await buildApi({ db, poller: fakePoller });
+  try {
+    const body = (await app.inject({ method: 'GET', url: planUrl() })).json() as PlanResponse;
+    assert.equal(body.outcome, 'twoLeg');
+    assert.deepEqual(body.candidates, [], 'the ride menu stays empty — this is not a ride');
+    assert.equal(body.itineraries.length, 1);
+
+    const it = body.itineraries[0];
+    assert.equal(it.legs[0].tripId, 'LEG-1');
+    assert.equal(it.legs[1].tripId, 'LEG-2');
+    // Each leg is a FULL candidate, with its own route identity and its own evidence —
+    // never one blended confidence for the journey.
+    assert.equal(it.legs[0].shortName, '501');
+    assert.equal(it.legs[1].shortName, '39');
+    assert.equal(it.legs[0].evidence.bucket, 'none');
+    assert.equal(it.legs[1].evidence.bucket, 'none');
+
+    // The rider's own walk is on the outer ends; the transfer walk is stated ONCE, in
+    // its own field, rather than half-implied on both legs.
+    assert.ok(it.legs[0].board.distanceM < 400, 'leg 1 boards near the rider');
+    assert.ok(it.legs[1].alight.distanceM < 50, 'leg 2 alights at the destination');
+    assert.equal(it.legs[0].alight.distanceM, 0, 'the transfer stop belongs to no query point');
+    assert.equal(it.legs[1].board.distanceM, 0);
+
+    assert.equal(it.transfer.from.stopId, 'X1');
+    assert.equal(it.transfer.to.stopId, 'X2');
+    assert.equal(it.transfer.sameStop, false);
+    assert.ok(it.transfer.distanceM > 0 && it.transfer.distanceM <= 400,
+      `transfer walk ${it.transfer.distanceM} m must be inside the cap`);
+    // 09:20 to 09:30 — stated, never folded into a total.
+    assert.equal(it.transferWaitSec, 600);
+    assert.equal(it.crossAgency, false, 'both legs are TTC in this fixture');
+  } finally {
+    await app.close();
+  }
+});
+
+test('/api/plan still REFUSES when the only connection is past the walk cap', async () => {
+  // Everything about this journey works except the geography: the second leg leaves from
+  // a stop 1.2 km from where the first one lands. That is not a transfer, it is a second
+  // journey, and the refusal the app shipped before tier 2 existed must survive intact.
+  const db = planDb([
+    { when: LEG1_FROM_RIDER, rows: LEG1_ROWS },
+    { when: LEG2_TO_DESTINATION, rows: [{ ...LEG2_ROWS[0], board_stop: 'X3' }] },
+  ]);
+  const app = await buildApi({ db, poller: fakePoller });
+  try {
+    const body = (await app.inject({ method: 'GET', url: planUrl() })).json() as PlanResponse;
+    assert.equal(body.outcome, 'transfer');
+    assert.deepEqual(body.candidates, []);
+    assert.deepEqual(body.itineraries, [], 'no half-answer, and no invented hike');
   } finally {
     await app.close();
   }

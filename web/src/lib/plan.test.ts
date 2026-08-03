@@ -7,10 +7,14 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { RideCandidateDto } from '../../../shared/types.ts';
+import type { RideCandidateDto, ItineraryDto } from '../../../shared/types.ts';
 import {
   boardingInstant, buildRidePlan, pickBestRide, allRidePlans, transitDirectionsUrl,
+  buildItineraryPlan, pickBestItinerary,
 } from './plan.ts';
+import en from '../i18n/en.ts';
+import es from '../i18n/es.ts';
+import frCA from '../i18n/frCA.ts';
 
 const T0 = Date.parse('2026-07-27T13:00:00Z'); // the reference "now" for every case
 /** average pace, as store.paceMps resolves it: 4.8 km/h -> 1.333 m/s */
@@ -224,4 +228,138 @@ test('the maps deep link carries the destination and NOTHING about the rider', (
   // The one thing that must never be in there.
   assert.ok(!url.includes('origin'), 'the rider position must not be in the URL');
   assert.ok(!url.includes('saddr'), 'the rider position must not be in the URL');
+});
+
+// ---------------- two rides and the walk between them ----------------
+
+/** An itinerary whose legs are shaped the way /api/plan shapes them: the transfer end of
+ *  each leg carries `distanceM: 0`, because a transfer stop belongs to no query point. */
+function itinerary(o: {
+  leg1Dep: number; leg1Arr: number; leg2Dep: number; leg2Arr: number;
+  transferM?: number; sameStop?: boolean; crossAgency?: boolean; boardDistanceM?: number;
+}): ItineraryDto {
+  const { transferM = 130, sameStop = false, crossAgency = true, boardDistanceM = 200 } = o;
+  const leg1 = candidate({
+    tripId: 'LEG-1', departureMs: o.leg1Dep, arrivalMs: o.leg1Arr,
+    boardDistanceM, alightDistanceM: 0,
+  });
+  const leg2 = candidate({
+    tripId: 'LEG-2', departureMs: o.leg2Dep, arrivalMs: o.leg2Arr,
+    boardDistanceM: 0, alightDistanceM: 150,
+  });
+  return {
+    legs: [leg1, leg2],
+    transfer: {
+      from: { ...leg1.alight, stopId: 'X1', distanceM: 0 },
+      to: { ...leg2.board, stopId: sameStop ? 'X1' : 'X2', distanceM: 0 },
+      distanceM: sameStop ? 0 : transferM,
+      sameStop,
+    },
+    transferWaitSec: Math.round((o.leg2Dep - o.leg1Arr) / 1000),
+    crossAgency,
+  };
+}
+
+test('a two-leg plan leaves on the FIRST leg and arrives on the SECOND', () => {
+  const it = itinerary({
+    leg1Dep: T0 + 600_000, leg1Arr: T0 + 1_200_000,   // ride 10:00 -> 10:10
+    leg2Dep: T0 + 1_800_000, leg2Arr: T0 + 2_400_000, // ride 10:20 -> 10:30
+  });
+  const p = buildItineraryPlan(it, opts);
+
+  // Leave-by belongs to the walk to the FIRST stop; the door time to the LAST walk.
+  assert.equal(p.leaveByMs, p.leg1.leaveByMs);
+  assert.equal(p.doorMs, p.leg2.doorMs);
+  assert.ok(p.doorMs > it.legs[1].arrivalMs, 'the walk from the last stop is counted');
+
+  // The transfer wait is STATED, not folded away — 10 minutes here.
+  assert.equal(p.transferWaitSec, 600);
+  assert.ok(p.transferWalkSec > 0, 'a 130 m transfer takes real time at a real pace');
+
+  // Total is travel only, measured from leaving — the same definition the ride tier uses.
+  assert.equal(p.totalSec, Math.round((p.doorMs - p.leaveByMs) / 1000));
+});
+
+test('the transfer end of each leg contributes NO walk — it is stated once, in the transfer', () => {
+  const it = itinerary({
+    leg1Dep: T0 + 600_000, leg1Arr: T0 + 1_200_000,
+    leg2Dep: T0 + 1_800_000, leg2Arr: T0 + 2_400_000,
+  });
+  const p = buildItineraryPlan(it, opts);
+  assert.equal(p.leg1.fromStop.seconds, 0, 'leg 1 does not walk the rider off at the transfer');
+  assert.equal(p.leg2.toStop.seconds, 0, 'leg 2 does not walk them on again');
+  assert.ok(p.leg1.toStop.seconds > 0 && p.leg2.fromStop.seconds > 0, 'the real walks survive');
+});
+
+test('a same-stop transfer is a wait, not a walk', () => {
+  const it = itinerary({
+    leg1Dep: T0 + 600_000, leg1Arr: T0 + 1_200_000,
+    leg2Dep: T0 + 1_500_000, leg2Arr: T0 + 2_400_000, sameStop: true,
+  });
+  const p = buildItineraryPlan(it, opts);
+  assert.equal(p.transferWalkSec, 0);
+  assert.equal(p.transferWaitSec, 300);
+});
+
+test('an itinerary whose first leg cannot be walked to in time is never chosen', () => {
+  // Departs in 60 s, and the boarding stop is a 3 km walk away.
+  const unreachable = itinerary({
+    leg1Dep: T0 + 60_000, leg1Arr: T0 + 600_000,
+    leg2Dep: T0 + 1_200_000, leg2Arr: T0 + 1_800_000, boardDistanceM: 3000,
+  });
+  assert.equal(buildItineraryPlan(unreachable, opts).reachable, false);
+  assert.equal(pickBestItinerary([unreachable], opts), null,
+    'no reachable itinerary is null, never the least-bad one');
+});
+
+test('the best itinerary is the one that gets the rider there SOONEST', () => {
+  const later = itinerary({
+    leg1Dep: T0 + 600_000, leg1Arr: T0 + 1_200_000,
+    leg2Dep: T0 + 1_800_000, leg2Arr: T0 + 3_600_000,
+  });
+  const sooner = itinerary({
+    leg1Dep: T0 + 900_000, leg1Arr: T0 + 1_500_000,
+    leg2Dep: T0 + 2_100_000, leg2Arr: T0 + 3_000_000,
+  });
+  const best = pickBestItinerary([later, sooner], opts);
+  assert.ok(best);
+  assert.equal(best.doorMs, buildItineraryPlan(sooner, opts).doorMs,
+    'the earlier ARRIVAL wins, even though it departs later');
+});
+
+test('a measured walk re-times the FIRST leg only — never a stop out in the network', () => {
+  const it = itinerary({
+    leg1Dep: T0 + 600_000, leg1Arr: T0 + 1_200_000,
+    leg2Dep: T0 + 1_800_000, leg2Arr: T0 + 2_400_000,
+  });
+  // A routed walk measured to leg 2's boarding stop id must not be applied: that stop is
+  // the transfer, and the map measured a path from under the RIDER's feet.
+  const p = buildItineraryPlan(it, {
+    ...opts,
+    boardWalk: { kind: 'routed', stopId: it.legs[1].board.stopId, distanceM: 900, seconds: 700 },
+  });
+  assert.equal(p.leg2.toStop.seconds, 0, 'leg 2 keeps its zero-length transfer end');
+});
+
+// ---------------- the copy exists in every locale ----------------
+
+test('every plan string the planner can render exists in all three locales', () => {
+  // The two-leg tier added keys, and a missing one renders as its own dotted key path in
+  // the middle of a trip plan. Structural rather than a list, so the next key added is
+  // covered without anyone remembering to add it here.
+  const dicts = { en, es, frCA } as Record<string, { plan: Record<string, unknown> }>;
+  const names = Object.keys(dicts);
+  const keysOf = (d: { plan: Record<string, unknown> }) => Object.keys(d.plan).sort();
+  const reference = keysOf(dicts.en);
+  for (const name of names.slice(1)) {
+    assert.deepEqual(keysOf(dicts[name]), reference,
+      `${name} and en disagree on which plan strings exist`);
+  }
+  // And the two-leg keys specifically are really there, in every one.
+  for (const k of ['twoLegResultLabel', 'twoLegEyebrow', 'twoLegCrossAgency',
+    'transferWalkTo', 'transferStayAt', 'transferWait', 'basisTransfer']) {
+    for (const name of names) {
+      assert.equal(typeof dicts[name].plan[k], 'string', `${name}.plan.${k} is missing`);
+    }
+  }
 });

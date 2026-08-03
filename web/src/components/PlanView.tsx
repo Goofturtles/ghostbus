@@ -4,27 +4,32 @@
 // isn't wired up in this build yet". It is wired up now, against /api/plan, and every
 // number on screen comes from the agency's published schedule.
 //
-// THE SCOPE IS DELIBERATE AND STATED. GhostBus plans ONE ride: walk to a stop, stay on
-// one vehicle, walk to where you are going. When a journey needs a transfer the planner
-// says exactly that and offers a maps app instead. It never stitches two rides together
-// and calls it a trip, because a fabricated connection is precisely the kind of
-// confident-sounding fiction this whole project exists to argue against.
+// THE SCOPE IS DELIBERATE AND STATED. GhostBus plans ONE ride where one ride does it,
+// and AT MOST TWO joined by a single short walk where one will not. It never goes to a
+// third leg, and it never offers a connection it cannot check against both published
+// schedules — a fabricated connection is precisely the kind of confident-sounding
+// fiction this whole project exists to argue against. Where even two rides cannot do it,
+// the planner says so and offers a maps app instead.
 //
-// The four outcomes are four different facts and are never collapsed into one shrug:
+// The five outcomes are five different facts and are never collapsed into one shrug:
 //   ride        · a real single-ride plan, below.
-//   transfer    · nothing in the schedule rides from one end to the other.
+//   twoLeg      · two rides and the walk between them, each leg with its own evidence.
+//   transfer    · neither one ride nor two walkable ones link the two ends.
 //   noService   · a direct ride exists, but none departs in the window searched.
 //   noStops…    · one end has no stop near it at all.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { PlanResponse } from '@shared/types';
+import type { PlanResponse, RideCandidateDto } from '@shared/types';
 import { api } from '@/lib/api';
 import { useLive, liveNow } from '@/hooks/useLive';
 import { useTick } from '@/hooks/useTick';
 import { useStore, paceMps } from '@/store';
 import { fmtClock, fmtDistance, fmtServiceDate } from '@/lib/format';
-import { pickBestRide, buildRidePlan, transitDirectionsUrl, type RidePlan } from '@/lib/plan';
+import {
+  pickBestRide, buildRidePlan, transitDirectionsUrl, pickBestItinerary,
+  type RidePlan, type ItineraryPlan,
+} from '@/lib/plan';
 import { parseHeadsign } from '@/lib/headsign';
 import { RouteBadge } from './Primitives';
 import {
@@ -108,6 +113,16 @@ export function PlanView() {
   }, [phase, pace]);
 
   /**
+   * The two-leg answer, chosen exactly as `best` is: soonest at the destination, and
+   * re-picked only when the response or the pace changes, never on the clock tick.
+   */
+  const bestItinerary = useMemo<ItineraryPlan | null>(() => {
+    if (phase.kind !== 'done' || phase.res.outcome !== 'twoLeg') return null;
+    return pickBestItinerary(phase.res.itineraries, { nowMs: now, paceMps: paceMps(pace) });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, pace]);
+
+  /**
    * THE SAME PLAN, RE-TIMED ON THE WALK THE MAP ACTUALLY DREW.
    *
    * `best` above is chosen on the straight-line estimate that every candidate shares,
@@ -139,7 +154,10 @@ export function PlanView() {
    * the selection to the boarding stop makes that path the plan's own first leg,
    * which is exactly what it is meant to depict.
    */
-  const boardStop = best?.candidate.board ?? null;
+  // A two-leg plan has a first leg to draw like any other — the walk to where the rider
+  // boards. Only the boarding stop of the FIRST ride: the transfer happens out in the
+  // network, and drawing a path to it would depict a walk the rider has not started.
+  const boardStop = best?.candidate.board ?? bestItinerary?.leg1.candidate.board ?? null;
 
   /**
    * AND THE MIRROR OF THAT: any plan that is NOT a usable ride takes the map's geometry away.
@@ -173,7 +191,9 @@ export function PlanView() {
    * rider and their own nearest stop, which is honest precisely because nothing is claiming
    * to be a plan.
    */
-  const resolved = phase.kind === 'done' && phase.res.outcome === 'ride' && best != null;
+  const resolved = phase.kind === 'done' && (
+    (phase.res.outcome === 'ride' && best != null)
+    || (phase.res.outcome === 'twoLeg' && bestItinerary != null));
   const unresolved = target != null && !resolved;
 
   /**
@@ -278,6 +298,7 @@ export function PlanView() {
           res={phase.res}
           widened={phase.widened}
           best={shown}
+          bestItinerary={bestItinerary}
           imperial={imperial}
           now={now}
           destinationName={target.name}
@@ -367,15 +388,39 @@ function PlanState({ glyph, title, body, tone = 'neutral', children }: {
   );
 }
 
-function PlanOutcomeView({ res, widened, best, imperial, now, destinationName }: {
+function PlanOutcomeView({ res, widened, best, bestItinerary, imperial, now, destinationName }: {
   res: PlanResponse;
   widened: boolean;
   best: RidePlan | null;
+  bestItinerary: ItineraryPlan | null;
   imperial: boolean;
   now: number;
   destinationName: string;
 }) {
   const { t } = useTranslation();
+
+  if (res.outcome === 'twoLeg') {
+    // Every itinerary the server offered starts with a walk the rider cannot make in
+    // time. Same fact as the single-ride tier's version of this, and the same wording:
+    // the options exist, the rider's own pace is what puts them out of reach.
+    if (!bestItinerary) {
+      return (
+        <PlanState
+          glyph={<ClockIcon width={24} height={24} />}
+          title={t('plan.unreachableTitle')}
+          body={t('plan.unreachableBody', { count: res.itineraries.length })}
+        />
+      );
+    }
+    return (
+      <ItineraryCard
+        plan={bestItinerary}
+        imperial={imperial}
+        now={now}
+        destinationName={destinationName}
+      />
+    );
+  }
 
   if (res.outcome === 'transfer') {
     return (
@@ -441,6 +486,176 @@ function PlanOutcomeView({ res, widened, best, imperial, now, destinationName }:
   return <RidePlanCard plan={best} imperial={imperial} now={now} destinationName={destinationName} widened={widened} />;
 }
 
+/**
+ * A leg's evidence line: a letter only when the sample earns one, the honest sentence
+ * when it does not, and the ghost-risk chip when the route×hour cell is genuinely elevated.
+ *
+ * ONE COMPONENT, TWO CALLERS, ON PURPOSE. A two-leg itinerary's whole point is that its
+ * legs are routinely NOT equally knowable — a live-tracked TTC bus and a schedule-only
+ * Milton coach — so each leg states its own evidence. Rendering that from a second copy
+ * of this markup is how the two would drift into disagreeing about what a grade means.
+ */
+function LegEvidence({ c }: { c: RideCandidateDto }) {
+  const { t } = useTranslation();
+  return (
+    <>
+      <p className="plan-leg-evidence">
+        {c.grade ? (
+          <>
+            <span className={`grade-chip grade-${c.grade.letter}`} role="img"
+              aria-label={t('eta.gradeAria', { grade: c.grade.letter, n: c.grade.n, spread: c.grade.spreadMin })}>
+              {c.grade.letter}
+            </span>
+            <span className="evidence-chip">{t('eta.evidence', { spread: c.grade.spreadMin, n: c.grade.n })}</span>
+          </>
+        ) : (
+          <>
+            <span className="grade-chip grade-untracked" role="img" aria-label={t('eta.untracked')}>
+              {t('eta.untrackedMark')}
+            </span>
+            <span className="evidence-chip evidence-thin">{t('eta.scheduleOnly')}</span>
+          </>
+        )}
+      </p>
+      {c.ghostRisk && (
+        <p className={`forecast-chip forecast-${c.ghostRisk.level}`}
+          aria-label={t(c.ghostRisk.level === 'high' ? 'forecast.ariaHigh' : 'forecast.ariaElevated', {
+            v: c.ghostRisk.ghosts, o: c.ghostRisk.n, days: c.ghostRisk.windowDays,
+          })}>
+          <WarningIcon width={13} height={13} aria-hidden />
+          <span>
+            {t(c.ghostRisk.level === 'high' ? 'forecast.chipHigh' : 'forecast.chipElevated', {
+              v: c.ghostRisk.ghosts, o: c.ghostRisk.n,
+            })}
+          </span>
+        </p>
+      )}
+    </>
+  );
+}
+
+/** One ride inside an itinerary: the route, when to board and leave, and its evidence. */
+function ItineraryRideLeg({ leg, boardMs }: { leg: RideCandidateDto; boardMs: number }) {
+  const { t } = useTranslation();
+  const short = leg.shortName ?? leg.routeId ?? '—';
+  const destination = parseHeadsign(leg.directionLabel).destination || leg.directionLabel;
+  const rideSec = Math.max(0, Math.round((leg.arrivalMs - leg.departureMs) / 1000));
+  return (
+    <li className="plan-leg plan-leg-ride">
+      <span className="plan-leg-glyph plan-leg-glyph-ride" aria-hidden><RouteIcon width={18} height={18} /></span>
+      <div className="plan-leg-text">
+        <p className="plan-leg-line plan-ride-id">
+          <RouteBadge color={leg.color} short={short} size="sm" />
+          <span className="plan-ride-dest">{destination}</span>
+        </p>
+        <p className="plan-leg-sub">
+          {t('plan.rideDetail', {
+            board: fmtClock(boardMs),
+            alight: fmtClock(boardMs + rideSec * 1000),
+            count: leg.stopsRidden,
+          })}
+        </p>
+        <p className="plan-leg-sub">{t('plan.alightAt', { stop: leg.alight.name ?? leg.alight.stopId })}</p>
+        <LegEvidence c={leg} />
+      </div>
+    </li>
+  );
+}
+
+/**
+ * TWO RIDES AND THE WALK BETWEEN THEM.
+ *
+ * Deliberately the same `<ol className="plan-legs">` vocabulary as the single-ride card,
+ * because it is the same kind of claim — a sequence of things the rider does — and giving
+ * a transfer its own visual language would suggest it is a different kind of answer. It
+ * is not; it is one more row between the two rides.
+ *
+ * The transfer WAIT is a row of its own rather than a number folded into the total, for
+ * the reason §53's spec gives: standing on a platform for eleven minutes is the part of a
+ * connection a rider most needs to see before agreeing to it.
+ */
+function ItineraryCard({ plan, imperial, now, destinationName }: {
+  plan: ItineraryPlan; imperial: boolean; now: number; destinationName: string;
+}) {
+  const { t } = useTranslation();
+  const min = (sec: number) => Math.max(1, Math.round(sec / 60));
+  const it = plan.itinerary;
+  const sameDay = new Date(plan.leg1.boardMs).toDateString() === new Date(now).toDateString();
+  const board1 = plan.leg1.candidate.board;
+
+  return (
+    <section className="plan-result" aria-label={t('plan.twoLegResultLabel')}>
+      <div className="plan-summary">
+        <span className="eyebrow">{t('plan.twoLegEyebrow')}</span>
+        <p className="plan-total">{t('plan.doorToDoor', { min: min(plan.totalSec) })}</p>
+        <p className="plan-arrive">
+          {t('plan.arriveAt', { time: fmtClock(plan.doorMs) })}
+          {!sameDay && <span className="plan-date"> · {fmtServiceDate(plan.leg1.boardMs)}</span>}
+        </p>
+        {/* Two agencies is a fact about the RISK a rider is taking on, not trivia: two
+            schedules, and neither operator holds the other's vehicle. */}
+        {it.crossAgency && <p className="plan-arrive plan-cross-agency">{t('plan.twoLegCrossAgency')}</p>}
+      </div>
+
+      <ol className="plan-legs">
+        <li className="plan-leg plan-leg-walk">
+          <span className="plan-leg-glyph" aria-hidden><WalkerIcon width={18} height={18} /></span>
+          <div className="plan-leg-text">
+            <p className="plan-leg-line">
+              {t(plan.leg1.toStop.kind === 'routed' ? 'plan.walkTo' : 'plan.walkToEst', {
+                dist: fmtDistance(plan.leg1.toStop.distanceM, imperial),
+                min: min(plan.leg1.toStop.seconds),
+                stop: board1.name ?? board1.stopId,
+              })}
+            </p>
+            <p className="plan-leg-sub">{t('plan.leaveBy', { time: fmtClock(plan.leaveByMs) })}</p>
+          </div>
+        </li>
+
+        <ItineraryRideLeg leg={it.legs[0]} boardMs={plan.leg1.boardMs} />
+
+        <li className="plan-leg plan-leg-walk plan-leg-transfer">
+          <span className="plan-leg-glyph" aria-hidden><WalkerIcon width={18} height={18} /></span>
+          <div className="plan-leg-text">
+            <p className="plan-leg-line">
+              {it.transfer.sameStop
+                ? t('plan.transferStayAt', { stop: it.transfer.to.name ?? it.transfer.to.stopId })
+                : t('plan.transferWalkTo', {
+                  dist: fmtDistance(it.transfer.distanceM, imperial),
+                  min: min(plan.transferWalkSec),
+                  stop: it.transfer.to.name ?? it.transfer.to.stopId,
+                })}
+            </p>
+            <p className="plan-leg-sub">{t('plan.transferWait', { min: min(plan.transferWaitSec) })}</p>
+          </div>
+        </li>
+
+        <ItineraryRideLeg leg={it.legs[1]} boardMs={plan.leg2.boardMs} />
+
+        <li className="plan-leg plan-leg-walk">
+          <span className="plan-leg-glyph" aria-hidden><FlagIcon width={18} height={18} /></span>
+          <div className="plan-leg-text">
+            <p className="plan-leg-line">
+              {t('plan.walkFromEst', {
+                dist: fmtDistance(plan.leg2.fromStop.distanceM, imperial),
+                min: min(plan.leg2.fromStop.seconds),
+                dest: destinationName,
+              })}
+            </p>
+          </div>
+        </li>
+      </ol>
+
+      <p className="plan-basis">
+        {t('plan.basisRide')}
+        {plan.leg1.boardIsPredicted ? ` ${t('plan.basisPredicted')}` : ` ${t('plan.basisScheduled')}`}
+        {' '}{t('plan.basisTransfer')}
+        {' '}{t('plan.basisSingleRide')}
+      </p>
+    </section>
+  );
+}
+
 function RidePlanCard({ plan, imperial, now, destinationName, widened }: {
   plan: RidePlan; imperial: boolean; now: number; destinationName: string; widened: boolean;
 }) {
@@ -495,39 +710,7 @@ function RidePlanCard({ plan, imperial, now, destinationName, widened }: {
             <p className="plan-leg-sub">
               {t('plan.alightAt', { stop: c.alight.name ?? c.alight.stopId })}
             </p>
-            {/* The evidence treatment the rest of the app uses: a letter only when the
-                sample earns one, and the honest sentence when it does not. */}
-            <p className="plan-leg-evidence">
-              {c.grade ? (
-                <>
-                  <span className={`grade-chip grade-${c.grade.letter}`} role="img"
-                    aria-label={t('eta.gradeAria', { grade: c.grade.letter, n: c.grade.n, spread: c.grade.spreadMin })}>
-                    {c.grade.letter}
-                  </span>
-                  <span className="evidence-chip">{t('eta.evidence', { spread: c.grade.spreadMin, n: c.grade.n })}</span>
-                </>
-              ) : (
-                <>
-                  <span className="grade-chip grade-untracked" role="img" aria-label={t('eta.untracked')}>
-                    {t('eta.untrackedMark')}
-                  </span>
-                  <span className="evidence-chip evidence-thin">{t('eta.scheduleOnly')}</span>
-                </>
-              )}
-            </p>
-            {c.ghostRisk && (
-              <p className={`forecast-chip forecast-${c.ghostRisk.level}`}
-                aria-label={t(c.ghostRisk.level === 'high' ? 'forecast.ariaHigh' : 'forecast.ariaElevated', {
-                  v: c.ghostRisk.ghosts, o: c.ghostRisk.n, days: c.ghostRisk.windowDays,
-                })}>
-                <WarningIcon width={13} height={13} aria-hidden />
-                <span>
-                  {t(c.ghostRisk.level === 'high' ? 'forecast.chipHigh' : 'forecast.chipElevated', {
-                    v: c.ghostRisk.ghosts, o: c.ghostRisk.n,
-                  })}
-                </span>
-              </p>
-            )}
+            <LegEvidence c={c} />
           </div>
         </li>
 

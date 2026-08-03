@@ -20,7 +20,7 @@
 //      none can be reached, the caller gets null and says so, rather than printing a
 //      departure nobody can catch.
 
-import type { RideCandidateDto } from '@shared/types';
+import type { RideCandidateDto, ItineraryDto } from '@shared/types';
 import { walkLegSeconds, type MeasuredWalk, type WalkKind } from './walk';
 
 export interface WalkLeg {
@@ -182,6 +182,82 @@ export function allRidePlans(
   return candidates
     .map((c) => buildRidePlan(c, opts))
     .sort((a, b) => a.doorMs - b.doorMs || a.leaveByMs - b.leaveByMs);
+}
+
+/**
+ * TWO RIDES AND THE WALK BETWEEN THEM, timed at this rider's pace.
+ *
+ * Each leg is built by `buildRidePlan` unchanged — which works out exactly right because
+ * of how the server shapes them: a leg's transfer end carries `distanceM: 0`, so leg 1's
+ * walk-from and leg 2's walk-to are zero-length by construction and the only walks with
+ * time in them are the two real ones, plus the transfer stated separately below.
+ */
+export interface ItineraryPlan {
+  itinerary: ItineraryDto;
+  /** rider -> first stop -> ride. Its `fromStop` is the zero-length transfer end. */
+  leg1: RidePlan;
+  /** second ride -> destination. Its `toStop` is the zero-length transfer end. */
+  leg2: RidePlan;
+  /** the transfer walk, re-timed at THIS rider's pace. */
+  transferWalkSec: number;
+  /** the agency-scheduled gap between the two legs. Stated, never folded into a total. */
+  transferWaitSec: number;
+  leaveByMs: number;
+  doorMs: number;
+  /** walk + ride + transfer walk + wait + ride + walk. */
+  totalSec: number;
+  reachable: boolean;
+}
+
+/**
+ * Build one itinerary at this rider's pace.
+ *
+ * WHOSE PACE DECIDED THIS CONNECTION EXISTS: the server's, and deliberately the SLOW
+ * one — see TRANSFER_PACE_MPS in api.ts. So a connection on the menu is one a slow walker
+ * could also make, and re-timing it here at a faster pace can only ever add slack. The
+ * pace on this device changes what the rider is TOLD the walk takes; it never quietly
+ * promotes an unmakeable connection into a makeable one.
+ */
+export function buildItineraryPlan(it: ItineraryDto, opts: PlanOptions): ItineraryPlan {
+  const leg1 = buildRidePlan(it.legs[0], opts);
+  // The second leg is never re-timed on a MEASURED walk: `boardWalk` belongs to the
+  // rider's own first leg, and letting it match here would apply a path measured under
+  // the rider's feet to a stop somewhere out in the network.
+  const leg2 = buildRidePlan(it.legs[1], { ...opts, boardWalk: null });
+  return {
+    itinerary: it,
+    leg1,
+    leg2,
+    transferWalkSec: walkLegSeconds('direct', it.transfer.distanceM, opts.paceMps),
+    transferWaitSec: it.transferWaitSec,
+    leaveByMs: leg1.leaveByMs,
+    doorMs: leg2.doorMs,
+    // Travel only, on the same definition `RidePlan.totalSec` uses and for the same
+    // reason: measured from `leaveByMs`, so an itinerary whose first leg is tomorrow
+    // morning does not report as a sixteen-hour journey.
+    totalSec: Math.max(0, Math.round((leg2.doorMs - leg1.leaveByMs) / 1000)),
+    // Only the FIRST leg can be missed by walking too slowly — the connection itself was
+    // already judged makeable by the server, at a pace no rider setting is slower than.
+    reachable: leg1.reachable,
+  };
+}
+
+/** The best itinerary: soonest at the destination, ties to the later departure. */
+export function pickBestItinerary(
+  itineraries: readonly ItineraryDto[],
+  opts: PlanOptions,
+): ItineraryPlan | null {
+  let best: ItineraryPlan | null = null;
+  for (const it of itineraries) {
+    const plan = buildItineraryPlan(it, opts);
+    if (!plan.reachable) continue;
+    if (
+      best == null
+      || plan.doorMs < best.doorMs
+      || (plan.doorMs === best.doorMs && plan.leaveByMs > best.leaveByMs)
+    ) best = plan;
+  }
+  return best;
 }
 
 /**

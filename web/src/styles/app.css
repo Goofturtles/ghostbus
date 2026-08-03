@@ -1464,6 +1464,15 @@
   display: flex; align-items: center; flex-wrap: wrap; gap: 6px var(--s2);
   min-width: 0;
 }
+/* THE TRANSFER, marked as the seam it is. A dashed left edge rather than a different
+   tile: the transfer is still one of the things the rider does, in the same list, and
+   giving it its own colour would read as a warning about a connection the planner has
+   already checked. `border-left` only — no padding change — so the text keeps the exact
+   left edge of every other leg and nothing shifts or clips. */
+.plan-leg-transfer { border-left: 2px dashed var(--border); }
+/* Two agencies is a fact about the risk, so it reads as one line of plain text rather
+   than a badge. `line-height: 1.5` (not 1) because it is real prose with descenders. */
+.plan-cross-agency { margin-top: 2px; font-size: 12.5px; line-height: 1.5; color: var(--text-3); }
 .plan-basis { margin: 0; font-size: 12px; line-height: 1.6; color: var(--text-3); }
 .plan-fineprint { margin: var(--s2) 0 0; font-size: 12px; line-height: 1.55; color: var(--text-3); }
 

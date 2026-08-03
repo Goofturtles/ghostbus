@@ -22,6 +22,7 @@ import { selectEvidence, type Agg } from './eta.ts';
 import { WINDOW_DAYS } from './aggregate.ts';
 import { activeServiceIds, type CalendarRow, type CalendarDateRow } from './gtfs.ts';
 import { torontoDay, torontoMidnightEpoch, hourOfWeek, torontoParts } from './tz.ts';
+import { stitchItineraries, type StitchStop } from './itinerary.ts';
 import type {
   HealthResponse, VehiclesResponse, VehicleDto, StopsResponse, StopDto,
   ArrivalsResponse, DepartureDto, StatsResponse, FeedId,
@@ -72,6 +73,33 @@ const PLAN_DEFAULT_WINDOW_MIN = 90;
 const PLAN_MAX_WINDOW_MIN = 4320;
 /** Raw (board, alight) pairs the SQL may return before ranking trims them. */
 const PLAN_SQL_ROW_LIMIT = 400;
+/**
+ * TWO-LEG TIER. These probes run ONLY where the direct search already found nothing, so
+ * they are never on the hot path — but they are unconstrained at one end by construction
+ * (every stop a leg-1 trip reaches is a transfer candidate), so each needs its own cap.
+ * Ordered by departure time, so a cap that bites can only drop the LATEST options.
+ */
+const TWO_LEG_SQL_ROW_LIMIT = 3000;
+/**
+ * How far past the requested window leg 2 is allowed to depart. Leg 2 leaves after leg 1
+ * ARRIVES, so searching only the rider's window would find first legs with nothing to
+ * connect to. Sized as a long ride plus the transfer wait cap in itinerary.ts.
+ */
+const TWO_LEG_HORIZON_MS = 120 * 60_000;
+/** Itineraries returned. A menu, like the ride tier's — not a verdict. */
+const PLAN_MAX_ITINERARIES = 5;
+/**
+ * The pace the SERVER times a transfer walk at, to decide whether a connection can be
+ * made at all — the SLOW end of the client's three settings (3.6 km/h), not the average.
+ *
+ * The rider's real pace is a preference that never leaves their device, which is the
+ * whole reason /api/plan returns a menu instead of a verdict. So the one walk the server
+ * cannot avoid judging is judged conservatively: timing the transfer at the slowest pace
+ * offers only connections a slow walker could also make, and never dangles one that
+ * needs the rider to hurry. The client re-times everything it draws at the rider's own
+ * pace; this constant only decides what is on the menu.
+ */
+const TRANSFER_PACE_MPS = 3.6 / 3.6;
 const ALERTS_DEFAULT_LIMIT = 50;
 const ALERTS_MAX_LIMIT = 100;
 const GHOSTS_DEFAULT_HOURS = 24;
@@ -1287,16 +1315,52 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
            LIMIT 1`, [planAgency, idsFor(boardStops, planAgency), idsFor(alightStops, planAgency)])).rows.length > 0;
         if (hit) { anyDirect = true; break; }
       }
+      // TIER 2. No single vehicle does it — but two joined by a walk often do, and this
+      // is the only place that question gets asked. Strictly additive: it runs only on a
+      // journey the planner was already about to refuse, so the ride tier above cannot
+      // be affected by anything below. An empty result falls through to the refusal that
+      // shipped before this tier existed, word for word.
+      const itineraries = await findTwoLeg();
+      if (itineraries.length > 0) return answer('twoLeg', [], itineraries);
       return answer(anyDirect ? 'noService' : 'transfer');
     }
 
     const ranked = rankRideCandidates(raw);
+    return answer('ride', await buildCandidates(ranked, staticAgency,
+      (r) => boardById.get(metaKey(r.agency, r.boardStopId)),
+      (r) => alightById.get(metaKey(r.agency, r.alightStopId))));
 
+    /**
+     * Turn ranked rides into full candidates — evidence, grade, ghost risk and all.
+     *
+     * EXTRACTED SO BOTH TIERS SHARE ONE PIPELINE. A two-leg itinerary's legs are
+     * `RideCandidateDto`s like any other, and building them anywhere else would mean a
+     * second implementation of the honest-ETA precedence that could drift from this one
+     * — the exact failure `boardingInstant` exists to prevent one layer up.
+     *
+     * The two callers differ only in where a ride's endpoints are LOOKED UP: the direct
+     * tier resolves both against the rider's and destination's own stop sets, while a
+     * two-leg leg has one endpoint at a transfer stop that is in neither.
+     *
+     * `metaAgency` is passed rather than read off the ride ON PURPOSE. The direct tier
+     * has always resolved route metadata against `staticAgency` — this poller's own
+     * board — and changing that would alter what the single-ride path returns for a
+     * non-TTC agency, which is not this change's business to do quietly. (It does look
+     * wrong: a MiWay ride asked for TTC's route table gets no name and a default colour.
+     * Left exactly as found, and reported rather than fixed in passing.) The two-leg
+     * tier, which has no such history, passes each leg's OWN agency.
+     */
+    async function buildCandidates(
+      rides: readonly RawRide[],
+      metaAgency: string | ((r: RawRide) => string),
+      boardFor: (r: RawRide) => PlanStopDto | undefined,
+      alightFor: (r: RawRide) => PlanStopDto | undefined,
+    ): Promise<RideCandidateDto[]> {
     // Evidence for the BOARDING departure, on exactly the terms a departure board uses:
     // this stop's own history where there is enough of it, the route-hour rollup where
     // there is not, and no estimate at all where there is neither.
-    const stopsInvolved = [...new Set(ranked.map((r) => r.boardStopId))];
-    const routesInvolved = [...new Set(ranked.map((r) => r.routeId).filter((x): x is string => !!x))];
+    const stopsInvolved = [...new Set(rides.map((r) => r.boardStopId))];
+    const routesInvolved = [...new Set(rides.map((r) => r.routeId).filter((x): x is string => !!x))];
     const stopAgg = new Map<string, Agg>(); // `${stop}|${route}|${how}`
     const routeAgg = new Map<string, Agg>(); // `${route}|${how}`
     if (routesInvolved.length > 0) {
@@ -1317,8 +1381,16 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       }
     }
 
-    const candidates: RideCandidateDto[] = ranked.map((r) => {
-      const meta = routeMetaFor(staticAgency, r.routeId);
+    const candidates: RideCandidateDto[] = [];
+    for (const r of rides) {
+      // A ride whose endpoints cannot both be resolved is dropped rather than shipped
+      // with a hole. The direct tier could assert here — its rides came FROM these maps —
+      // but the two-leg tier resolves one end against transfer stops, and a missing one
+      // there must not become an `undefined` board on the wire.
+      const board = boardFor(r);
+      const alight = alightFor(r);
+      if (!board || !alight) continue;
+      const meta = routeMetaFor(typeof metaAgency === 'string' ? metaAgency : metaAgency(r), r.routeId);
       const how = hourOfWeek(r.departureMs);
       const sAgg = r.routeId ? stopAgg.get(`${r.boardStopId}|${r.routeId}|${how}`) ?? null : null;
       const rAgg = r.routeId ? routeAgg.get(`${r.routeId}|${how}`) ?? null : null;
@@ -1337,8 +1409,8 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
         routeType: meta?.routeType ?? null, color: colorFor(meta),
         headsign: r.headsign, directionId: r.directionId,
         directionLabel: r.headsign ?? (r.directionId == null ? 'Unknown' : `Direction ${r.directionId}`),
-        board: boardById.get(metaKey(r.agency, r.boardStopId)) as PlanStopDto,
-        alight: alightById.get(metaKey(r.agency, r.alightStopId)) as PlanStopDto,
+        board,
+        alight,
         boardStopSequence: r.boardStopSequence, alightStopSequence: r.alightStopSequence,
         stopsRidden: r.alightStopSequence - r.boardStopSequence,
         departureMs: r.departureMs, arrivalMs: r.arrivalMs, liveEtaMs,
@@ -1352,10 +1424,178 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       };
       if (grade) c.grade = grade;
       if (ghostRisk) c.ghostRisk = ghostRisk;
-      return c;
-    });
+      candidates.push(c);
+    }
+    return candidates;
+    }
 
-    return answer('ride', candidates);
+    /**
+     * One half of the two-leg search: every ride from a fixed set of stops to ANYWHERE
+     * downstream (`end: 'board'`), or from ANYWHERE upstream to a fixed set of stops
+     * (`end: 'alight'`).
+     *
+     * This is the direct tier's own self-join with ONE end unconstrained, which is what
+     * makes it a transfer search: the unconstrained end enumerates transfer candidates.
+     * Both directions stay well-indexed — `idx_stop_times_stop_dep` serves the fixed end
+     * and the `(agency, trip_id, …)` primary key serves the join to the other.
+     */
+    async function legRides(
+      agencyId: string, fixedStopIds: string[], end: 'board' | 'alight', horizonMs: number,
+    ): Promise<RawRide[]> {
+      if (fixedStopIds.length === 0) return [];
+      const out: RawRide[] = [];
+      const fixedSide = end === 'board' ? 'b' : 'a';
+      // A marker, not decoration: this statement is the direct join with one end
+      // unconstrained, so without it the two are indistinguishable in a query log — and
+      // in the tests, which match statements by substring. `end` is a literal union, so
+      // there is nothing interpolable here from a request.
+      const tag = end === 'board' ? 'two-leg:from-rider' : 'two-leg:to-destination';
+      for (const day of dayList) {
+        const svc = activeServicesFor(agencyId, day.ymd, day.dow);
+        if (svc.length === 0) continue;
+        const midnight = midnightFor(day.ymd);
+        const loSec = Math.floor((atMs - midnight) / 1000);
+        const hiSec = Math.ceil((atMs + horizonMs - midnight) / 1000);
+        if (hiSec < 0) continue;
+        const rows = (await db.query<{
+          trip_id: string; route_id: string | null; headsign: string | null; direction_id: number | null;
+          board_stop: string; board_seq: number; board_s: number | null;
+          alight_stop: string; alight_seq: number; alight_s: number | null;
+        }>(
+          `SELECT /* ${tag} */ b.trip_id, t.route_id, t.headsign, t.direction_id,
+                  b.stop_id AS board_stop, b.stop_sequence AS board_seq,
+                  COALESCE(b.departure_s, b.arrival_s) AS board_s,
+                  a.stop_id AS alight_stop, a.stop_sequence AS alight_seq,
+                  COALESCE(a.arrival_s, a.departure_s) AS alight_s
+           FROM stop_times b
+           JOIN stop_times a ON a.agency = b.agency AND a.trip_id = b.trip_id
+                            AND a.stop_sequence > b.stop_sequence
+           JOIN trips t ON t.agency = b.agency AND t.trip_id = b.trip_id
+           WHERE b.agency = $1
+             AND ${fixedSide}.stop_id = ANY($2::text[])
+             AND t.service_id = ANY($3::text[])
+             AND COALESCE(b.departure_s, b.arrival_s) BETWEEN $4 AND $5
+           ORDER BY COALESCE(b.departure_s, b.arrival_s), b.trip_id, a.stop_sequence
+           LIMIT $6`,
+          [agencyId, fixedStopIds, svc, Math.max(0, loSec), hiSec, TWO_LEG_SQL_ROW_LIMIT])).rows;
+        for (const r of rows) {
+          if (r.board_s == null || r.alight_s == null) continue;
+          const departureMs = midnight + Number(r.board_s) * 1000;
+          const arrivalMs = midnight + Number(r.alight_s) * 1000;
+          if (departureMs < atMs || departureMs > atMs + horizonMs) continue;
+          if (arrivalMs <= departureMs) continue;
+          out.push({
+            agency: agencyId,
+            tripId: r.trip_id, routeId: r.route_id, headsign: r.headsign,
+            directionId: r.direction_id == null ? null : Number(r.direction_id),
+            boardStopId: r.board_stop, boardStopSequence: Number(r.board_seq), departureMs,
+            alightStopId: r.alight_stop, alightStopSequence: Number(r.alight_seq), arrivalMs,
+            // The FIXED end carries its real walk to the rider or the destination; the
+            // free end is a transfer stop, whose walk is not this leg's to state — it is
+            // the itinerary's, and it travels in `transfer.distanceM`.
+            boardDistanceM: end === 'board' ? (boardById.get(metaKey(agencyId, r.board_stop))?.distanceM ?? 0) : 0,
+            alightDistanceM: end === 'alight' ? (alightById.get(metaKey(agencyId, r.alight_stop))?.distanceM ?? 0) : 0,
+            departureS: Math.round(departureMs / 1000),
+          });
+        }
+      }
+      return out;
+    }
+
+    /**
+     * Two rides joined by a walkable transfer, or nothing.
+     *
+     * The stitching rules — the slack floor, the walk cap, the wait ceiling, ranking by
+     * arrival — all live in `itinerary.ts`, pure and tested. This function's whole job is
+     * to feed it real board rows and turn what comes back into wire DTOs.
+     */
+    async function findTwoLeg(): Promise<ItineraryDto[]> {
+      // Deliberately NOT `planAgencies`: that set is agencies with stops at BOTH ends,
+      // which is exactly the wrong filter here. The journey this tier exists for is
+      // MiWay to the edge of Toronto and TTC onwards, and neither agency has stops at
+      // both ends of it.
+      const fromAgencies = seeded.filter((a) => idsFor(boardStops, a).length > 0);
+      const toAgencies = seeded.filter((a) => idsFor(alightStops, a).length > 0);
+      const leg1: RawRide[] = [];
+      for (const a of fromAgencies) leg1.push(...await legRides(a, idsFor(boardStops, a), 'board', windowMs));
+      if (leg1.length === 0) return [];
+      const leg2: RawRide[] = [];
+      for (const a of toAgencies) {
+        leg2.push(...await legRides(a, idsFor(alightStops, a), 'alight', windowMs + TWO_LEG_HORIZON_MS));
+      }
+      if (leg2.length === 0) return [];
+
+      // Coordinates for every stop a transfer could happen at — the free end of each
+      // leg. One query, both agencies' worth, keyed by (agency, stop) because two
+      // agencies routinely number different stops the same.
+      const wanted = new Map<string, { agency: string; stopId: string }>();
+      for (const r of leg1) wanted.set(metaKey(r.agency, r.alightStopId), { agency: r.agency, stopId: r.alightStopId });
+      for (const r of leg2) wanted.set(metaKey(r.agency, r.boardStopId), { agency: r.agency, stopId: r.boardStopId });
+      const byAgency = new Map<string, string[]>();
+      for (const w of wanted.values()) {
+        const list = byAgency.get(w.agency);
+        if (list) list.push(w.stopId); else byAgency.set(w.agency, [w.stopId]);
+      }
+      const transferById = new Map<string, PlanStopDto>();
+      const stitchStops: StitchStop[] = [];
+      for (const [agencyId, ids] of byAgency) {
+        for (const r of (await db.query<{ stop_id: string; name: string | null; lat: number | null; lon: number | null; wheelchair_boarding: number | null }>(
+          `SELECT stop_id, name, lat, lon, wheelchair_boarding FROM stops
+           WHERE agency = $1 AND stop_id = ANY($2::text[])`, [agencyId, ids])).rows) {
+          if (r.lat == null || r.lon == null) continue;
+          transferById.set(metaKey(agencyId, r.stop_id), {
+            agency: agencyId, stopId: r.stop_id, name: r.name,
+            lat: Number(r.lat), lon: Number(r.lon),
+            wheelchairBoarding: r.wheelchair_boarding == null ? null : Number(r.wheelchair_boarding),
+            // ZERO ON PURPOSE: `distanceM` means "from the query point this stop belongs
+            // to", and a transfer stop belongs to no query point. The walk that matters
+            // here is between the two transfer stops, and it is stated once, in
+            // `transfer.distanceM`, rather than half-implied twice.
+            distanceM: 0,
+          });
+          stitchStops.push({ agency: agencyId, stopId: r.stop_id, lat: Number(r.lat), lon: Number(r.lon) });
+        }
+      }
+
+      const stitched = stitchItineraries(leg1, leg2, stitchStops, {
+        paceMps: TRANSFER_PACE_MPS, limit: PLAN_MAX_ITINERARIES,
+      });
+      if (stitched.length === 0) return [];
+
+      // Both legs through the SAME enrichment the ride tier uses, so a leg's evidence
+      // line means exactly what it means on a departure board.
+      const leg1Cands = await buildCandidates(stitched.map((s) => s.leg1), (r) => r.agency,
+        (r) => boardById.get(metaKey(r.agency, r.boardStopId)),
+        (r) => transferById.get(metaKey(r.agency, r.alightStopId)));
+      const leg2Cands = await buildCandidates(stitched.map((s) => s.leg2), (r) => r.agency,
+        (r) => transferById.get(metaKey(r.agency, r.boardStopId)),
+        (r) => alightById.get(metaKey(r.agency, r.alightStopId)));
+      const cand = (list: RideCandidateDto[], r: RawRide) =>
+        list.find((c) => c.tripId === r.tripId && c.boardStopSequence === r.boardStopSequence);
+
+      const out: ItineraryDto[] = [];
+      for (const s of stitched) {
+        const a = cand(leg1Cands, s.leg1);
+        const b = cand(leg2Cands, s.leg2);
+        const from = transferById.get(metaKey(s.transferFrom.agency, s.transferFrom.stopId));
+        const to = transferById.get(metaKey(s.transferTo.agency, s.transferTo.stopId));
+        // Any leg that could not be enriched is dropped whole. Half an itinerary is not
+        // a lesser answer, it is a wrong one.
+        if (!a || !b || !from || !to) continue;
+        out.push({
+          legs: [a, b],
+          transfer: {
+            from, to,
+            distanceM: s.transferWalkM,
+            sameStop: s.transferFrom.agency === s.transferTo.agency
+              && s.transferFrom.stopId === s.transferTo.stopId,
+          },
+          transferWaitSec: s.transferWaitSec,
+          crossAgency: s.crossAgency,
+        });
+      }
+      return out;
+    }
   });
 
   // ---------- /api/routes/:routeId/shape?dir= ----------

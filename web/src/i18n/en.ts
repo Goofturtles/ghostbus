@@ -485,7 +485,7 @@ const en = {
     errorBody: 'The trip planner is unreachable right now. Nothing here is cached, because a replayed plan looks exactly like a live one.',
     // The single-ride scope, said plainly. This is a limit, not a failure.
     transferTitle: 'This trip needs a transfer',
-    transferBody: 'No single vehicle runs from a stop near you to a stop near your destination. Full trip planning is coming — GhostBus will not invent a connection it cannot see.',
+    transferBody: 'No single vehicle runs from a stop near you to a stop near your destination, and no two-ride connection with a short enough walk between them was found either. GhostBus will not invent a connection it cannot see.',
     transferFine: 'The link below opens your maps app with the destination only. Your own position never leaves this device.',
     openInMaps: 'Open in a maps app',
     noServiceTitle: 'Nothing direct is running',
@@ -511,8 +511,16 @@ const en = {
     basisRide: 'Walking times marked ≈ are straight lines at your pace, padded by a 1.25 route factor for the detours a straight line ignores. The rest are measured along a real walking route.',
     basisScheduled: 'The boarding time and the running time are both the agency’s published schedule.',
     basisPredicted: 'The boarding time is GhostBus’s live estimate; the running time after it is the agency’s published schedule, which assumes the trip keeps to it.',
-    basisSingleRide: 'GhostBus plans one ride only — it never joins two together.',
+    basisSingleRide: 'GhostBus joins at most two rides with one short walk — never more.',
     defaultLocationNote: 'Planned from a default location until you share yours.',
+    // ---- two-leg tier ----
+    twoLegResultLabel: 'Your two-ride plan',
+    twoLegEyebrow: 'Best trip · one transfer',
+    twoLegCrossAgency: 'Two agencies, two separate schedules',
+    transferWalkTo: 'Walk ≈{{dist}} · {{min}} min to {{stop}}',
+    transferStayAt: 'Stay at {{stop}}',
+    transferWait: 'Then wait {{min}} min',
+    basisTransfer: 'The connection is checked against both published schedules at a slow walking pace, with 90 seconds to spare — so it holds even if you are not hurrying.',
   },
   alerts: {
     title: 'Alerts',
