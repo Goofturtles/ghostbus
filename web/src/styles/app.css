@@ -1469,7 +1469,11 @@
    giving it its own colour would read as a warning about a connection the planner has
    already checked. `border-left` only — no padding change — so the text keeps the exact
    left edge of every other leg and nothing shifts or clips. */
-.plan-leg-transfer { border-left: 2px dashed var(--border); }
+/* `--hairline-2`, not `--border` — there is no `--border` token, and a `var()` that
+   resolves to nothing makes the whole shorthand invalid at computed-value time, so the
+   border silently computed to `0px none`. Caught by probing the DEPLOYED page rather
+   than by reading the rule back, which is the only way this class of typo shows up. */
+.plan-leg-transfer { border-left: 2px dashed var(--hairline-2); }
 /* Two agencies is a fact about the risk, so it reads as one line of plain text rather
    than a badge. `line-height: 1.5` (not 1) because it is real prose with descenders. */
 .plan-cross-agency { margin-top: 2px; font-size: 12.5px; line-height: 1.5; color: var(--text-3); }
