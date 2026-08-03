@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { originLock, preferBinding, type LockInput, type LockSlot } from './bind.ts';
+import { originLock, directLock, preferBinding, type LockInput, type LockSlot } from './bind.ts';
 import { serviceEpochSeconds } from './tz.ts';
 
 const DATE = 20260803; // a Monday inside the loaded board, no DST anywhere near it
@@ -191,4 +191,68 @@ test('binding math is anchored on the service day, not on local midnight', () =>
   });
   assert.equal(r.method, 'origin_lock');
   assert.equal(r.residS, 0);
+});
+
+// ---------- directLock: the identification the agency already made (DECISIONS §54) ----------
+
+const directSlot = { tripId: 'T1', serviceId: 'S1', firstDepS: 9 * 3600, times: (() => {
+  const t = new Int32Array(20);
+  for (let i = 0; i < 20; i++) t[i] = 9 * 3600 + i * 120;
+  return t;
+})() };
+
+test('directLock returns the trip the feed named, with its measured lateness', () => {
+  const r = directLock({
+    serviceDate: DATE, slot: directSlot, predFirstEpochS: DAY0 + 9 * 3600 + 240,
+    minSeq: 1, activeServices: new Set(['S1']), medianHeadwayS: 1800,
+  });
+  assert.equal(r.method, 'direct_trip_id');
+  assert.equal(r.tripId, 'T1');
+  assert.equal(r.residS, 240, 'four minutes late at its origin');
+  assert.equal(r.confidence, 'high');
+  assert.equal(r.candidates, 1);
+});
+
+test('directLock claims NO margin and NO anchor agreement, because it measured neither', () => {
+  // A fabricated separation would make a direct binding read as a well-separated origin
+  // lock in the same columns. There was no runner-up to be separated from.
+  const r = directLock({
+    serviceDate: DATE, slot: directSlot, predFirstEpochS: DAY0 + 9 * 3600,
+    minSeq: 1, activeServices: new Set(['S1']), medianHeadwayS: 1800,
+  });
+  assert.equal(r.marginS, null);
+  assert.equal(r.agree, 0);
+});
+
+test('directLock measures a mid-route birth against ITS OWN stop, not the origin', () => {
+  // minSeq 3 -> times[2] = 9h + 240 s. A prediction 60 s past that is 60 s late.
+  const r = directLock({
+    serviceDate: DATE, slot: directSlot, predFirstEpochS: DAY0 + 9 * 3600 + 240 + 60,
+    minSeq: 3, activeServices: new Set(['S1']), medianHeadwayS: 1800,
+  });
+  assert.equal(r.residS, 60);
+});
+
+test('directLock refuses a trip whose service is not running today', () => {
+  // The id exists on the board, but on another service day — and its times are anchored to
+  // a different midnight, so binding it would misdate every observation on the trip.
+  const r = directLock({
+    serviceDate: DATE, slot: directSlot, predFirstEpochS: DAY0 + 9 * 3600,
+    minSeq: 1, activeServices: new Set(['S_OTHER']), medianHeadwayS: 1800,
+  });
+  assert.equal(r.method, 'refused_board_inactive');
+  assert.equal(r.tripId, null);
+  assert.equal(r.residS, null);
+});
+
+test('directLock is not gated by headway: naming a trip is not guessing between clones', () => {
+  // originLock refuses the whole sub-300 s band because identification is hopeless there.
+  // Nothing is being identified here, so the band does not apply — and pretending it did
+  // would throw away the one feed that answered the question for us.
+  const r = directLock({
+    serviceDate: DATE, slot: directSlot, predFirstEpochS: DAY0 + 9 * 3600,
+    minSeq: 1, activeServices: new Set(['S1']), medianHeadwayS: 120,
+  });
+  assert.equal(r.method, 'direct_trip_id');
+  assert.equal(r.headwayS, 120, 'reported, but not acted on');
 });

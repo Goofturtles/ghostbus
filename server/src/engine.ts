@@ -26,7 +26,7 @@ import {
   type RtPattern, type StaticPatternLite, type XwalkEntry, type PatternState,
   type PatternValidation, type XwalkState,
 } from './xwalk.ts';
-import { originLock, preferBinding, type LockAnchor, type LockSlot, type LockResult } from './bind.ts';
+import { originLock, directLock, preferBinding, type LockAnchor, type LockSlot, type LockResult } from './bind.ts';
 import {
   settleTrip, addCounters, emptyCounters, type TrackedStop, type DelayRow, type SettleCounters,
 } from './delay.ts';
@@ -99,7 +99,7 @@ export interface EngineCycleInput {
   nowMs: number;
   serviceDate: number;
   vehicles: EngineVehicle[];
-  tripUpdates: EngineTripUpdate[];
+  tripUpdates: readonly EngineTripUpdate[];
   /**
    * Calendar-active static service_ids for THIS service date, and no other. Readonly
    * because the poller hands over a cached set; see servicesForYmd there.
@@ -152,6 +152,11 @@ export interface DelayEngineStats {
    * `geoAgree`/`geoTotal` is the cumulative geometric audit (see mintIdentityCrosswalk).
    */
   identity: { membershipRate: number | null; geoAgree: number; geoTotal: number } | null;
+  /**
+   * THIS CYCLE. `needed` is TripUpdates that published no stop_sequence at all;
+   * `recovered` is how many the board could number uniquely. See repairStopSequences.
+   */
+  seqRecovery: { needed: number; recovered: number };
   suppressionReason: string | null;
   suppressionGate: string | null;
 }
@@ -169,6 +174,8 @@ interface Birth {
   anchors: Array<{ stopSequence: number; predEpochS: number }>;
   rtStops: Map<number, string>;
   bornAtS: number;
+  /** its stop_sequences came off the board, so the board already named its static trip. */
+  seqFromBoard: boolean;
 }
 
 interface Binding {
@@ -285,6 +292,8 @@ export function createDelayEngine(
   let resolvedIter = new Map<string, number>();
 
   // Binding state.
+  /** rt trip ids whose stop_sequences THIS cycle came off the board — see repairStopSequences. */
+  const seqRepaired = new Set<string>();
   const births = new Map<string, Birth>();
   const bindings = new Map<string, Binding>();
   const refusedTrips = new Map<string, string>();
@@ -321,6 +330,7 @@ export function createDelayEngine(
       },
       obs: { ...emptyCounters(), droppedNoBinding: 0, suppressedByGate: 0 },
       identity: null,
+      seqRecovery: { needed: 0, recovered: 0 },
       suppressionReason: null, suppressionGate: null,
     };
   }
@@ -618,6 +628,65 @@ export function createDelayEngine(
     }
   }
 
+  // ---------- (a2) stop_sequence recovery ----------
+
+  /**
+   * GTFS-realtime makes `stop_sequence` OPTIONAL: a StopTimeUpdate may identify its stop
+   * by `stop_id` alone. Brampton and Burlington do exactly that — measured 2026-08-03,
+   * 0 of 131 and 0 of 119 TripUpdates carried a single stop_sequence, while 131/131 and
+   * 119/119 carried both trip_id and route_id. This engine is built on sequences from end
+   * to end: `clusterPatterns` skips a stop without one (so their RT patterns read 0/0),
+   * `captureBirths` skips it too (so births read 0), and with no births there is no
+   * binding, no settle and no observation. Two agencies published all day into nothing.
+   *
+   * The sequence is recoverable, but only from the board and only for a trip the board
+   * itself names. We align the feed's stop-id list against the static trip's stop list as
+   * a CONTIGUOUS window and require that window to be UNIQUE. Uniqueness is the whole
+   * safety argument: a loop route visits one stop id twice, so a stop_id -> sequence map
+   * would silently pick the wrong visit and every delay on that trip would be measured
+   * against the wrong scheduled time. Where the alignment is not unique — or the feed
+   * publishes a set of stops that is not a window of the trip at all — we recover nothing
+   * and the trip stays exactly as unusable as it was. That is a refusal, not a guess.
+   *
+   * Trips already carrying sequences are returned untouched, so no existing feed's
+   * behaviour changes by a single field.
+   */
+  function repairStopSequences(tripUpdates: readonly EngineTripUpdate[]): readonly EngineTripUpdate[] {
+    seqRepaired.clear();
+    let needed = 0;
+    let out: EngineTripUpdate[] | null = null;
+    for (let t = 0; t < tripUpdates.length; t++) {
+      const tu = tripUpdates[t];
+      if (tu.stops.length === 0) continue;
+      let hasSeq = false;
+      for (const s of tu.stops) if (s.stopSequence != null) { hasSeq = true; break; }
+      if (hasSeq) continue;
+      needed++;
+
+      const slot = index.slotsByTrip.get(tu.rtTripId);
+      const staticStops = slot ? index.patterns.get(slot.patternId)?.stops : undefined;
+      if (!staticStops) continue;
+      const ids: string[] = [];
+      for (const s of tu.stops) { if (!s.rtStopId) break; ids.push(s.rtStopId); }
+      if (ids.length !== tu.stops.length || ids.length > staticStops.length) continue;
+
+      let at = -1;
+      let hits = 0;
+      for (let i = 0; i + ids.length <= staticStops.length; i++) {
+        let ok = true;
+        for (let j = 0; j < ids.length; j++) if (staticStops[i + j] !== ids[j]) { ok = false; break; }
+        if (ok) { hits++; at = i; if (hits > 1) break; }
+      }
+      if (hits !== 1) continue;
+
+      if (!out) out = [...tripUpdates];
+      out[t] = { ...tu, stops: tu.stops.map((s, j) => ({ ...s, stopSequence: at + j + 1 })) };
+      seqRepaired.add(tu.rtTripId);
+    }
+    stats.seqRecovery = { needed, recovered: seqRepaired.size };
+    return out ?? tripUpdates;
+  }
+
   // ---------- (b) RT pattern clustering ----------
 
   function clusterPatterns(tripUpdates: readonly EngineTripUpdate[]): void {
@@ -909,6 +978,7 @@ export function createDelayEngine(
       births.set(tu.rtTripId, {
         rtTripId: tu.rtTripId, routeId: tu.routeId, predFirstEpochS: firstEpochS,
         minSeq, anchors: bAnchors, rtStops, bornAtS: nowS,
+        seqFromBoard: seqRepaired.has(tu.rtTripId),
       });
       n++;
     }
@@ -960,7 +1030,12 @@ export function createDelayEngine(
         stats.bindings.refusedUnresolved++;
         continue;
       }
-      const staticPatternId = resolvedStatic.get(pattern.rtPatternId);
+      // STAGE 0. The board itself named this trip — we had to read its stop list to number
+      // the feed's stops at all — so its pattern is known, not inferred, and inferring it
+      // again would be scoring our own arithmetic. See directLock in bind.ts.
+      const named = birth.seqFromBoard ? index.slotsByTrip.get(rtTripId) : undefined;
+
+      const staticPatternId = named ? named.patternId : resolvedStatic.get(pattern.rtPatternId);
       if (!staticPatternId) { path.patternUnresolved++; continue; }   // still unresolved; try again next cycle
 
       // The origin stop's identity must be confirmed, or the residual we are about to
@@ -973,12 +1048,12 @@ export function createDelayEngine(
       }
       path.reached++;
 
-      const slots: LockSlot[] = (index.slotsByPattern.get(staticPatternId) ?? [])
+      const slots: LockSlot[] = named ? [] : (index.slotsByPattern.get(staticPatternId) ?? [])
         .filter((s) => inp.activeServices.has(s.serviceId) && !claimedStatic.has(s.tripId))
         .map((s) => ({ tripId: s.tripId, firstDepS: s.firstDepS, claimed: false, times: s.times }));
 
       const lockAnchors: LockAnchor[] = [];
-      for (const a of birth.anchors) {
+      if (!named) for (const a of birth.anchors) {
         const rtStop = birth.rtStops.get(a.stopSequence);
         const e = rtStop ? xwalk.get(rtStop) : undefined;
         if (e && e.state === 'confirmed') {
@@ -986,18 +1061,27 @@ export function createDelayEngine(
         }
       }
 
-      const res = originLock({
-        serviceDate: inp.serviceDate,
-        routeId: birth.routeId,
-        staticPatternId,
-        predFirstEpochS: birth.predFirstEpochS,
-        anchors: lockAnchors,
-        slots,
-        medianHeadwayS: index.medianHeadwayS.get(staticPatternId) ?? null,
-      });
+      const res = named
+        ? directLock({
+          serviceDate: inp.serviceDate,
+          slot: named,
+          predFirstEpochS: birth.predFirstEpochS,
+          minSeq: birth.minSeq,
+          activeServices: inp.activeServices,
+          medianHeadwayS: index.medianHeadwayS.get(staticPatternId) ?? null,
+        })
+        : originLock({
+          serviceDate: inp.serviceDate,
+          routeId: birth.routeId,
+          staticPatternId,
+          predFirstEpochS: birth.predFirstEpochS,
+          anchors: lockAnchors,
+          slots,
+          medianHeadwayS: index.medianHeadwayS.get(staticPatternId) ?? null,
+        });
       countRefusal(res);
 
-      if (res.method !== 'origin_lock' || !res.tripId) {
+      if ((res.method !== 'origin_lock' && res.method !== 'direct_trip_id') || !res.tripId) {
         // refused_board_inactive is not this trip's fault and may become lockable later;
         // everything else is final for this trip.
         if (res.method !== 'refused_board_inactive') {
@@ -1056,7 +1140,14 @@ export function createDelayEngine(
       stats.bindings.locked++;
       path.locked++;
 
-      if (res.residS != null) {
+      // A DIRECT binding's residual is the trip's LATENESS, not evidence about the
+      // identification — and both consumers below judge the identification. The board
+      // agreement gate suppresses when the median first-stop residual exceeds
+      // MAX_BOARD_AGREEMENT_RESID_S, and the drift breaker voids a pattern whose rolling
+      // residual passes half its headway; both exist to catch an origin lock that has
+      // slipped by about one headway, which a trip the agency named by id cannot do.
+      // Feeding real lateness to either would let an agency go dark by running late.
+      if (res.residS != null && res.method !== 'direct_trip_id') {
         firstStopResids.push(res.residS);
         if (firstStopResids.length > BOARD_AGREEMENT_WINDOW) firstStopResids.shift();
         const pr = patternResid.get(staticPatternId) ?? [];
@@ -1398,9 +1489,15 @@ export function createDelayEngine(
 
   let cycleNo = 0;
 
-  async function runCycle(inp: EngineCycleInput): Promise<{ rows: number; gate: GateResult }> {
-    const nowS = Math.floor(inp.nowMs / 1000);
+  async function runCycle(raw: EngineCycleInput): Promise<{ rows: number; gate: GateResult }> {
+    const nowS = Math.floor(raw.nowMs / 1000);
     cycleSeq++;
+
+    // Before anything reads a stop_sequence — which is every stage below. Only possible
+    // once the index exists, which is also the only state in which any stage below runs.
+    const inp: EngineCycleInput = ready
+      ? { ...raw, tripUpdates: repairStopSequences(raw.tripUpdates) }
+      : raw;
 
     if (serviceDateOfState !== inp.serviceDate) {
       births.clear(); bindings.clear(); refusedTrips.clear(); claimedStatic.clear();

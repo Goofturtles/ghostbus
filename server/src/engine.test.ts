@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createDelayEngine } from './engine.ts';
 import type { Db, Params, Result } from './db.ts';
-import type { EngineCycleInput, EngineVehicle, EngineTripUpdate } from './engine.ts';
+import type { DelayEngine, EngineCycleInput, EngineVehicle, EngineTripUpdate } from './engine.ts';
 import { serviceEpochSeconds } from './tz.ts';
 
 // ---------- a synthetic board ----------
@@ -52,11 +52,12 @@ interface Captured { sql: string; params: unknown[] }
 /** A Db that serves the synthetic board and records every write. */
 function stubDb(xwalkRows: XwRow[]): Db & { writes: Captured[] } {
   const writes: Captured[] = [];
-  const tripStops = (tripId: string, stops: string[], baseS = FIRST_DEP_S) => stops.map((stopId, i) => ({
-    trip_id: tripId, route_id: 'R1', direction_id: 0, service_id: 'S1',
-    stop_sequence: i + 1, stop_id: stopId,
-    arrival_s: baseS + i * 300, departure_s: baseS + i * 300,
-  }));
+  const tripStops = (tripId: string, stops: string[], baseS = FIRST_DEP_S, routeId = 'R1') =>
+    stops.map((stopId, i) => ({
+      trip_id: tripId, route_id: routeId, direction_id: 0, service_id: 'S1',
+      stop_sequence: i + 1, stop_id: stopId,
+      arrival_s: baseS + i * 300, departure_s: baseS + i * 300,
+    }));
   const stopTimeRows = [
     ...tripStops('T1', ['st1', 'st2', 'st3', 'st4', 'st6']),
     ...tripStops('T2', ['st1', 'st2', 'st3', 'st5']),
@@ -66,6 +67,10 @@ function stubDb(xwalkRows: XwRow[]): Db & { writes: Captured[] } {
     // the binding half of this engine cannot be exercised by a test at all.
     ...tripStops('T1b', ['st1', 'st2', 'st3', 'st4', 'st6'], FIRST_DEP_S + HEADWAY_S),
     ...tripStops('T1c', ['st1', 'st2', 'st3', 'st4', 'st6'], FIRST_DEP_S + 2 * HEADWAY_S),
+    // A LOOP, on its own route so it perturbs nothing above: it leaves st1, runs out to
+    // st2 and comes back to st1. One stop id, two visits — the case that makes a
+    // stop_id -> stop_sequence map unsafe. See the §54 tests at the foot of this file.
+    ...tripStops('TL', ['st1', 'st2', 'st1'], FIRST_DEP_S, 'R2'),
   ];
   const geometryRows = Object.entries(STOP_LAT).map(([stop_id, lat]) => ({ route_id: 'R1', stop_id, lat, lon: LON0 }));
 
@@ -478,4 +483,111 @@ test('the two evidence-carrying promotion paths still survive a restart intact',
   assert.equal(e.staticStopFor('a'), 'st1');
   assert.equal(e.staticStopFor('b'), 'st2');
   assert.equal(e.staticStopFor('c'), null);
+});
+
+// ---------- DECISIONS §54: a feed that publishes no stop_sequence at all ----------
+
+/** rt stop ids ARE static stop ids, and the rt trip id IS a static trip id. */
+const IDENTITY_XW: XwRow[] = ['st1', 'st2', 'st3', 'st4', 'st5', 'st6']
+  .map((s) => xw(s, s, { source: 'identity' }));
+
+/** A TripUpdate with stop ids and times but NO stop_sequence — Brampton and Burlington. */
+function seqlessUpdate(rtTripId: string, rtStops: string[], firstOffsetS = 600): EngineTripUpdate {
+  const nowS = 1_800_000_000;
+  return {
+    rtTripId, routeId: 'R1', scheduleRelationship: null,
+    stops: rtStops.map((rtStopId, i) => ({
+      stopSequence: null, rtStopId, epochS: nowS + firstOffsetS + i * 300,
+      kind: 'departure' as const, noData: false,
+    })),
+  };
+}
+
+async function runSeqless(tripUpdates: EngineTripUpdate[]): Promise<{
+  db: Db & { writes: Captured[] }; stats: ReturnType<DelayEngine['getStats']>;
+}> {
+  const db = stubDb(IDENTITY_XW);
+  const e = createDelayEngine(db, 'ttc');
+  await e.reloadStatic(BOARD);
+  await e.runCycle(cycle({ tripUpdates, activeServices: new Set(['S1']) }));
+  return { db, stats: e.getStats() };
+}
+
+/** Every rt_trip_binding row this run persisted, as [rtTripId, staticTripId, method]. */
+function persistedBindings(writes: Captured[]): Array<[string, string | null, string]> {
+  const out: Array<[string, string | null, string]> = [];
+  for (const w of writes) {
+    if (!/INSERT INTO rt_trip_binding/.test(w.sql)) continue;
+    out.push([String(w.params[2]), w.params[3] == null ? null : String(w.params[3]), String(w.params[7])]);
+  }
+  return out;
+}
+
+test('REGRESSION (§54): a feed with no stop_sequence is numbered from the board it names', async () => {
+  // BEFORE: clusterPatterns and captureBirths both skip a stop whose stopSequence is null,
+  // so such a feed produced 0 patterns, 0 births, 0 bindings and 0 observations — measured
+  // on Brampton and Burlington, 0 of 131 and 0 of 119 TripUpdates carrying a sequence,
+  // while 100% of them carried a trip_id the static board holds.
+  const { db, stats } = await runSeqless([seqlessUpdate('T1', ['st1', 'st2', 'st3', 'st4', 'st6'])]);
+
+  assert.deepEqual(stats.seqRecovery, { needed: 1, recovered: 1 });
+  assert.equal(stats.patterns.rtTotal, 1, 'the trip now clusters into an RT pattern');
+  assert.equal(stats.bindings.births, 1);
+  assert.equal(stats.bindings.active, 1, 'and it binds in the cycle it is born');
+
+  // Bound to the trip the FEED named, by the direct path — not re-inferred against
+  // time-shifted clones we would have numbered ourselves.
+  assert.deepEqual(persistedBindings(db.writes), [['T1', 'T1', 'direct_trip_id']]);
+});
+
+test('§54: a direct binding claims no margin and no anchor agreement', async () => {
+  // There was no runner-up and no anchor vote. Reporting a separation would make a direct
+  // binding indistinguishable from a well-separated origin lock in the same columns.
+  const { db } = await runSeqless([seqlessUpdate('T1', ['st1', 'st2', 'st3', 'st4', 'st6'])]);
+  const row = db.writes.find((w) => /INSERT INTO rt_trip_binding/.test(w.sql));
+  assert.ok(row);
+  assert.equal(row.params[10], null, 'margin_s');
+  assert.equal(row.params[13], 0, 'agree');
+  assert.equal(row.params[8], 'bound', 'state');
+});
+
+test('§54: on a loop, an alignment that is not unique recovers nothing rather than guessing', async () => {
+  // TL runs st1 -> st2 -> st1. A partial update naming just 'st1' is a window of that trip
+  // TWICE, at sequence 1 and at sequence 3. A stop_id -> stop_sequence map would answer
+  // "1" without hesitating, and every delay on the return leg would be measured against
+  // the outbound departure — self-consistent, invisible, and wrong by the length of the
+  // loop. Two matches means we cannot tell, and cannot-tell is the answer.
+  const { stats: ambiguous } = await runSeqless([seqlessUpdate('TL', ['st1'])]);
+  assert.deepEqual(ambiguous.seqRecovery, { needed: 1, recovered: 0 });
+  assert.equal(ambiguous.bindings.births, 0);
+
+  // The same loop trip, published in full: exactly one window fits, so it is recovered.
+  const { stats: whole } = await runSeqless([seqlessUpdate('TL', ['st1', 'st2', 'st1'])]);
+  assert.deepEqual(whole.seqRecovery, { needed: 1, recovered: 1 });
+
+  // And a partial window that IS unique on that loop — the return leg — is recovered too.
+  const { stats: tail } = await runSeqless([seqlessUpdate('TL', ['st2', 'st1'])]);
+  assert.deepEqual(tail.seqRecovery, { needed: 1, recovered: 1 });
+});
+
+test('§54: a stop list that is not a window of the named trip recovers nothing', async () => {
+  // T1 serves st1 st2 st3 st4 st6; it never serves st5. Nothing is recovered and the trip
+  // stays exactly as unusable as it was — a refusal, not a nearest guess.
+  const { stats } = await runSeqless([seqlessUpdate('T1', ['st1', 'st5'])]);
+  assert.deepEqual(stats.seqRecovery, { needed: 1, recovered: 0 });
+  assert.equal(stats.bindings.births, 0);
+});
+
+test('§54: a trip the board does not name is left alone, and counted', async () => {
+  const { stats } = await runSeqless([seqlessUpdate('NOT_A_STATIC_TRIP', ['st1', 'st2', 'st3'])]);
+  assert.deepEqual(stats.seqRecovery, { needed: 1, recovered: 0 });
+  assert.equal(stats.bindings.births, 0);
+});
+
+test('§54: a feed that DOES publish stop_sequence is untouched by the recovery', async () => {
+  const db = stubDb(LEARNED());
+  const e = createDelayEngine(db, 'ttc');
+  await e.reloadStatic(BOARD);
+  await e.runCycle(cycle());
+  assert.deepEqual(e.getStats().seqRecovery, { needed: 0, recovered: 0 });
 });

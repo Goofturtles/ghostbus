@@ -1019,6 +1019,9 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
         `hw=${d.bindings.refusedHeadwayBand} inactive=${d.bindings.refusedBoardInactive} ` +
         `midroute=${d.bindings.refusedMidroute} unres=${d.bindings.refusedUnresolved} ` +
         `| directTripIdMatch=${(d.directTripIdMatchRate * 100).toFixed(1)}% ` +
+        // Only for feeds that publish no stop_sequence at all. Silent for every other one.
+        (d.seqRecovery.needed > 0
+          ? `| seqFromBoard=${d.seqRecovery.recovered}/${d.seqRecovery.needed} ` : '') +
         `| ${d.suppressionReason ? `SUPPRESSED (${d.suppressionGate}): ${d.suppressionReason}` : 'publishing'}`,
       );
     }

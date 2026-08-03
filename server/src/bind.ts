@@ -80,6 +80,7 @@ export interface LockInput {
 
 export type LockMethod =
   | 'origin_lock'
+  | 'direct_trip_id'
   | 'refused_ambiguous'
   | 'refused_no_slot'
   | 'refused_too_few_anchors'
@@ -191,6 +192,65 @@ export function originLock(inp: LockInput): LockResult {
     confidence,
     headwayS: inp.medianHeadwayS,
     candidates: scored.length,
+  };
+}
+
+export interface DirectLockInput {
+  serviceDate: number;
+  /** The static trip the FEED itself named, already looked up on the loaded board. */
+  slot: { tripId: string; serviceId: string; firstDepS: number; times: ArrayLike<number> };
+  /** the first predicted event, captured at BIRTH and never refreshed. */
+  predFirstEpochS: number;
+  /** stop_sequence of that first predicted event. */
+  minSeq: number;
+  activeServices: ReadonlySet<string>;
+  /** informational only here — it gates nothing, see below. */
+  medianHeadwayS: number | null;
+}
+
+/**
+ * The identification the agency already made for us.
+ *
+ * `originLock` exists because the TTC's realtime trip ids are not its static trip ids, so
+ * which scheduled trip a bus is running has to be INFERRED from when it left its first
+ * stop. Some feeds do not pose that question: their realtime trip id IS a static trip id
+ * (`directTripIdMatch` is measured every cycle and never assumed — see STAGE 0 in
+ * engine.ts). For those, scoring time-shifted clones against each other is not a weaker
+ * answer than reading the id, it is a strictly worse one, and on a feed whose stop
+ * sequences we had to recover FROM that static trip it would also be circular: we would
+ * be scoring our own arithmetic.
+ *
+ * WHAT THIS DELIBERATELY DOES NOT CLAIM. `marginS` is null and `agree` is 0 — there was
+ * no runner-up and no anchor vote, and reporting a fabricated separation would make a
+ * direct binding look like a well-separated origin lock in the same columns. `residS` is
+ * measured and kept because it is a real number about a real trip, but it is the trip's
+ * LATENESS, not evidence about the identification, and the engine must not feed it to the
+ * board-agreement gate or the drift breaker: both exist to catch an identification that
+ * has slipped by about one headway, and a direct binding cannot slip. Feeding lateness to
+ * a gate that suppresses on lateness would let an agency go dark by running late, which is
+ * the exact inversion this project exists to prevent.
+ *
+ * Pure: no database, no clock.
+ */
+export function directLock(inp: DirectLockInput): LockResult {
+  // The board must still be running this trip today. A trip id that exists on some other
+  // service day is not this day's trip, and its times are anchored to a different midnight.
+  if (!inp.activeServices.has(inp.slot.serviceId)) {
+    return { tripId: null, method: 'refused_board_inactive', residS: null, marginS: null,
+      agree: 0, confidence: null, headwayS: inp.medianHeadwayS, candidates: 0 };
+  }
+  const dayStart = serviceEpochSeconds(inp.serviceDate, 0);
+  const sched = inp.slot.times[inp.minSeq - 1];
+  const schedS = sched == null || sched < 0 ? inp.slot.firstDepS : sched;
+  return {
+    tripId: inp.slot.tripId,
+    method: 'direct_trip_id',
+    residS: (inp.predFirstEpochS - dayStart) - schedS,
+    marginS: null,
+    agree: 0,
+    confidence: 'high',
+    headwayS: inp.medianHeadwayS,
+    candidates: 1,
   };
 }
 
