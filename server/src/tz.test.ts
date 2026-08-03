@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   offsetSeconds, torontoMidnightEpoch, hourOfWeek, torontoParts, torontoYmd,
-  torontoNoonEpoch, serviceEpochSeconds, serviceYmd,
+  torontoNoonEpoch, serviceEpochSeconds, serviceYmd, serviceDay,
 } from './tz.ts';
 
 /** What the (wrong) midnight anchor would have produced, kept only so the tests can
@@ -127,4 +127,27 @@ test('serviceYmd attaches post-midnight trips to the day that started them', () 
   assert.equal(serviceYmd(Date.parse('2026-07-25T09:00:00Z')), 20260725);
   // 23:00 EDT stays on the same day.
   assert.equal(serviceYmd(Date.parse('2026-07-25T03:00:00Z')), 20260724);
+});
+
+test('serviceDay carries the SERVICE day weekday, not the wall clock one', () => {
+  // 01:30 EDT on Monday 2026-08-03 (the civic holiday). The wall clock says Monday; the
+  // service day is still Sunday 2026-08-02, and so is the weekday the calendar must be
+  // asked with. Reading dow off the wall clock here selects an entire wrong service
+  // calendar — see DECISIONS §54.
+  const t = Date.parse('2026-08-03T05:30:00Z');
+  assert.equal(torontoYmd(t), 20260803);
+  assert.equal(torontoParts(t).dow, 0);            // Monday, by the wall clock (dow is Mon=0)
+  assert.deepEqual(serviceDay(t), { ymd: 20260802, dow: 6 });  // Sunday, by the service day
+
+  // After the rollover the two agree again.
+  const later = Date.parse('2026-08-03T09:30:00Z');  // 05:30 EDT
+  assert.deepEqual(serviceDay(later), { ymd: 20260803, dow: 0 });
+});
+
+test('serviceYmd is serviceDay.ymd — one definition of the 4 a.m. rollover, not two', () => {
+  for (const iso of ['2026-08-03T05:30:00Z', '2026-08-03T09:30:00Z', '2026-07-25T03:00:00Z',
+    '2026-11-01T05:30:00Z', '2027-03-14T06:30:00Z']) {
+    const t = Date.parse(iso);
+    assert.equal(serviceYmd(t), serviceDay(t).ymd, iso);
+  }
 });

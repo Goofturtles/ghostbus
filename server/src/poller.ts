@@ -55,7 +55,7 @@ import GtfsRealtimeBindings from 'gtfs-realtime-bindings';
 import type { Db } from './db.ts';
 import { isDbClosed } from './db.ts';
 import { activeServiceIds, boardSpan, type CalendarRow, type CalendarDateRow } from './gtfs.ts';
-import { torontoDay, torontoMidnightEpoch, torontoYmd, serviceYmd } from './tz.ts';
+import { torontoDay, torontoMidnightEpoch, torontoYmd, serviceDay } from './tz.ts';
 import { presentInt, presentStr, presentFloat } from './pb.ts';
 import { decodeJsonFeed } from './rtjson.ts';
 import { createDelayEngine, type DelayEngineStats, type EngineVehicle, type EngineTripUpdate, type EngineStopUpdate } from './engine.ts';
@@ -494,7 +494,13 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
     joinStats.indexReady = engine.isReady();
   }
 
-  function servicesForYmd(ymd: number, dow: number): Set<string> {
+  /**
+   * The service_ids active on one service day. `ReadonlySet` is load-bearing, not
+   * decoration: this returns the CACHE ENTRY itself, so a caller that added to it would
+   * corrupt the answer for every later caller and for the rest of the process. One
+   * caller did exactly that — see the note at the engine cycle input, and DECISIONS §54.
+   */
+  function servicesForYmd(ymd: number, dow: number): ReadonlySet<string> {
     let s = activeServiceCache.get(ymd);
     if (!s) { s = activeServiceIds(calendar, calendarDates, [{ ymd, dow }]); activeServiceCache.set(ymd, s); }
     return s;
@@ -797,12 +803,25 @@ export function createPoller(db: Db, options: PollerOptions = {}): PollerHandle 
     let obsInserted = 0;
 
     if (engine.isReady()) {
-      const serviceDate = serviceYmd(now);
-      const day = torontoDay(now);
-      const prevDay = torontoDay(now - 86_400_000);
-      const activeServices = servicesForYmd(day.ymd, day.dow);
-      // A trip that started before midnight is still running on yesterday's service day.
-      for (const s of servicesForYmd(prevDay.ymd, prevDay.dow)) activeServices.add(s);
+      // ONE SERVICE DAY, ASKED WITH ITS OWN WEEKDAY. The engine measures every origin
+      // residual against `serviceDate`'s midnight, so a slot belonging to any OTHER
+      // service day is not a near-miss candidate — it is off by a whole day and can only
+      // ever be noise in the candidate set.
+      //
+      // This used to union in the previous calendar day's services, to cover "a trip that
+      // started before midnight is still running". It does not need covering: `serviceDay`
+      // is already (now − 4 h), so at 01:30 the service date IS yesterday and yesterday's
+      // services are exactly what this returns. The union only ever added a second,
+      // complete service calendar — and on any day whose service_id differs from the
+      // previous day's (every Saturday, every Sunday, every holiday) that doubled the
+      // slots on every pattern with a near-duplicate schedule, so the origin lock's
+      // runner-up sat inside MARGIN_MIN_S and `refused_ambiguous` swallowed the day.
+      // Worse, `servicesForYmd` hands back its CACHED set, so the union mutated the cache
+      // in place: the poison persisted for the life of the process and accumulated one
+      // more service calendar per day. See DECISIONS §54.
+      const svcDay = serviceDay(now);
+      const serviceDate = svcDay.ymd;
+      const activeServices = servicesForYmd(svcDay.ymd, svcDay.dow);
 
       if (feedsFresh && !staticReloading) {
         try {

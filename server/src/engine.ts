@@ -100,8 +100,11 @@ export interface EngineCycleInput {
   serviceDate: number;
   vehicles: EngineVehicle[];
   tripUpdates: EngineTripUpdate[];
-  /** calendar-active static service_ids for this service date. */
-  activeServices: Set<string>;
+  /**
+   * Calendar-active static service_ids for THIS service date, and no other. Readonly
+   * because the poller hands over a cached set; see servicesForYmd there.
+   */
+  activeServices: ReadonlySet<string>;
 }
 
 // ---------- stats surfaced through getJoinStats().delayEngine ----------

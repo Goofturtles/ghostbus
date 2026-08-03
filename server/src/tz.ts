@@ -115,11 +115,26 @@ export function serviceEpochSeconds(ymd: number, gtfsSeconds: number): number {
   return Math.round(torontoNoonEpoch(y, m, d) / 1000) - 12 * 3600 + gtfsSeconds;
 }
 
+/** How far past local midnight a service day runs before the next one begins. */
+const SERVICE_DAY_ROLLOVER_MS = 4 * 3600_000;
+
 /**
- * The service date an instant belongs to: the Toronto calendar date of (now - 4h), so a
- * trip running at 01:30 attaches to the service day that started it rather than to the
- * calendar day it happens to be crossing.
+ * The service day an instant belongs to, as {ymd, dow} — the Toronto calendar date of
+ * (now - 4h), so a trip running at 01:30 attaches to the service day that started it
+ * rather than to the calendar day it happens to be crossing.
+ *
+ * THE `dow` IS THE POINT. A caller that has the service DATE still has to ask the
+ * `calendar` table which service_ids run on it, and that question is answered by
+ * weekday flags — so it needs the service day's weekday, not the wall clock's. At 01:30
+ * on a Monday the two disagree, and every day-of-week boundary in the year is a day
+ * where taking the wrong one selects an entire wrong service calendar. Deriving both
+ * from one shifted instant is what makes them impossible to mix.
  */
+export function serviceDay(epochMs: number): { ymd: number; dow: number } {
+  return torontoDay(epochMs - SERVICE_DAY_ROLLOVER_MS);
+}
+
+/** The service date an instant belongs to. See serviceDay. */
 export function serviceYmd(epochMs: number): number {
-  return torontoYmd(epochMs - 4 * 3600_000);
+  return serviceDay(epochMs).ymd;
 }
