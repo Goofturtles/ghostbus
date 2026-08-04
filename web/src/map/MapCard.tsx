@@ -19,11 +19,12 @@ import type { VehicleDto, RouteShapeResponse, StopDto } from '@shared/types';
 import { api, type Bbox } from '@/lib/api';
 import { useLive, selectedNearbyStop, DEFAULT_LOCATION, isBackedOff, noteFailure } from '@/hooks/useLive';
 import { compassHeading, subscribeCompass } from '@/hooks/useCompassHeading';
-import { useStore, resolveTheme, paceMps } from '@/store';
+import { useStore, resolveTheme, paceMps, type MapPickTarget } from '@/store';
 import { walkLegSeconds, type MeasuredWalk } from '@/lib/walk';
 import { pathMidpoint } from '@/lib/walkRoute';
 import { resolveWalkLeg } from './walkPath';
-import { buildStyle, type MapTheme } from './mapStyle';
+import { buildStyle, POI_LAYER_IDS, POI_ZOOM_LADDER, type MapTheme } from './mapStyle';
+import { makePoiGlyph, parsePoiGlyphId } from './poiGlyphs';
 import { makeVoxelSprite, spriteId, kindForRouteType, SPRITE_SIZE_PX, type VehicleKind } from './sprites';
 import {
   addVoxelCityLayers,
@@ -84,6 +85,48 @@ const CITY_BUILD_MIN_MS = 120;
 /** How often the (invisible) sprite source is refreshed while the 3D models are
  *  drawing. It exists only to keep the tap hit-test honest — see the rAF loop. */
 const VEH_DATA_MIN_MS = 200;
+/**
+ * PITCH CEILING FOR FREE ROTATION.
+ *
+ * `VOXEL_MAX_PITCH` is 78 and exists so `applyVoxelCamera` can raise MapLibre's own
+ * default 60 out of the way of the 48-degree diorama. That is a headroom number, not a
+ * limit a rider should be able to drag to: past ~70 the horizon enters the frame, the
+ * ground plane runs to a vanishing point, and the tile query area behind the city
+ * grows without bound. 70 is the last pitch at which this still reads as a diorama.
+ */
+const MAP_MAX_PITCH = 70;
+/** How far the camera drifts round the pin while a pick is open. Small on purpose:
+ *  enough parallax to read which side of the street the pin is on, not a ride. */
+const PICK_ORBIT_DEG = 10;
+const PICK_ORBIT_MS = 2600;
+/** Press-and-hold to drop a pin, in ms, and how far a thumb may travel first. Under a
+ *  press this long a scroll flick reads as a long-press; over it, the gesture starts
+ *  feeling broken. */
+const PICK_LONGPRESS_MS = 520;
+const PICK_LONGPRESS_SLOP_PX = 9;
+/** How near a real agency stop has to be before the pin offers to snap to it. About a
+ *  street-crossing's width — beyond that the rider meant the place, not the platform. */
+const PICK_SNAP_M = 70;
+/** How long the fullscreen expand takes before the GL viewport is its new size. The
+ *  fullscreen effect resizes on this beat and `beginPick` waits for it — one number,
+ *  because a pin dropped against the OLD shape lands 305px off on a 390x844 phone. */
+const EXPAND_RESIZE_MS = 260;
+
+/**
+ * EVERY PIECE OF APP FURNITURE THAT SITS ON THE CANVAS. Nothing may be framed under
+ * one of these and no marker may touch one (DESIGN-TARGET §D1-3).
+ *
+ * MODULE SCOPE, and read by BOTH `collide()` and `markersFramed()`, because those two
+ * used to carry their own copies of the list — which is exactly how a control gets
+ * added to one of them and forgotten by the other, and markers quietly start being
+ * fitted underneath it.
+ */
+const CHROME_SELECTORS = [
+  '.map-controls',                 // the reference's two pills, top-right
+  '.map-tools',                    // compass + choose-on-map, top-left
+  '.map-pick',                     // the pick chip, along the bottom
+  '.maplibregl-ctrl-bottom-right', // attribution — a licence requirement, always wins
+];
 
 type LngLat = [number, number];
 
@@ -102,6 +145,27 @@ function bearing(aLon: number, aLat: number, bLon: number, bLat: number): number
 const easeOut = (t: number) => 1 - (1 - t) ** 3;
 const prefersReducedMotion = () =>
   typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/**
+ * A point the rider has dropped the crosshair on, and everything the map can honestly
+ * say about it.
+ *
+ * `kind` is not decoration — it is the provenance of `label`, and it decides which
+ * glyph the chip shows and how the name is phrased. There is no geocoder here: a
+ * `stop` came from the agency's own nearby feed, a `poi` and a `street` came from
+ * features the vector tiles actually rendered at that point, and `coords` is what is
+ * left when the map knows nothing about that spot and says so.
+ */
+interface PickPoint {
+  lat: number;
+  lon: number;
+  label: string;
+  kind: 'stop' | 'poi' | 'street' | 'coords';
+  /** A real agency stop within `PICK_SNAP_M`, offered as a suggestion and never
+   *  applied on the rider's behalf. Null when the nearest stop is too far to mean
+   *  anything, or when the pin is already on it. */
+  snap: { lat: number; lon: number; label: string } | null;
+}
 
 interface Anim {
   feat: GeoJSON.Feature<GeoJSON.Point>;
@@ -136,6 +200,9 @@ export default function MapCard() {
    *  as if it were pavement. */
   const access = useStore((s) => s.access);
   const quality = useStore((s) => s.quality);
+  /** Read only so the pick chip is re-measured when its buttons change language —
+   *  `fr-CA` wraps the action row where `en` does not. */
+  const locale = useStore((s) => s.locale);
   /** User's own layers toggle. The quality setting is the ceiling — Reduced and
    *  Lite never get extrusions at all — and this is the switch inside it. */
   const [voxelWanted, setVoxelWanted] = useState(true);
@@ -150,6 +217,18 @@ export default function MapCard() {
    *  for whenever the live board is empty. Used only to pick which route line to
    *  draw — see `focusRoute`. */
   const nextService = useLive((s) => s.nextService);
+
+  /** CHOOSE ON MAP. The store holds the INTENT (is a pick open, and for which end of
+   *  the trip); the map holds the POINT. Splitting them that way is what lets the plan
+   *  surface open a pick without knowing anything about crosshairs, and lets the map
+   *  run the whole interaction without reaching into the planner. */
+  const mapPick = useStore((s) => s.mapPick);
+  const [pick, setPick] = useState<PickPoint | null>(null);
+  /** The last confirmed pick. `completeMapPick` now routes the point into
+   *  `planOrigin`/`planTarget`, so this is NOT where the answer lives — it is the
+   *  map's own acknowledgement that the tap landed, and the only affordance that
+   *  clears the beacon still standing on the chosen spot. */
+  const [picked, setPicked] = useState<{ target: MapPickTarget; label: string } | null>(null);
 
   const [selected, setSelected] = useState<VehicleDto | null>(null);
   // 'tiles'  = the style started but the vector source never became usable.
@@ -190,6 +269,17 @@ export default function MapCard() {
   /** The tappable stops, held in a ref so the `idle` retry can read the current set
    *  without re-binding a listener every time the nearby query returns. */
   const stopsGeoRef = useRef<StopDto[]>([]);
+  /** The crosshair beacon. Its own marker, outside `collide()`'s priority list: it is
+   *  the thing the rider is actively holding, so nothing may hide it. */
+  const pickMarker = useRef<maplibregl.Marker | null>(null);
+  /** The compass needle, painted imperatively on every `rotate` — a React re-render
+   *  per frame of a drag-rotate is exactly the cost this map cannot pay. */
+  const needleRef = useRef<HTMLSpanElement>(null);
+  const longPressRef = useRef<{ timer: number | null; x: number; y: number }>({ timer: null, x: 0, y: 0 });
+  /** Pending pin drop, deferred until an expand has resized the GL viewport. */
+  const pickDropTimer = useRef<number | null>(null);
+  const pickRef = useRef<PickPoint | null>(null);
+  pickRef.current = pick;
 
   // Boarding stop + walk math (used by markers + walk path).
   const boarding = useMemo(() => {
@@ -334,8 +424,25 @@ export default function MapCard() {
       minZoom: 9,
       maxZoom: 18,
       attributionControl: false, // added explicitly below so it is always visible + themed
-      dragRotate: false,
-      pitchWithRotate: false,
+      /**
+       * THE CITY TURNS NOW.
+       *
+       * These three were `false` and the rotation gesture was disabled outright, for
+       * a reason that no longer holds: the diorama used to be `fill-extrusion` layers
+       * whose lit face was authored against one fixed bearing. The renderer that
+       * replaced them (§38) derives its lamp from `map.getBearing()` every frame —
+       * `litAxisWorld()` in voxelMesh.ts — so the studio light stays anchored to the
+       * VIEWPORT and the measured face ratios (§55: 0.641 lit / 0.491 shaded against
+       * the roof) hold at every bearing rather than only at -18. Nothing about §D or
+       * §F changes either: the marker collision pass already runs on `move`, and
+       * `rotate` is a `move`.
+       *
+       * The pitch ceiling is ours, not MapLibre's — see MAP_MAX_PITCH.
+       */
+      dragRotate: true,
+      pitchWithRotate: true,
+      maxPitch: MAP_MAX_PITCH,
+      minPitch: 0,
       cooperativeGestures: false,
       keyboard: false, // canvas stays keyboard-inert (it is aria-hidden; the list is the a11y path)
     });
@@ -369,7 +476,35 @@ export default function MapCard() {
     // the strip stays visible and honest, and the footprint is managed with type size
     // in map.css instead.
     map.addControl(new maplibregl.AttributionControl({ compact: false }), 'bottom-right');
-    map.touchZoomRotate.disableRotation();
+    // Two-finger twist, deliberately re-enabled: this used to be
+    // `map.touchZoomRotate.disableRotation()`, which is the phone half of the same
+    // decision the constructor above reverses. A diorama you cannot walk around is a
+    // picture, not a map.
+    map.touchZoomRotate.enable();
+    map.dragRotate.enable();
+
+    /**
+     * POI GLYPHS, DRAWN ON DEMAND.
+     *
+     * Resolved lazily rather than pre-registered in a loop at style load: most of the
+     * eighteen are never asked for (the shop glyph needs z17.3 AND a mall in frame),
+     * and a resolver survives a `setStyle` swap for free — a theme change drops every
+     * image the map holds, and the first frame that wants `poi-cafe-light` asks for it
+     * again here.
+     *
+     * `setMissingStyleImageResolver`, NOT the `styleimagemissing` EVENT, and the
+     * difference is not stylistic. Both end up calling `addImage` and both render, but
+     * MapLibre v6 logs "Image X could not be loaded... use
+     * setMissingStyleImageResolver" BEFORE dispatching the event, so the event path
+     * shipped nine console warnings on the first dark frame and nine more on the first
+     * light one. Measured on the production build; the resolver path is silent.
+     */
+    map.setMissingStyleImageResolver((id: string) => {
+      const g = parsePoiGlyphId(id);
+      if (!g || map.hasImage(id)) return;
+      const img = makePoiGlyph(g.cat, g.theme);
+      map.addImage(id, { width: img.width, height: img.height, data: img.data }, { pixelRatio: img.pixelRatio });
+    });
 
     // Tile-failure detection: don't latch on a single transient tile blip. The fallback
     // shows only if the vector source never becomes usable within a grace window; it
@@ -477,6 +612,13 @@ export default function MapCard() {
      * A stop tap opens that stop's board — the interaction that replaced the Nearby feed.
      */
     map.on('click', (e: maplibregl.MapMouseEvent) => {
+      // PICK MODE OWNS THE TAP. While a crosshair is open, a tap moves it — selecting
+      // a vehicle mid-pick would open a card over the chip the rider is reading and
+      // answer a question they are not asking.
+      if (useStore.getState().mapPick) {
+        placePick(map, e.lngLat.lng, e.lngLat.lat);
+        return;
+      }
       const pad = 14;
       const box: [maplibregl.PointLike, maplibregl.PointLike] = [
         [e.point.x - pad, e.point.y - pad], [e.point.x + pad, e.point.y + pad],
@@ -527,15 +669,62 @@ export default function MapCard() {
     map.on('mouseenter', 'nearby-stops', () => { map.getCanvas().style.cursor = 'pointer'; });
     map.on('mouseleave', 'nearby-stops', () => { map.getCanvas().style.cursor = ''; });
 
+    // --- the two gestures that OPEN a pick ------------------------------------
+    //
+    // Right-click on a pointer device, press-and-hold on a thumb. Both are the
+    // platform's own "act on this exact spot" gesture, which is why neither needs a
+    // mode to be entered first — the toolbar toggle exists for discoverability and for
+    // keyboard users, not because the gestures are a shortcut for it.
+    map.on('contextmenu', (e: maplibregl.MapMouseEvent) => {
+      e.preventDefault();
+      if (useStore.getState().mapPick) placePick(map, e.lngLat.lng, e.lngLat.lat);
+      else beginPick('dest', e.lngLat);
+    });
+    const cancelLongPress = () => {
+      if (longPressRef.current.timer !== null) clearTimeout(longPressRef.current.timer);
+      longPressRef.current.timer = null;
+    };
+    map.on('touchstart', (e: maplibregl.MapTouchEvent) => {
+      cancelLongPress();
+      // One finger only. A two-finger touch is a pinch or a twist, and turning that
+      // into a pin drop is how a rotate gesture ends in a dialog.
+      if (e.points.length !== 1) return;
+      longPressRef.current.x = e.point.x;
+      longPressRef.current.y = e.point.y;
+      const ll = e.lngLat;
+      longPressRef.current.timer = window.setTimeout(() => {
+        longPressRef.current.timer = null;
+        if (useStore.getState().mapPick) placePick(map, ll.lng, ll.lat);
+        else beginPick('dest', ll);
+      }, PICK_LONGPRESS_MS);
+    });
+    map.on('touchmove', (e: maplibregl.MapTouchEvent) => {
+      const st = longPressRef.current;
+      if (st.timer === null) return;
+      if (Math.hypot(e.point.x - st.x, e.point.y - st.y) > PICK_LONGPRESS_SLOP_PX) cancelLongPress();
+    });
+    map.on('touchend', cancelLongPress);
+    map.on('touchcancel', cancelLongPress);
+
+    // The needle is the one thing that must repaint on every frame of a rotation.
+    map.on('rotate', paintNeedle);
+    map.on('load', paintNeedle);
+
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       if (cityBuildTimer.current !== null) clearTimeout(cityBuildTimer.current);
       if (pollRef.current) clearInterval(pollRef.current);
       if (moveTimerRef.current) clearTimeout(moveTimerRef.current);
       if (failTimerRef.current) clearTimeout(failTimerRef.current);
+      if (longPressRef.current.timer !== null) clearTimeout(longPressRef.current.timer);
+      longPressRef.current.timer = null;
+      if (pickDropTimer.current !== null) clearTimeout(pickDropTimer.current);
+      pickDropTimer.current = null;
       youMarker.current?.remove(); stopMarker.current?.remove();
       badgeMarker.current?.remove(); walkMarker.current?.remove();
+      pickMarker.current?.remove();
       youMarker.current = stopMarker.current = badgeMarker.current = walkMarker.current = null;
+      pickMarker.current = null;
       map.remove();
       mapRef.current = null;
     };
@@ -563,6 +752,23 @@ export default function MapCard() {
 
   function installLayers(map: maplibregl.Map, thm: MapTheme) {
     registeredColors.current.clear();
+    /**
+     * THE BLOCKER IMAGES GO WITH THE STYLE, exactly as the vehicle sprites above do.
+     *
+     * `setStyle({diff:false})` drops every image the map holds. `blockerSizes` is a
+     * cache keyed on id alone, so without this clear it would report `blk-40x24` as
+     * already registered after a theme swap and `publishBlockers` would publish a
+     * feature pointing at an image that no longer exists — no collision box placed,
+     * and "King St West" drawn straight through the You card. Silent, and only on the
+     * SECOND theme the rider picks.
+     *
+     * `lastBlockerKey` goes with it: the source is re-created empty by the new style,
+     * so the change detector's memory of what it last published is a memory of a
+     * different map. Left set, the first `setData` after a swap is skipped as a no-op
+     * and the boxes never come back at all.
+     */
+    blockerSizes.current.clear();
+    lastBlockerKey.current = '';
     // setStyle drops all images; re-register the known palette AND any colors already in
     // the live set so no vehicle references a missing icon after a theme swap.
     const colors = new Set<string>(KNOWN_COLORS);
@@ -775,6 +981,7 @@ export default function MapCard() {
       });
     }
 
+    applyPoiDensity(map);
     syncVoxel(map, thm);
 
     // re-apply live data after a style swap
@@ -786,6 +993,30 @@ export default function MapCard() {
     // The source is back now, so in-flight tweens resume instead of freezing until the
     // next poll (up to 5s) and then snapping to their destination.
     if (animsRef.current.size > 0) startRaf();
+  }
+
+  /**
+   * MOVE THE POI ZOOM LADDER TO FIT THE CARD.
+   *
+   * §D4's restraint rule — "at phone width the reference never shows more than three
+   * floating labels at once" — is about DOM markers, but the pressure it describes is
+   * the same one place names put on a 390px card. The type does not shrink (an
+   * illegible label is not a quieter label); the ladder moves, so each tier arrives
+   * about three quarters of a zoom level later on a narrow card than on a wide one.
+   *
+   * Measured against the card, not the window, for the same reason `NARROW_CARD_PX`
+   * already is: a narrow map inside a wide desktop window is a narrow map.
+   */
+  function applyPoiDensity(map: maplibregl.Map) {
+    const w = wrapRef.current?.parentElement?.getBoundingClientRect().width ?? 0;
+    const narrow = w > 0 && w < NARROW_CARD_PX;
+    for (const id of POI_LAYER_IDS) {
+      if (!map.getLayer(id)) continue;
+      const rung = POI_ZOOM_LADDER[id];
+      if (!rung) continue;
+      try { map.setLayerZoomRange(id, narrow ? rung.narrow : rung.wide, 24); }
+      catch { /* style swap in flight */ }
+    }
   }
 
   // ============================ camera framing ============================
@@ -876,7 +1107,7 @@ export default function MapCard() {
     if (!card) return true;
     const b = card.getBoundingClientRect();
     const chrome: DOMRect[] = [];
-    for (const sel of ['.map-controls', '.maplibregl-ctrl-bottom-right']) {
+    for (const sel of CHROME_SELECTORS) {
       const r = (card.querySelector(sel) as HTMLElement | null)?.getBoundingClientRect();
       if (r && r.width > 1) chrome.push(r);
     }
@@ -890,6 +1121,17 @@ export default function MapCard() {
   function frameCamera(animate: boolean) {
     const map = mapRef.current;
     if (!map) return;
+    /**
+     * THE APP DOES NOT MOVE THE CAMERA WHILE THE RIDER IS PLACING A POINT.
+     *
+     * Same rule as a committed journey not being re-planned underneath its rider, and
+     * it was found the hard way: opening a pick on a phone expands the map, expanding
+     * fires `resize`, and `resize` re-framed the composition around the walk — which
+     * carried the crosshair 160px off the right edge of the screen while the chip
+     * cheerfully described the place it used to be over. The pin is an anchor; the
+     * only thing allowed to move it is the finger holding it.
+     */
+    if (useStore.getState().mapPick) return;
     const g = geoRef.current;
     const b = boardingRef.current;
     // With no walk drawn there is no walk to compose around, and fitting the rider and a
@@ -1457,10 +1699,11 @@ export default function MapCard() {
   //
   // The map listener is NOT bound here: `mapRef` is still null at mount (the map is built
   // by a later effect), so binding at mount would silently never attach. It is bound in
-  // the beacon effect below, which by construction runs with a real map. The rider cannot
-  // rotate the map — `dragRotate` is off — but the app itself does, to VOXEL_BEARING and
-  // back whenever voxel mode toggles, and a still rider with a live compass would
-  // otherwise be left with a wedge pointing at the pre-toggle north.
+  // the beacon effect below, which by construction runs with a real map. The rider can
+  // now rotate the map themselves (drag-rotate and two-finger twist are both on), and
+  // the app rotates it too — to VOXEL_BEARING and back whenever voxel mode toggles, and
+  // to north whenever the compass is tapped. A still rider with a live compass would
+  // otherwise be left with a wedge pointing at the pre-rotation north.
   useEffect(() => subscribeCompass(paintWedge), []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // You beacon + boarding stop bubble + the walker node on the walk path
@@ -1706,15 +1949,340 @@ export default function MapCard() {
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    const id = window.setTimeout(() => map.resize(), 260); // after the CSS transition
+    const id = window.setTimeout(() => map.resize(), EXPAND_RESIZE_MS); // after the CSS transition
     return () => clearTimeout(id);
   }, [expanded]);
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && useStore.getState().mapExpanded) setExpanded(false); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      // A pick is the innermost thing on screen, so it unwinds first — the same
+      // one-layer-at-a-time rule the sheets follow.
+      if (useStore.getState().mapPick) { cancelPick(); return; }
+      if (useStore.getState().mapExpanded) setExpanded(false);
+    };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [setExpanded]);
+
+  // ============================ compass ============================
+  /**
+   * Paint the needle. It answers in WORLD degrees — north is north — so the glyph is
+   * rotated by MINUS the map's bearing, which is the same conversion `paintWedge` does
+   * for the rider's own heading and the same one that has to be right for this control
+   * to be a compass rather than a decoration.
+   */
+  function paintNeedle(): void {
+    const el = needleRef.current;
+    const map = mapRef.current;
+    if (!el || !map) return;
+    el.style.transform = `rotate(${-map.getBearing()}deg)`;
+  }
+
+  /**
+   * Put the camera back to north.
+   *
+   * THE COST IS DELIBERATE AND WORTH RECORDING. The app's own opening bearing is
+   * `VOXEL_BEARING` (-18), chosen so Toronto's grid runs diagonally and every block
+   * shows two walls — the reference's composition. Tapping this loses that: at bearing
+   * 0 the blocks face the camera head-on. It resets to TRUE north anyway, because that
+   * is the only thing a compass may promise, and a control that returned to -18 while
+   * its needle pointed at 0 would be lying about the one fact it exists to state. The
+   * rider can turn back; the map cannot un-mislead them.
+   *
+   * Pitch goes back to the app's own default at the same time, because the other way a
+   * rider gets lost is dragging the camera to the horizon, and one button that returns
+   * a known camera beats two that each half-do it.
+   */
+  function resetNorth(): void {
+    const map = mapRef.current;
+    if (!map) return;
+    userMoved.current = true;
+    const target = { bearing: 0, pitch: voxelOnRef.current ? VOXEL_PITCH : 0 };
+    if (prefersReducedMotion()) map.jumpTo(target);
+    else map.easeTo({ ...target, duration: 480 });
+  }
+
+  // ============================ choose on map ============================
+  /**
+   * Everything the map can honestly say about a point, in priority order.
+   *
+   * 1. A REAL AGENCY STOP, from `/api/stops/nearby` — not from the basemap. This is the
+   *    only source here that GhostBus can actually open a board for, so it outranks
+   *    anything the tiles carry, and it is measured against the real coordinates rather
+   *    than against what happens to be rendered.
+   * 2. A PLACE THE TILES DREW, via `queryRenderedFeatures` on our own POI layers. If a
+   *    name is on screen at that point, naming it back is a fact.
+   * 3. THE STREET, from the rendered street-name labels, for the same reason.
+   * 4. THE COORDINATES. There is no geocoder behind this control and there is no
+   *    fallback that invents one: when the map knows nothing about a spot it says the
+   *    numbers, and the rider can still use the point.
+   */
+  function describePoint(map: maplibregl.Map, lon: number, lat: number): PickPoint {
+    // The nearest real stop, measured in metres on real coordinates.
+    let near: { lat: number; lon: number; label: string; m: number } | null = null;
+    for (const s of stopsGeoRef.current) {
+      if (typeof s.lat !== 'number' || typeof s.lon !== 'number') continue;
+      const m = haversineM(lat, lon, s.lat, s.lon);
+      if (near && m >= near.m) continue;
+      near = { lat: s.lat, lon: s.lon, m, label: s.name ?? t('stop.code', { code: s.stopId }) };
+    }
+    // On the stop already: name it, and offer no snap (there is nothing to snap to).
+    if (near && near.m <= 18) {
+      return { lat, lon, label: near.label, kind: 'stop', snap: null };
+    }
+    const snap = near && near.m <= PICK_SNAP_M
+      ? { lat: near.lat, lon: near.lon, label: near.label }
+      : null;
+
+    const p = map.project([lon, lat]);
+    const boxOf = (pad: number): [maplibregl.PointLike, maplibregl.PointLike] =>
+      [[p.x - pad, p.y - pad], [p.x + pad, p.y + pad]];
+    const named = (layers: string[], pad: number): string | null => {
+      const live = layers.filter((l) => map.getLayer(l));
+      if (live.length === 0) return null;
+      let best: string | null = null;
+      let bestD = Infinity;
+      for (const f of map.queryRenderedFeatures(boxOf(pad), { layers: live })) {
+        const n = (f.properties as { 'name:en'?: unknown; name?: unknown } | null);
+        const name = typeof n?.['name:en'] === 'string' ? n['name:en']
+          : typeof n?.name === 'string' ? n.name : null;
+        if (!name) continue;
+        // Points measure to the point; a line-placed street name has no single point,
+        // so the first named hit inside the box is the honest answer for it.
+        const g = f.geometry;
+        const d = g.type === 'Point'
+          ? (() => { const q = map.project(g.coordinates as LngLat); return (q.x - p.x) ** 2 + (q.y - p.y) ** 2; })()
+          : 0;
+        if (d < bestD) { bestD = d; best = name; }
+      }
+      return best;
+    };
+
+    const place = named([...POI_LAYER_IDS], 26);
+    if (place) return { lat, lon, label: place, kind: 'poi', snap };
+    const street = named(['label-road', 'label-road-minor'], 60);
+    if (street) return { lat, lon, label: t('map.pickNearStreet', { name: street }), kind: 'street', snap };
+    return {
+      lat, lon, kind: 'coords', snap,
+      label: t('map.pickCoords', { lat: lat.toFixed(5), lon: lon.toFixed(5) }),
+    };
+  }
+
+  /** Drop (or move) the crosshair and re-read what is under it. */
+  function placePick(map: maplibregl.Map, lon: number, lat: number) {
+    if (!pickMarker.current) {
+      const el = document.createElement('div');
+      el.className = 'pick-marker';
+      el.innerHTML = PICK_BEACON_HTML;
+      pickMarker.current = new maplibregl.Marker({ element: el, anchor: 'bottom', draggable: true })
+        .setLngLat([lon, lat])
+        .addTo(map);
+      /**
+       * Fine adjustment, re-read on a rAF rather than on every drag event, so the
+       * chip never describes where the pin WAS without paying for it twice a frame.
+       *
+       * The first version called `setPick` straight out of `drag`. That is a React
+       * render per pointer move, and each render re-runs the chip-measurement effect,
+       * which calls `collide()` — ~20 `getBoundingClientRect` reads interleaved with
+       * `dataset` writes. Coalescing to one read per frame is the same treatment
+       * `paintNeedle` already gets for the same reason.
+       */
+      let dragFrame: number | null = null;
+      const readPin = () => {
+        dragFrame = null;
+        const mk = pickMarker.current;
+        if (!mk) return;
+        const ll = mk.getLngLat();
+        setPick(describePoint(map, ll.lng, ll.lat));
+      };
+      pickMarker.current.on('drag', () => {
+        if (dragFrame === null) dragFrame = requestAnimationFrame(readPin);
+      });
+      pickMarker.current.on('dragend', () => {
+        if (dragFrame !== null) cancelAnimationFrame(dragFrame);
+        readPin();
+        publishBlockers();
+      });
+    } else {
+      pickMarker.current.setLngLat([lon, lat]);
+      // A CONFIRMED pin was made undraggable. Reusing it for the NEXT pick has to give
+      // that back, or fine adjustment is dead for every pick after the first — and
+      // silently, because the grab cursor returns with the `picking` state below.
+      pickMarker.current.setDraggable(true);
+    }
+    pickMarker.current.getElement().dataset.state = 'picking';
+    setPick(describePoint(map, lon, lat));
+    publishBlockers();
+  }
+
+  /** True while a pick expanded the map for us, so cancelling puts it back. Not the
+   *  same as "the map is expanded" — a rider who expanded it themselves and then
+   *  picked a point must not have it collapsed under them on confirm. */
+  const pickExpanded = useRef(false);
+
+  function beginPick(target: MapPickTarget, at?: { lng: number; lat: number }) {
+    const map = mapRef.current;
+    if (!map) return;
+    setPicked(null);
+    // STOP WHATEVER THE CAMERA WAS DOING FIRST. The opening composition is a 700ms
+    // ease, and a rider who reaches for the crosshair inside that window would
+    // otherwise get a pin dropped at the centre the camera was passing THROUGH,
+    // which then slides away as the ease finishes — measured at 660 m adrift.
+    map.stop();
+    useStore.getState().beginMapPick(target);
+
+    /**
+     * ON A PHONE, PICKING TAKES THE WHOLE SCREEN.
+     *
+     * Measured, and it is not a preference: the map card is 5:3, so at 390px wide it
+     * is ~234px tall, and the chip (context row, snap suggestion, three actions,
+     * wrapped in `fr-CA`) is ~110px of that. The rider was being asked to place a pin
+     * precisely on a 120px-tall strip of city with the crosshair half behind the
+     * attribution. There is no arrangement of that chip that fixes it — the surface is
+     * too small for the interaction, so the interaction takes a bigger surface.
+     *
+     * `mapExpanded` already exists and already works (app.css pins the card to the
+     * viewport and steps the tab bar aside); this is the first thing that asks for it
+     * on the rider's behalf, so it is remembered and undone.
+     */
+    const w = wrapRef.current?.parentElement?.getBoundingClientRect().width ?? 0;
+    const grew = w > 0 && w < NARROW_CARD_PX && !useStore.getState().mapExpanded;
+    if (grew) {
+      pickExpanded.current = true;
+      useStore.getState().setMapExpanded(true);
+    }
+
+    const drop = () => {
+      pickDropTimer.current = null;
+      // Re-read the centre HERE, not before the expand: on the growing path the map
+      // is a different shape by now, and "the middle of the map" has to mean the
+      // middle of the map the rider is looking at.
+      const c = at ?? map.getCenter();
+      placePick(map, c.lng, c.lat);
+      // A GENTLE ORBIT, for depth. Ten degrees over 2.6s is enough parallax to read
+      // which side of the street the pin is standing on, in a diorama whose whole
+      // point is that it has sides. Any interaction cancels it — MapLibre stops an
+      // ease the moment the user touches the map — and reduced motion never starts it.
+      if (!prefersReducedMotion()) {
+        map.easeTo({ bearing: map.getBearing() + PICK_ORBIT_DEG, duration: PICK_ORBIT_MS });
+      }
+    };
+
+    // WAIT FOR THE NEW SHAPE BEFORE DROPPING THE PIN. Expanding does not resize the
+    // GL viewport synchronously — the fullscreen effect calls `map.resize()` after the
+    // CSS transition — so a pin dropped at the old centre landed at the top of the new
+    // frame instead of the middle of it. Measured at 305px out on a 390x844 phone.
+    // Either way, any drop already queued is cancelled first: two `beginPick` calls
+    // can land before React re-renders the toolbar, and a surviving timer would drop
+    // a second pin at the FIRST call's centre 340ms after the second one landed.
+    if (pickDropTimer.current !== null) clearTimeout(pickDropTimer.current);
+    pickDropTimer.current = null;
+    if (grew && !at) pickDropTimer.current = window.setTimeout(drop, EXPAND_RESIZE_MS + 80);
+    else drop();
+  }
+
+  function clearPickMarker() {
+    if (pickDropTimer.current !== null) clearTimeout(pickDropTimer.current);
+    pickDropTimer.current = null;
+    pickMarker.current?.remove();
+    pickMarker.current = null;
+    setPick(null);
+  }
+
+  /** Give the screen back, but only if the pick was what took it. */
+  function restoreExpanded() {
+    if (!pickExpanded.current) return;
+    pickExpanded.current = false;
+    useStore.getState().setMapExpanded(false);
+  }
+
+  function cancelPick() {
+    useStore.getState().cancelMapPick();
+    clearPickMarker();
+    restoreExpanded();
+    publishBlockers();
+  }
+
+  /** Take the suggestion. Never automatic: the rider asked for a point, and moving it
+   *  for them would be the app deciding it knows better than the finger. */
+  function snapPick() {
+    const map = mapRef.current;
+    const s = pickRef.current?.snap;
+    if (!map || !s) return;
+    placePick(map, s.lon, s.lat);
+  }
+
+  function confirmPick(target: MapPickTarget) {
+    const p = pickRef.current;
+    if (!p) return;
+    const st = useStore.getState();
+    // Keep the store's record of WHICH end is being picked true to the button that was
+    // actually pressed — the map's own entry point cannot know, so the chip offers both.
+    if (st.mapPick?.target !== target) st.beginMapPick(target);
+    useStore.getState().completeMapPick({ lat: p.lat, lon: p.lon, label: p.label });
+    setPicked({ target, label: p.label });
+    restoreExpanded();
+    if (pickMarker.current) {
+      pickMarker.current.setDraggable(false);
+      pickMarker.current.getElement().dataset.state = 'done';
+    }
+    setPick(null);
+  }
+
+  /**
+   * External cancel — the plan surface closing a pick it opened — has to take the
+   * whole interaction with it, not just the visible part of it.
+   *
+   * NOT gated on `pickMarker.current` existing. A pick that expanded the card defers
+   * its pin by `EXPAND_RESIZE_MS`, so there is a ~340ms window where the pick is live
+   * and the marker is not: an early-return there left the drop timer running, and it
+   * fired afterwards to plant a beacon plus a 2.6s orbit for a pick that had already
+   * ended — with `mapPick` and `picked` both null, no chip renders and the amber cube
+   * cannot be dismissed. `clearPickMarker` kills the timer, so it is called
+   * unconditionally, and the screen is given back for the same reason.
+   */
+  useEffect(() => {
+    if (mapPick) return;
+    if (pickMarker.current?.getElement().dataset.state === 'done') return;
+    clearPickMarker();
+    restoreExpanded();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapPick]);
+
+  /**
+   * LIFT THE ATTRIBUTION OVER THE CHIP — but only when the chip actually covers it.
+   *
+   * §D3 and the OpenStreetMap licence both say the credit may not be covered, and the
+   * chip is the widest thing this map has ever put along its bottom edge. Two things
+   * are measured rather than assumed:
+   *
+   *   THE HEIGHT, because a hard-coded clearance is wrong the moment a snap suggestion
+   *   adds a row or `fr-CA` wraps the action buttons onto two.
+   *   THE OVERLAP, because the chip is capped at 520px and centred, so on a desktop
+   *   card it does not reach the bottom-right corner at all — and moving a licence
+   *   credit that nothing is covering is a jump with no reason behind it.
+   *
+   * The property is cleared BEFORE measuring, so the attribution is measured where it
+   * naturally sits rather than where the last pick left it. `collide()` re-runs
+   * because the chip is chrome and the markers have to clear it too.
+   */
+  const pickChipRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const card = wrapRef.current?.parentElement as HTMLElement | undefined;
+    if (!card) return;
+    card.style.removeProperty('--pick-lift');
+    const chip = pickChipRef.current?.getBoundingClientRect();
+    const attrib = card.querySelector('.maplibregl-ctrl-bottom-right')?.getBoundingClientRect();
+    if (chip && attrib && chip.height > 0
+      && chip.left < attrib.right && chip.right > attrib.left
+      && chip.top < attrib.bottom && chip.bottom > attrib.top) {
+      card.style.setProperty('--pick-lift', `${Math.round(chip.height) + 22}px`);
+    }
+    collide();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapPick, pick, picked, locale]);
 
   // ============================ ZERO OVERLAP ============================
   //
@@ -1762,7 +2330,7 @@ export default function MapCard() {
 
     const bounds = card.getBoundingClientRect();
     const chrome: DOMRect[] = [];
-    for (const sel of ['.map-controls', '.maplibregl-ctrl-bottom-right']) {
+    for (const sel of CHROME_SELECTORS) {
       const el = card.querySelector(sel) as HTMLElement | null;
       const r = el?.getBoundingClientRect();
       if (r && r.width > 1 && r.height > 1) chrome.push(r);
@@ -1848,6 +2416,9 @@ export default function MapCard() {
       youMarker.current?.getElement(),
       stopMarker.current?.getElement(),
       badgeMarker.current?.getElement(),
+      // The crosshair is the loudest thing on the map while it is up, and a street
+      // name drawn through it is the exact §D1 defect the blockers exist to prevent.
+      pickMarker.current?.getElement(),
     ].filter(Boolean) as HTMLElement[];
 
     const feats: GeoJSON.Feature<GeoJSON.Point>[] = [];
@@ -1888,6 +2459,41 @@ export default function MapCard() {
       }
     }
 
+    // --- THE APP'S OWN CHROME ------------------------------------------------
+    //
+    // §D2: "No map element may sit underneath ... the map's own control stack."
+    // `collide()` already enforces that for the DOM markers, but a BASEMAP label is
+    // not a DOM marker — it is a symbol, and the only thing that can move it is the
+    // collision index. So each control box is published into that index the same way
+    // a marker card is, and §F's own note that "the attribution box sits over map
+    // content" is closed by the same mechanism.
+    //
+    // TILED, because `addImage` here is capped and a control cluster (or a
+    // full-width pick chip) is larger than one blocker: an untiled box would either
+    // be truncated to its top-left corner or blow the sprite atlas up with one image
+    // per pixel width the card can take.
+    const card = wrapRef.current?.parentElement as HTMLElement | undefined;
+    const TILE = 152;
+    for (const sel of CHROME_SELECTORS) {
+      const r = card?.querySelector(sel)?.getBoundingClientRect();
+      if (!r || r.width < 2 || r.height < 2) continue;
+      const x0 = r.left - canvasBox.left, y0 = r.top - canvasBox.top;
+      const cols = Math.max(1, Math.ceil(r.width / TILE));
+      const rows = Math.max(1, Math.ceil(r.height / TILE));
+      const cw = Math.min(TILE, Math.ceil(r.width / cols / 8) * 8);
+      const ch = Math.min(TILE, Math.ceil(r.height / rows / 8) * 8);
+      const img = blockerImg(Math.max(8, cw), Math.max(8, ch));
+      for (let i = 0; i < cols; i++) {
+        for (let j = 0; j < rows; j++) {
+          const p = map.unproject([
+            x0 + (i + 0.5) * (r.width / cols),
+            y0 + (j + 0.5) * (r.height / rows),
+          ]);
+          feats.push({ type: 'Feature', properties: { img }, geometry: { type: 'Point', coordinates: [p.lng, p.lat] } });
+        }
+      }
+    }
+
     for (const el of els) {
       if (isHidden(el)) continue;
       const r = el.getBoundingClientRect();
@@ -1920,6 +2526,9 @@ export default function MapCard() {
       // The card's aspect ratio is owned by app.css and can change under us at a
       // breakpoint; a frame that fitted at one size need not fit at the next.
       if (centeredOnGeo.current && !userMoved.current) frameCamera(false);
+      // A breakpoint can take the card across `NARROW_CARD_PX` in either direction,
+      // and the POI ladder is keyed off exactly that.
+      applyPoiDensity(map);
       collide();
     };
     map.on('move', on);
@@ -1938,7 +2547,7 @@ export default function MapCard() {
   };
 
   return (
-    <div className={`map-card map-live ${expanded ? 'map-expanded' : ''}`}>
+    <div className={`map-card map-live ${expanded ? 'map-expanded' : ''} ${mapPick ? 'map-picking' : ''}`}>
       <div className="map-canvas" ref={wrapRef} aria-hidden="true" />
       <p className="sr-only">
         {t('map.srAlt', { count: vehCount, stop: boarding?.name ?? t('stop.code', { code: boarding?.id ?? '—' }) })}
@@ -1988,6 +2597,87 @@ export default function MapCard() {
           </button>
         </div>
       </div>
+
+      {/* The new instruments, in their own cluster at the top LEFT.
+          Deliberately NOT appended to the stack on the right: that stack is the
+          reference's composition (two pills, [+/-] then [locate/layers]) and it is
+          also the one `frameCamera` biases the whole marker chain away from. A third
+          pill there is 34-40px more of a 234px phone card that the diorama has to
+          escape. The top-left corner is empty in every framing this app produces. */}
+      <div className="map-tools" role="group" aria-label={t('map.tools')}>
+        <div className="map-pill">
+          {/* COMPASS. Always present, because this map is never north-up: it opens at
+              VOXEL_BEARING (-18) so the grid runs diagonally and the blocks show two
+              walls. That was a documented departure with nothing on screen admitting
+              to it; the needle is what admits to it. */}
+          <button className="map-ctrl map-compass" aria-label={t('a11y.resetNorth')} onClick={resetNorth}>
+            <span className="map-needle" ref={needleRef} aria-hidden="true">{COMPASS_SVG}</span>
+          </button>
+          <span className="map-ctrl-sep" aria-hidden />
+          {/* The map's own entry into a pick. It stays now that the planner calls
+              `beginMapPick` itself, because it is the KEYBOARD path — right-click and
+              press-and-hold are not — and because a rider looking at the map should
+              not have to go back to a form to point at it. */}
+          <button
+            className="map-ctrl"
+            aria-label={t('a11y.chooseOnMap')}
+            aria-pressed={!!mapPick}
+            onClick={() => (mapPick ? cancelPick() : beginPick('dest'))}
+          >
+            {CROSSHAIR_SVG}
+          </button>
+        </div>
+      </div>
+
+      {/* THE PICK CHIP. One row of context, one row of actions, and nothing invented:
+          `pick.label` is a real stop name, a place the tiles drew, the street the pin
+          landed on, or the coordinates. See `describePoint`. */}
+      {mapPick && pick && (
+        <div className="map-pick" ref={pickChipRef} role="group" aria-label={t('map.pickTitle')}>
+          <p className="map-pick-ctx">
+            <span className="map-pick-glyph" aria-hidden="true">
+              {pick.kind === 'stop' ? TRANSIT_GLYPH : pick.kind === 'coords' ? CROSSHAIR_SVG : PLACE_GLYPH}
+            </span>
+            <span className="map-pick-label">{pick.label}</span>
+          </p>
+          {pick.snap && (
+            <button className="map-pick-snap" onClick={snapPick}>
+              {t('map.pickSnap', { name: pick.snap.label })}
+            </button>
+          )}
+          <div className="map-pick-actions">
+            <button
+              className={`map-pick-btn ${mapPick.target === 'origin' ? 'map-pick-primary' : ''}`}
+              onClick={() => confirmPick('origin')}
+            >{t('map.pickAsOrigin')}</button>
+            <button
+              className={`map-pick-btn ${mapPick.target === 'dest' ? 'map-pick-primary' : ''}`}
+              onClick={() => confirmPick('dest')}
+            >{t('map.pickAsDest')}</button>
+            <button className="map-pick-cancel" onClick={cancelPick}>{t('map.pickCancel')}</button>
+          </div>
+        </div>
+      )}
+
+      {/* The acknowledgement, and the beacon's off switch. The planner holds the
+          answer now (`completeMapPick` writes a `pin` PlanPoint); this says the tap
+          landed, in the place the tap happened, and is what takes the amber cube back
+          off the map when the rider is done with it. */}
+      {!mapPick && picked && (
+        <div className="map-pick map-pick-done" ref={pickChipRef} role="status">
+          <p className="map-pick-ctx">
+            <span className="map-pick-glyph" aria-hidden="true">{PLACE_GLYPH}</span>
+            <span className="map-pick-label">
+              {t(picked.target === 'origin' ? 'map.pickedOrigin' : 'map.pickedDest', { name: picked.label })}
+            </span>
+          </p>
+          <div className="map-pick-actions">
+            <button className="map-pick-cancel" onClick={() => { setPicked(null); clearPickMarker(); }}>
+              {t('map.pickDismiss')}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2018,6 +2708,64 @@ const PIN_SVG =
   '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s-6-5.3-6-10a6 6 0 1 1 12 0c0 4.7-6 10-6 10Z"/><circle cx="12" cy="11" r="2.2"/></svg>';
 const WALKER_SVG =
   '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="13" cy="4.2" r="1.9"/><path d="M11 21l1.6-5.2-2.2-2.4.8-4.2 3 1.6 2.4 1.4"/><path d="M10.2 9.2 7.4 11l-.9 3"/><path d="m12.6 15.8 2.6 2.1.9 3.1"/></svg>';
+/**
+ * THE PICK BEACON — a voxel, not a pushpin.
+ *
+ * Everything else standing on this map's ground plane is extruded: the stop pin is a
+ * squircle with a lit top and a dark bottom edge, the buildings are cubes, the walk
+ * beads are pucks. A flat teardrop marker would be the only 2D object in the frame,
+ * which is precisely the complaint that took the vehicles from sprites to models.
+ *
+ * Four parts, drawn in map.css: a ground RING that says "this exact spot", a STEM that
+ * plants the cube on it, the CUBE itself (lit top face, two darker walls), and a
+ * contact SHADOW. Amber on purpose — purple is transit and red is the route, and a
+ * point the rider is in the middle of choosing is neither.
+ */
+const PICK_BEACON_HTML =
+  '<span class="pick-ring" aria-hidden="true"></span>' +
+  '<span class="pick-shadow" aria-hidden="true"></span>' +
+  '<span class="pick-stem" aria-hidden="true"></span>' +
+  '<span class="pick-cube" aria-hidden="true">' +
+    '<span class="pick-face pick-top"></span>' +
+    '<span class="pick-face pick-left"></span>' +
+    '<span class="pick-face pick-right"></span>' +
+  '</span>';
+
+/** The compass needle: a solid north half over a ghosted south half. Rotated as a
+ *  whole by `paintNeedle`, which is the only thing that makes it a compass. */
+const COMPASS_SVG = (
+  <svg width={17} height={17} viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M12 2.4 16.3 13.1 12 11.2 7.7 13.1Z" fill="currentColor" />
+    <path d="M12 21.6 7.7 10.9 12 12.8 16.3 10.9Z" fill="currentColor" opacity="0.32" />
+  </svg>
+);
+/** Choose-on-map, and the chip's glyph for a point the map could not name. */
+const CROSSHAIR_SVG = (
+  <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth={1.9} strokeLinecap="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="6.2" />
+    <path d="M12 1.9v3.4M12 18.7v3.4M1.9 12h3.4M18.7 12h3.4" />
+    <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
+  </svg>
+);
+/** The chip's glyph for a named place. */
+const PLACE_GLYPH = (
+  <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M12 21.2s-6.2-5.5-6.2-10.3a6.2 6.2 0 1 1 12.4 0c0 4.8-6.2 10.3-6.2 10.3Z" />
+    <circle cx="12" cy="10.8" r="2.3" />
+  </svg>
+);
+/** The chip's glyph for a real agency stop. Same shape family as `TRANSIT_SVG`. */
+const TRANSIT_GLYPH = (
+  <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <rect x="5" y="3" width="14" height="13" rx="3.2" />
+    <path d="M5 10.2h14" />
+    <path d="M8.6 16.2 7 19.4M15.4 16.2 17 19.4" />
+  </svg>
+);
+
 /** The transit glyph in the stop bubble's purple tile — a streetcar/tram box. */
 const TRANSIT_SVG =
   '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="3" width="14" height="13" rx="3.2"/><path d="M5 10.2h14"/><path d="M8.6 13.3h.01M15.4 13.3h.01"/><path d="M8.6 16.2 7 19.4M15.4 16.2 17 19.4"/></svg>';

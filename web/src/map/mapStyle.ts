@@ -5,7 +5,7 @@
 // read as lighter ribbons). Palettes mirror tokens.css (kept in JS so the style
 // builds instantly without waiting on CSS-var resolution). See DECISIONS §23.
 
-import type { StyleSpecification } from 'maplibre-gl';
+import type { FilterSpecification, StyleSpecification } from 'maplibre-gl';
 
 export type MapTheme = 'dark' | 'light';
 
@@ -38,7 +38,25 @@ interface Palette {
    *  the reference makes them a primary read of the map. */
   roadLabel: string;
   roadLabelHalo: string;
+  /** Place names off the `poi` layer. A step quieter than `roadLabel` on purpose —
+   *  a street name is navigation, a cafe is context, and the hierarchy has to be
+   *  visible without reading the words. */
+  poiLabel: string;
+  poiLabelHalo: string;
 }
+
+/**
+ * The ink the POI marks are drawn in. Lives here rather than in `poiGlyphs.ts` so the
+ * glyph and the name beside it can never drift apart: the label's `text-color` and the
+ * canvas `strokeStyle` are literally the same string.
+ *
+ * `transit` is the app's own purple — the colour of the tappable stop circles and the
+ * walk path. A station is transit, and this map has exactly one colour for that.
+ */
+export const POI_INK: Record<MapTheme, { quiet: string; transit: string; halo: string }> = {
+  dark: { quiet: '#C9C4DC', transit: '#A78BFA', halo: 'rgba(9,11,24,0.9)' },
+  light: { quiet: '#4A4E63', transit: '#6D45D6', halo: 'rgba(255,255,255,0.92)' },
+};
 
 // MEASURED off ghostbus-design-reference.png, over four passes, and the fourth one is
 // what ships. The history matters because three of the four were wrong in ways that
@@ -116,6 +134,8 @@ const DARK: Palette = {
   waterLabel: '#6E7BAE',
   roadLabel: '#F2F0FA',
   roadLabelHalo: 'rgba(9,11,24,0.92)',
+  poiLabel: POI_INK.dark.quiet,
+  poiLabelHalo: POI_INK.dark.halo,
 };
 
 // The daylight reference is a warm near-white city, not a blue-grey one: its
@@ -161,6 +181,8 @@ const LIGHT: Palette = {
   waterLabel: '#5F73A6',
   roadLabel: '#242838',
   roadLabelHalo: 'rgba(255,255,255,0.94)',
+  poiLabel: POI_INK.light.quiet,
+  poiLabelHalo: POI_INK.light.halo,
 };
 
 const MAJOR = ['motorway', 'trunk', 'primary'];
@@ -170,6 +192,112 @@ const MINOR = ['minor', 'service', 'street', 'residential', 'living_street', 'un
 /** width = interpolate(exp 1.5) over zoom through the given [zoom, px] stops. */
 function w(stops: [number, number][]) {
   return ['interpolate', ['exponential', 1.5], ['zoom'], ...stops.flat()] as unknown;
+}
+
+// ============================== PLACES (the `poi` layer) =====================
+//
+// THE VOXEL CITY LEADS. These marks exist so a rider can tell one block from the
+// next — "the stop past the library", "the corner with the coffee shop" — and the
+// moment they read as a directory rather than as wayfinding they have failed. So:
+// three layers, a fixed zoom ladder, and a vocabulary of nine categories over the
+// tiles' ~80 OSM classes.
+//
+// EVERYTHING HERE IS DATA THE TILES ACTUALLY CARRY. Measured on the real z14 tile
+// over downtown Toronto (4578/5979): 6,252 POI features, 3,571 of them named. That
+// is the number this design is fighting, and the levers are, in order:
+//
+//   1. THE CLASS FILTERS BELOW, which are the biggest cut. `library` in OpenMapTiles
+//      is 19 bookshops and 18 libraries in that one tile; `town_hall` is 10 community
+//      centres, 6 courthouses and 1 actual town hall; `hospital` is 18 clinics and 9
+//      hospitals. Filtering on `class` alone would have drawn a dentist's office with
+//      the glyph for a hospital, so every ambiguous class is narrowed by `subclass`.
+//   2. THE ZOOM LADDER. Stations from z14, landmarks and civic buildings from z15,
+//      food and shops only from z16.8 — past the diorama's own default framing, so
+//      the city is never competing with a list of restaurants.
+//   3. MAPLIBRE'S COLLISION INDEX, via padding and `symbol-sort-key`. This is the
+//      only density lever that is allowed to decide WHICH of two equals survives,
+//      because it decides in screen space, which is where the crowding is.
+//
+// WHAT WAS TRIED AND REJECTED: filtering on the tiles' `rank`. It reads like an
+// importance score and is not one — OpenMapTiles computes it as `row_number()` over a
+// label grid ordered by (class rank, name), so within a class it is alphabetical.
+// Measured in that same tile, restaurants rank 12..240 and museums 20..168; a
+// `rank <= N` cut would have kept the restaurants beginning with A and dropped every
+// museum in downtown Toronto. It is used only as a stable TIEBREAK in
+// `symbol-sort-key`, which is the one thing it is honestly good for.
+//
+// TRANSIT STOPS ARE DELIBERATELY NOT DRAWN HERE. The `railway`/`bus` classes are 126
+// tram stops and 70 bus stops in that tile, and GhostBus already draws the agency's
+// OWN stops as tappable circles off real GTFS. Drawing OSM's copy beside them would
+// put two marks on one platform and invite a rider to tap the one that opens nothing.
+// Only STATION-grade features (subway/rail/bus stations) come from the basemap.
+const POI_STATION_SUBCLASS = ['station', 'subway', 'halt', 'bus_station', 'tram_station'];
+const POI_LANDMARK = [
+  'attraction', 'monument', 'museum', 'theatre', 'cinema',
+  'stadium', 'aquarium', 'zoo', 'castle',
+];
+const POI_FOOD = ['restaurant', 'fast_food', 'bar', 'beer'];
+const POI_CAFE = ['cafe', 'bakery', 'ice_cream'];
+/** The shop subclasses a rider actually navigates by. `class: shop` on its own is
+ *  488 named features in one downtown tile — opticians, nail salons, phone repair —
+ *  and none of them is a landmark. `grocery` (supermarkets) is admitted whole. */
+const POI_SHOP_SUBCLASS = ['department_store', 'mall', 'marketplace', 'supermarket'];
+
+/** The POI layers, quietest first. Exported so MapCard can tighten the ladder on a
+ *  phone-width card without duplicating the ids. */
+export const POI_LAYER_IDS = ['poi-minor', 'poi-major', 'poi-station'] as const;
+/** Each POI layer's authored `minzoom`, and the one it is pushed to when the map card
+ *  is narrower than `NARROW_CARD_PX`. Same design rule as §D4's three-floating-labels
+ *  restraint: a 390px card cannot hold what a 1280px one can, so the ladder moves
+ *  rather than the type shrinking to illegibility. */
+export const POI_ZOOM_LADDER: Record<string, { wide: number; narrow: number }> = {
+  'poi-minor': { wide: 16.8, narrow: 17.6 },
+  'poi-major': { wide: 15, narrow: 15.8 },
+  'poi-station': { wide: 14, narrow: 14.6 },
+};
+
+/** A named, outdoor POI. Indoor features are the mall interiors and PATH units that
+ *  would otherwise stack a dozen names on one rooftop. */
+const POI_BASE: unknown[] = ['all', ['has', 'name'], ['!=', ['get', 'indoor'], 1]];
+
+/** Shared layout for all three POI layers: glyph at the point, name to its right.
+ *  `theme` only picks which of the two baked glyph sets the icon id resolves to. */
+function poiLayout(category: unknown, theme: MapTheme, size: [number, number][], iconSize: number) {
+  return {
+    'text-field': ['coalesce', ['get', 'name:en'], ['get', 'name']],
+    // Regular, never Bold. Bold is the arterial street names' weight and nothing
+    // below them may borrow it.
+    'text-font': ['Noto Sans Regular'],
+    'text-size': ['interpolate', ['linear'], ['zoom'], ...size.flat()],
+    'text-letter-spacing': 0.01,
+    'text-max-width': 7,
+    // Name to the RIGHT of the glyph, on its baseline — the Transit/Apple pattern,
+    // and the one that keeps the mark itself exactly over the place it names.
+    'text-anchor': 'left',
+    'text-offset': [0.82, 0.05],
+    'text-padding': 5,
+    'icon-image': ['concat', category, theme === 'dark' ? '-dark' : '-light'],
+    'icon-anchor': 'center',
+    'icon-size': iconSize,
+    'icon-padding': 3,
+    // BOTH OR NEITHER. A glyph with no name is a mystery mark, and a name with no
+    // glyph loses the category read that is half the point of drawing it.
+    'text-optional': false,
+    'icon-optional': false,
+    // UPRIGHT AT EVERY BEARING AND PITCH. The map rotates freely now, and these are
+    // point symbols: viewport alignment is what keeps a place name readable at
+    // bearing 180 instead of drawing it upside down on the ground plane. (The street
+    // names are `symbol-placement: line` and handle their own flip — a different
+    // mechanism for a different kind of label.)
+    'text-rotation-alignment': 'viewport',
+    'text-pitch-alignment': 'viewport',
+    'icon-rotation-alignment': 'viewport',
+    'icon-pitch-alignment': 'viewport',
+    // The tiles' own ordering, used as a TIEBREAK and nothing more: when two marks
+    // collide, the one OpenMapTiles put first in its label grid survives. Lower sorts
+    // first, and first-placed wins.
+    'symbol-sort-key': ['coalesce', ['get', 'rank'], 999],
+  } as unknown as Record<string, unknown>;
 }
 
 export function buildStyle(theme: MapTheme): StyleSpecification {
@@ -295,6 +423,94 @@ export function buildStyle(theme: MapTheme): StyleSpecification {
       // unnamed service alley stays unnamed — there is no data to draw. The
       // per-frame coverage this actually achieves is measured, not assumed; see the
       // census in .data/r5map-artifacts/labels-*.json.
+      // --- places, quietest first ---------------------------------------------
+      //
+      // THE ORDER OF THE THREE POI LAYERS AND THE TWO STREET-NAME LAYERS IS THE
+      // HIERARCHY, and it is expressed the only way MapLibre expresses it: placement
+      // walks the style array from the END downward, so the LAST symbol layer is
+      // placed FIRST and wins every collision it takes part in. Reading the array
+      // below from the bottom up, the priority is:
+      //
+      //     arterial street names  >  stations  >  side-street names
+      //                            >  landmarks/civic/parks  >  food and shops
+      //
+      // Arterials stay on top because §A4 makes street names a primary read of this
+      // map. A subway station outranks a laneway name. Everything else is context and
+      // yields to both. (`marker-blockers`, added by MapCard, is above all of them and
+      // is what keeps every one of these labels off the app's own floating cards.)
+      {
+        id: 'poi-minor', type: 'symbol', source: 'omt', 'source-layer': 'poi',
+        // PAST THE DIORAMA'S OWN FRAMING. `frameCamera` opens between z15.4 and
+        // z16.35, so a rider has to lean in before the map starts naming lunch. This
+        // is the single most important number in the POI design.
+        minzoom: 16.8,
+        filter: [
+          ...POI_BASE,
+          ['any',
+            ['in', ['get', 'class'], ['literal', [...POI_FOOD, ...POI_CAFE]]],
+            ['==', ['get', 'class'], 'grocery'],
+            ['all',
+              ['==', ['get', 'class'], 'shop'],
+              ['in', ['get', 'subclass'], ['literal', POI_SHOP_SUBCLASS]],
+            ],
+          ],
+        ] as unknown as FilterSpecification,
+        layout: poiLayout(
+          // `match` LABELS ARE RAW LITERALS, not `['literal', …]` expressions — that
+          // is `in`'s syntax, and using it here makes the branch silently never match.
+          ['match', ['get', 'class'],
+            POI_CAFE, 'poi-cafe',
+            ['shop', 'grocery'], 'poi-shop',
+            'poi-food',
+          ],
+          theme, [[16.8, 10], [18, 12]], 0.86,
+        ),
+        paint: {
+          'text-color': p.poiLabel,
+          'text-halo-color': p.poiLabelHalo,
+          'text-halo-width': 1.3,
+          'text-halo-blur': 0.3,
+          // The quietest type on the map. It is a supporting read and it says so.
+          'text-opacity': theme === 'dark' ? 0.78 : 0.84,
+          'icon-opacity': theme === 'dark' ? 0.78 : 0.84,
+        },
+      },
+      {
+        id: 'poi-major', type: 'symbol', source: 'omt', 'source-layer': 'poi', minzoom: 15,
+        filter: [
+          ...POI_BASE,
+          ['any',
+            ['in', ['get', 'class'], ['literal', POI_LANDMARK]],
+            // Every one of these is narrowed by subclass, because the OpenMapTiles
+            // class is wider than its name: `hospital` carries clinics, `college`
+            // carries language schools, `library` carries bookshops, `town_hall`
+            // carries community centres. See the block above `POI_STATION_SUBCLASS`.
+            ['all', ['==', ['get', 'class'], 'hospital'], ['==', ['get', 'subclass'], 'hospital']],
+            ['all', ['==', ['get', 'class'], 'college'], ['in', ['get', 'subclass'], ['literal', ['university', 'college']]]],
+            ['all', ['==', ['get', 'class'], 'library'], ['==', ['get', 'subclass'], 'library']],
+            ['all', ['==', ['get', 'class'], 'town_hall'], ['in', ['get', 'subclass'], ['literal', ['townhall', 'courthouse']]]],
+            ['==', ['get', 'class'], 'park'],
+          ],
+        ] as unknown as FilterSpecification,
+        layout: poiLayout(
+          ['match', ['get', 'class'],
+            'hospital', 'poi-hospital',
+            'college', 'poi-school',
+            ['library', 'town_hall'], 'poi-civic',
+            'park', 'poi-park',
+            'poi-landmark',
+          ],
+          theme, [[15, 10.5], [17, 12.5]], 0.94,
+        ),
+        paint: {
+          'text-color': p.poiLabel,
+          'text-halo-color': p.poiLabelHalo,
+          'text-halo-width': 1.5,
+          'text-halo-blur': 0.3,
+          'text-opacity': theme === 'dark' ? 0.9 : 0.94,
+          'icon-opacity': theme === 'dark' ? 0.9 : 0.94,
+        },
+      },
       {
         id: 'label-road-minor', type: 'symbol', source: 'omt', 'source-layer': 'transportation_name',
         // Higher than the majors' 14.5: a residential street name is only legible
@@ -327,6 +543,30 @@ export function buildStyle(theme: MapTheme): StyleSpecification {
           // other half of the hierarchy, and it keeps a frame with twenty labels in
           // it from reading as a wall of type.
           'text-opacity': theme === 'dark' ? 0.86 : 0.9,
+        },
+      },
+      // Stations sit between the two street-name layers on purpose: see the hierarchy
+      // note above `poi-minor`. A subway station outranks a laneway and yields to an
+      // arterial.
+      {
+        id: 'poi-station', type: 'symbol', source: 'omt', 'source-layer': 'poi', minzoom: 14,
+        filter: [
+          ...POI_BASE,
+          ['in', ['get', 'class'], ['literal', ['railway', 'bus']]],
+          // STATION-GRADE ONLY. Without this the layer is 126 tram stops and 70 bus
+          // stops per downtown tile, drawn beside the agency's own tappable stops.
+          ['in', ['get', 'subclass'], ['literal', POI_STATION_SUBCLASS]],
+        ] as unknown as FilterSpecification,
+        layout: poiLayout(['literal', 'poi-station'], theme, [[14, 11], [17, 13.5]], 1),
+        paint: {
+          // The one POI class painted in the app's transit purple, and the only one
+          // given full opacity — a station is somewhere a rider can actually board.
+          'text-color': POI_INK[theme].transit,
+          'text-halo-color': p.poiLabelHalo,
+          'text-halo-width': 1.7,
+          'text-halo-blur': 0.3,
+          'text-opacity': 1,
+          'icon-opacity': 1,
         },
       },
       {

@@ -477,6 +477,283 @@
   .map-card .maplibregl-ctrl-attrib { font-size: 9px; padding: 2px 6px !important; }
 }
 
+/* ------------------------------------------------ tools: compass + pick ------
+   Their own cluster at the top LEFT, and the placement is a real decision rather
+   than a spare corner. The stack on the right is the reference's composition and
+   is also the box `frameCamera` biases the entire marker chain away from — a third
+   pill there costs a 234px phone card another 43px of the diorama. The top-left
+   corner is empty in every framing this app produces.
+
+   Same pill vocabulary as the right-hand stack (blurred surface, 9px radius,
+   40px targets) so it reads as one control language, not two. */
+.map-card .map-tools {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 5;
+  display: flex;
+  pointer-events: none; /* only the buttons are hit targets */
+}
+/* The needle is rotated imperatively on every `rotate` frame — no transition, or
+   the glyph would lag a drag by its own duration and stop being a compass. */
+.map-card .map-needle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  will-change: transform;
+}
+/* The pressed state of the pick toggle is a real `aria-pressed`, and it is the one
+   control on this map that gets the pick's own amber rather than the neutral glyph
+   colour — while a crosshair is out, the button that put it there says so. */
+.map-card .map-ctrl[aria-pressed='true'] { color: var(--pk-top); opacity: 1; }
+
+/* ------------------------------------------------------ the pick beacon ------
+   A VOXEL, NOT A PUSHPIN. Everything else standing on this ground plane is
+   extruded — the stop pin has a lit top and a dark bottom edge, the buildings are
+   cubes, the walk beads are pucks — so a flat teardrop would be the only 2D object
+   in the frame. Four parts, bottom-anchored so the RING sits on the exact chosen
+   coordinate and the cube floats above it:
+
+     ring    the spot itself, on the ground
+     shadow  contact, so the cube is standing on the map and not over it
+     stem    what plants the cube on the ring
+     cube    a lit top face over two darker walls, lit from the upper LEFT to
+             match `TONES.dark.litScreenDeg` (225 = lower-left wall bright) — the
+             same studio lamp the city is rendered under.
+
+   Amber on purpose: purple is transit, red is the route, blue is the rider. A point
+   being chosen is none of those, and it must not be mistaken for the boarding stop
+   it is often dropped beside. */
+.map-card {
+  --pk-top: #f7b13c;
+  --pk-lit: #e08a1e;
+  --pk-shade: #a85f10;
+  --pk-ring: rgba(247, 177, 60, 0.85);
+}
+:root[data-theme='light'] .map-card {
+  --pk-top: #e8931b;
+  --pk-lit: #c9760d;
+  --pk-shade: #8f5108;
+  --pk-ring: rgba(180, 105, 10, 0.8);
+}
+/* MapLibre markers are pointer-inert on this map (a card must not eat a tap meant
+   for the vehicle under it). The crosshair is the exception and has to be: it is
+   dragged. Two classes, so it beats the one-class rule above. */
+.map-card .maplibregl-marker.pick-marker {
+  pointer-events: auto;
+  cursor: grab;
+  position: relative;
+  width: 34px;
+  height: 46px;
+}
+.map-card .pick-marker:active { cursor: grabbing; }
+.map-card .pick-ring {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  width: 26px;
+  height: 13px;
+  margin-left: -13px;
+  border: 2px solid var(--pk-ring);
+  border-radius: 50%;
+}
+.map-card .pick-shadow {
+  position: absolute;
+  left: 50%;
+  bottom: 2px;
+  width: 20px;
+  height: 8px;
+  margin-left: -10px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.42);
+  filter: blur(2.5px);
+}
+.map-card .pick-stem {
+  position: absolute;
+  left: 50%;
+  bottom: 5px;
+  width: 2.5px;
+  height: 13px;
+  margin-left: -1.25px;
+  border-radius: 1px;
+  background: var(--pk-shade);
+}
+/* THE CUBE, drawn as three clipped quads rather than as a rotated square.
+   `transform: rotate(45deg)` was tried first and is wrong: rotating a 20px square
+   gives a rhombus 28px across, so the top face overhung both walls and the marker
+   read as a flag on a pole. Clip paths let the three faces share exact vertices.
+
+   The projection is the diorama's own. A horizontal square at VOXEL_PITCH (48deg)
+   projects to a rhombus whose vertical diagonal is sin(48) = 0.62 of its horizontal
+   one, so on a 22px cube: top diamond 22 wide by 13.6 tall, walls 10 tall under it.
+   Every percentage below is that arithmetic, not a nudge. */
+.map-card .pick-cube {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  width: 22px;
+  height: 24px;
+  margin-left: -11px;
+}
+.map-card .pick-face { position: absolute; }
+.map-card .pick-top {
+  left: 0;
+  top: 0;
+  width: 22px;
+  height: 13.6px;
+  background: var(--pk-top);
+  clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%);
+}
+.map-card .pick-left,
+.map-card .pick-right {
+  top: 6.8px;
+  width: 11px;
+  height: 17px;
+}
+/* Lit wall on the LEFT: the dark theme's studio lamp is at litScreenDeg 225, which
+   is the lower-left. The same lamp the city is rendered under. */
+.map-card .pick-left {
+  left: 0;
+  background: var(--pk-lit);
+  clip-path: polygon(0 0, 100% 40%, 100% 100%, 0 59%);
+}
+.map-card .pick-right {
+  left: 11px;
+  background: var(--pk-shade);
+  clip-path: polygon(0 40%, 100% 0, 100% 59%, 0 100%);
+}
+/* Confirmed: the beacon stops being a thing you are holding and becomes a thing
+   that is set. It keeps its colour — the point has not changed — and only loses the
+   grab affordance. */
+.map-card .pick-marker[data-state='done'] { cursor: default; }
+.map-card .pick-marker[data-state='done'] .pick-ring { border-style: solid; opacity: 0.7; }
+
+/* -------------------------------------------------------- the pick chip ------
+   One row of context, one row of actions, along the bottom of the card. The label
+   is a real stop name, a place the tiles drew, the street the pin landed on, or the
+   coordinates — never a guess (see `describePoint`).
+
+   §D3: the attribution is a licence requirement and may not be covered, so while a
+   pick is open it is LIFTED above the chip rather than the chip being squeezed
+   around it. `--pick-lift` is one number both rules read. */
+.map-card { --pick-lift: 96px; }
+.map-card .map-pick {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  /* CAPPED AND CENTRED. Stretched across a 960px desktop map the chip was a band of
+     chrome with one short sentence in it — the actions ended up a screen apart from
+     the label they act on. 520px is where the two rows still read as one control.
+     On a phone the `left`/`right` insets win and the cap never applies. */
+  max-width: 520px;
+  margin-inline: auto;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 11px;
+  border-radius: 14px;
+  border: 1px solid var(--mk-ctrl-edge);
+  background: var(--mk-ctrl);
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
+  backdrop-filter: blur(20px) saturate(150%);
+  box-shadow: 0 16px 34px -16px rgba(0, 0, 0, 0.75);
+}
+/* NOT gated on `.map-picking`. The CONFIRMED chip renders after pick mode has ended,
+   so a `.map-picking` selector left the credit uncovered while the rider was choosing
+   and covered the moment they chose — the one state where they are most likely to be
+   looking at that corner. `--pick-lift` is set by MapCard only when the two boxes
+   actually intersect (it measures both), so the default keeps the credit where it is. */
+.map-card .maplibregl-ctrl-bottom-right { bottom: var(--pick-lift, 0px); }
+.map-card .map-pick-ctx {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  min-width: 0;
+  color: var(--mk-ctrl-glyph);
+}
+.map-card .map-pick-glyph {
+  flex: 0 0 auto;
+  display: inline-flex;
+  color: var(--pk-top);
+}
+/* Descenders: `line-height: 1.35` on real text inside a flex row that could clip. */
+.map-card .map-pick-label {
+  min-width: 0;
+  font: 600 12.5px/1.35 var(--font);
+  color: var(--mk-ctrl-glyph);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.map-card .map-pick-snap {
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--mk-ctrl-edge);
+  background: transparent;
+  color: var(--mk-ctrl-glyph);
+  font: 600 11.5px/1.35 var(--font);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.82;
+}
+.map-card .map-pick-snap:hover { opacity: 1; }
+/* WRAPS ON PURPOSE. French runs ~25% longer than English ("Arrivée ici" against
+   "End here"), and §D4 forbids text running under a neighbour at any locale. Three
+   buttons that wrap to two rows are correct; three that overlap are not. */
+.map-card .map-pick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.map-card .map-pick-btn {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 7px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--mk-ctrl-edge);
+  background: transparent;
+  color: var(--mk-ctrl-glyph);
+  font: 600 12px/1.35 var(--font);
+  white-space: nowrap;
+}
+.map-card .map-pick-btn:hover { border-color: var(--pk-ring); }
+/* The end of the trip the pick was OPENED for. When the map itself opened it there
+   is still a primary, because the toolbar entry names one — the other button is
+   always there, so nothing is being decided for the rider. */
+.map-card .map-pick-primary {
+  background: var(--pk-lit);
+  border-color: var(--pk-lit);
+  color: #1a1204;
+}
+.map-card .map-pick-cancel {
+  flex: 0 0 auto;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--mk-sub);
+  font: 600 12px/1.35 var(--font);
+  white-space: nowrap;
+}
+.map-card .map-pick-cancel:hover { color: var(--mk-ctrl-glyph); }
+/* The confirmation readout sits where the chip was, so the answer arrives in the
+   place the question was asked. */
+.map-card .map-pick-done { background: var(--mk-ctrl); }
+
+@media (max-width: 560px) {
+  .map-card .map-tools { top: 10px; left: 14px; }
+  .map-card .map-pick { left: 10px; right: 10px; bottom: 10px; padding: 9px 10px; }
+  .map-card .map-pick-label { font-size: 12px; }
+  .map-card .map-pick-btn,
+  .map-card .map-pick-cancel { font-size: 11.5px; padding: 6px 9px; }
+}
+
 /* ------------------------------------------------------------ reduced motion -
    No camera drift anywhere (handled in JS); kill the beacon's idle pulse too. */
 @media (prefers-reduced-motion: reduce) {
