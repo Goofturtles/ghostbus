@@ -327,6 +327,7 @@ const es: Dict = {
     aiBody: 'GhostBus se construyó con Claude Code mediante un proceso guiado por especificación y validado con evidencia: cada fase partió de una especificación escrita, las decisiones y desviaciones se anotaron en DECISIONS.md sobre la marcha, y las limitaciones medidas fueron a BLOCKERS.md en cuanto se descubrieron.',
     builtBy: 'Hecho por Arjun Sharma.',
     docs: 'El detalle completo — cada dependencia, cada licencia, cada medición — está en CREDITS.md y METHODS.md del repositorio.',
+    version: 'Versión {{version}}',
   },
   ride: {
     title: 'Viaje',

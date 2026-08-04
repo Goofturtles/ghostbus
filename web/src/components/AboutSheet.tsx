@@ -14,6 +14,7 @@ import { useLive } from '@/hooks/useLive';
 import { useStore } from '@/store';
 import { fmtClock, fmtNum } from '@/lib/format';
 import { WarningIcon } from './icons';
+import { DiagnosticsPanel } from './DiagnosticsPanel';
 
 function Stat({ label, value, from, none = false }: { label: string; value: string; from: string; none?: boolean }) {
   return (
@@ -55,6 +56,12 @@ export function AboutSheet() {
 
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [statsError, setStatsError] = useState(false);
+
+  /** Five taps on the version line opens the sensor diagnostics. Reset every time the
+   *  sheet closes, so it is never already open the next time a rider opens About. */
+  const [versionTaps, setVersionTaps] = useState(0);
+  const diagOpen = versionTaps >= 5;
+  useEffect(() => { if (!open) setVersionTaps(0); }, [open]);
 
   // One read, when the screen opens. A polling counter here would be theatre —
   // these are provenance figures, not a live board.
@@ -197,6 +204,22 @@ export function AboutSheet() {
 
           <p className="abt-built">{t('about.builtBy')}</p>
           <p className="abt-note">{t('about.docs')}</p>
+
+          {/* THE VERSION LINE, and the way into the sensor diagnostics.
+              Five taps, because the compass and the location dot are the only parts of
+              this app that cannot be verified from a desk, and a rider on a real phone is
+              the only person who can read out what their hardware actually reports. It is
+              a button rather than a tapped paragraph so that it is reachable, focusable
+              and announced — a keyboard reader gets there with five presses of Enter, the
+              same count. See DiagnosticsPanel for why it is English-only. */}
+          <button
+            className="abt-version"
+            onClick={() => setVersionTaps((n) => n + 1)}
+            aria-expanded={diagOpen}
+          >
+            {t('about.version', { version: __APP_VERSION__ })}
+          </button>
+          {diagOpen && <DiagnosticsPanel />}
         </div>
       </div>
     </div>

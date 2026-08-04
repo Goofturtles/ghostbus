@@ -1188,6 +1188,47 @@
 .abt-stat-from { font-size: 11px; line-height: 1.5; color: var(--text-3); }
 .abt-stat-skeleton { height: 84px; border-radius: var(--r-md); }
 
+/* The version line, which is also the way into the sensor diagnostics. Styled as the
+   quiet footnote it is — the five-tap gesture behind it is not advertised — but it is a
+   real button, so it keeps the 44px target every other control in this sheet has. */
+.abt-version {
+  align-self: flex-start;
+  margin: 0; padding: 10px 0;
+  min-height: 44px;
+  background: none; border: 0;
+  font-size: 12px; line-height: 1.6; color: var(--text-3);
+  text-align: left; cursor: pointer;
+}
+
+/* ---------------------------- sensor diagnostics ----------------------------
+   A readout, not a screen: rows of label/value that a rider reads aloud or
+   screenshots. Values are tabular so a column of degrees lines up, and everything
+   wraps rather than truncating — a clipped user-agent string is a useless one. */
+.diag { display: flex; flex-direction: column; gap: var(--s2); }
+.diag-h {
+  margin: var(--s3) 0 0;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--text-2); line-height: 1.6;
+}
+.diag-note { margin: 0; font-size: 12px; line-height: 1.6; color: var(--text-3); overflow-wrap: anywhere; }
+.diag-note code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+}
+.diag-row {
+  display: flex; align-items: baseline; justify-content: space-between; gap: var(--s3);
+  padding: 6px 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.diag-label { flex: 1 1 auto; min-width: 0; font-size: 12.5px; line-height: 1.5; color: var(--text-3); overflow-wrap: anywhere; }
+.diag-value {
+  flex: 0 1 auto; min-width: 0;
+  font-size: 12.5px; font-weight: 700; line-height: 1.5; color: var(--text);
+  text-align: right; overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+.diag-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 600; }
+
 .set-link { width: 100%; min-height: 44px; text-align: left; color: var(--text-2); }
 .set-link .set-label { flex: 1 1 auto; }
 
@@ -1210,7 +1251,31 @@
 .dep-list > .dep-card:nth-child(4) { animation-delay: 180ms; }
 .dep-list > .dep-card:nth-child(n + 5) { animation-delay: 240ms; }
 
-@keyframes reveal { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+/*
+ * THE ENTRY REVEALS MOVE. THEY DO NOT FADE — and that is a bug fix, not a taste change.
+ *
+ * These keyframes used to start at `opacity: 0`. With `animation-fill-mode: both` the
+ * element is painted at that first frame from the moment it exists, and it leaves that
+ * state only when the animation ADVANCES. An animation advances only when the compositor
+ * produces frames — so on a phone whose renderer is briefly starved (this app puts a
+ * WebGL map and a voxel diorama on the same screen as the plan), the card is in the DOM,
+ * has its full height, is laid out, is read out by a screen reader, and is invisible.
+ *
+ * Measured on production, 390x844, a Square One -> Dundas West plan at 22:30: the
+ * document timeline advanced in 1000 ms steps, the card's animation sat at
+ * `playState: 'running'` with `startTime: null` and `currentTime: 0`, and the card held
+ * `opacity: 0` for 3.9 s while the "1 way to get there" heading — which has no entry
+ * animation — was on screen the whole time. That is exactly the reported capture: a
+ * heading, a time axis, and nothing underneath them.
+ *
+ * No fill-mode fixes this. `both` strands the element at the first frame; `forwards`
+ * strands it at its base opacity and then flashes when the animation finally starts.
+ * The only state that cannot strand is one where the element is legible in EVERY frame
+ * of the animation, so opacity leaves the keyframe entirely. A transform-only reveal
+ * still reads as an entry, still runs on the compositor, and has no frame in which a
+ * rider's travel options are unreadable. Guarded by motion.test.ts.
+ */
+@keyframes reveal { from { transform: translateY(10px); } to { transform: none; } }
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes sheet-up { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
 
@@ -1546,9 +1611,11 @@
 
 .plan-summary { animation: reveal-row var(--dur-sheet) var(--ease-out) both; }
 
+/* Transform-only, for the reason written out at `@keyframes reveal` above: this is the
+   keyframe the option cards use, and it is the one the reported capture was taken of. */
 @keyframes reveal-row {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: none; }
+  from { transform: translateY(8px); }
+  to { transform: none; }
 }
 @keyframes sheet-drop {
   from { opacity: 0; transform: translateY(-18px) scale(0.985); }

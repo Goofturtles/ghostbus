@@ -377,6 +377,9 @@ const en = {
     aiBody: 'GhostBus was built with Claude Code through a spec-driven, evidence-gated process: each phase started from a written specification, decisions and deviations were written into DECISIONS.md as they were made, and measured limitations went into BLOCKERS.md the moment they were found.',
     builtBy: 'Built by Arjun Sharma.',
     docs: 'The full detail — every dependency, every licence, every measurement — is in CREDITS.md and METHODS.md in the repository.',
+    // The sensor diagnostics behind it are English-only on purpose (see DiagnosticsPanel);
+    // this line, which every rider can see, is not.
+    version: 'Version {{version}}',
   },
   ride: {
     title: 'Ride',

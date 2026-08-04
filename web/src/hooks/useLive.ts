@@ -20,7 +20,7 @@ import type {
 } from '@shared/types';
 import { useStore } from '@/store';
 import { haversineM } from '@/lib/search';
-import { startCompass } from '@/hooks/useCompassHeading';
+import { startCompass, noteGpsFix } from '@/hooks/useCompassHeading';
 
 /**
  * Fallback when geolocation is denied/unavailable: KING ST W AT SPADINA AVE — the
@@ -383,6 +383,12 @@ export const useLive = create<LiveState>((set, get) => ({
 
     const onFix = (pos: GeolocationPosition) => {
       const { latitude: lat, longitude: lon } = pos.coords;
+      // Every fix, course and all. On a phone with no magnetometer — a large share of
+      // mid-range Android — `coords.heading` while the rider is walking is the ONLY real
+      // measurement of which way they are pointing, and it is the compass's third source.
+      // It also feeds the on-device diagnostics panel, which is how a rider can tell us
+      // what their hardware actually reports. See useCompassHeading.
+      noteGpsFix(pos);
       const prev = get().geo;
       set({ geo: { lat, lon }, geoStatus: 'granted' });
       // The board only follows the rider once they have MOVED enough to matter. A watch

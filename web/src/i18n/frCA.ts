@@ -327,6 +327,7 @@ const frCA: Dict = {
     aiBody: 'GhostBus a été bâti avec Claude Code selon un processus guidé par la spécification et validé par les preuves : chaque phase partait d’une spécification écrite, les décisions et les écarts étaient inscrits dans DECISIONS.md au fur et à mesure, et les limites mesurées allaient dans BLOCKERS.md dès leur découverte.',
     builtBy: 'Réalisé par Arjun Sharma.',
     docs: 'Le détail complet — chaque dépendance, chaque licence, chaque mesure — se trouve dans CREDITS.md et METHODS.md du dépôt.',
+    version: 'Version {{version}}',
   },
   ride: {
     title: 'Trajet',

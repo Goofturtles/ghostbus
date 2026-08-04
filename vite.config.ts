@@ -1,6 +1,12 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { fileURLToPath, URL } from 'node:url';
+import { createRequire } from 'node:module';
+
+// The version the About screen prints, read from the one place it is already declared.
+// A second hand-maintained copy would eventually disagree with package.json, and a build
+// that misreports its own version is the last thing a diagnostics screen should do.
+const { version: APP_VERSION } = createRequire(import.meta.url)('./package.json') as { version: string };
 
 // GhostBus dev server. The Fastify API runs separately (port 8799) and is
 // proxied here so the whole app is reachable on one origin during development.
@@ -8,6 +14,9 @@ import { fileURLToPath, URL } from 'node:url';
 export default defineConfig({
   root: 'web',
   plugins: [react()],
+  define: {
+    __APP_VERSION__: JSON.stringify(APP_VERSION),
+  },
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./web/src', import.meta.url)),
