@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import type { RideCandidateDto, ItineraryDto, PlanResponse } from '../../../shared/types.ts';
 import {
   buildOptions, toJourney, journeySteps, journeyProgress, nextRideStep, optionIsLive, optionLikelihood,
-  optionLegs, optionBoardMs, MAX_OPTIONS, buildTimeAxis, axisFrac,
+  optionLegs, optionBoardMs, MAX_OPTIONS, RUNS_PER_CARD, buildTimeAxis, axisFrac,
 } from './journey.ts';
 import { buildRidePlan, buildItineraryPlan } from './plan.ts';
 import { MIN_OBSERVATIONS, ON_TIME_SEC } from './likelihood.ts';
@@ -19,6 +19,18 @@ import { MIN_OBSERVATIONS, ON_TIME_SEC } from './likelihood.ts';
 const T0 = Date.parse('2026-07-27T13:00:00Z');
 const PACE = 4.8 / 3.6;
 const opts = { nowMs: T0, paceMps: PACE };
+
+/**
+ * A candidate on a route of its own, so it cannot be grouped with the next one.
+ *
+ * `buildOptions` folds runs of the SAME route sequence into one card, which is the point
+ * of the options list — so a test that wants two OPTIONS has to ask for two ROUTES.
+ * Tests that want two runs of one route call `candidate` directly and get the shared 504.
+ */
+function onOwnRoute(o: Parameters<typeof candidate>[0] & { route: string }): RideCandidateDto {
+  const { route, ...rest } = o;
+  return candidate({ ...rest, routeId: route, shortName: route });
+}
 
 function candidate(o: Partial<RideCandidateDto> & {
   tripId: string; departureMs: number; arrivalMs: number;
@@ -107,12 +119,55 @@ const twoLegRes = (itineraries: ItineraryDto[]): PlanResponse => ({
 
 test('every reachable ride becomes an option, soonest at the door first', () => {
   const { options, totalCount, hiddenCount } = buildOptions(rideRes([
-    candidate({ tripId: 'B', departureMs: T0 + 1_800_000, arrivalMs: T0 + 2_400_000 }),
-    candidate({ tripId: 'A', departureMs: T0 + 600_000, arrivalMs: T0 + 1_200_000 }),
+    onOwnRoute({ route: '505', tripId: 'B', departureMs: T0 + 1_800_000, arrivalMs: T0 + 2_400_000 }),
+    onOwnRoute({ route: '504', tripId: 'A', departureMs: T0 + 600_000, arrivalMs: T0 + 1_200_000 }),
   ]), opts);
   assert.equal(totalCount, 2);
   assert.equal(hiddenCount, 0);
   assert.deepEqual(options.map((o) => optionLegs(o)[0].tripId), ['A', 'B']);
+});
+
+// --------------------------------------------------- grouping and route diversity
+
+test('runs of one route are ONE card carrying its next departures, not many cards', () => {
+  const { options, laterBoardMs, totalCount, hiddenCount } = buildOptions(rideRes([
+    candidate({ tripId: 'R1', departureMs: T0 + 600_000, arrivalMs: T0 + 1_200_000 }),
+    candidate({ tripId: 'R2', departureMs: T0 + 1_200_000, arrivalMs: T0 + 1_800_000 }),
+    candidate({ tripId: 'R3', departureMs: T0 + 1_800_000, arrivalMs: T0 + 2_400_000 }),
+  ]), opts);
+  assert.equal(options.length, 1, 'one route sequence is one row');
+  assert.equal(totalCount, 3);
+  // The card speaks for all three, so nothing is left uncounted-for.
+  assert.equal(hiddenCount, 0);
+  assert.deepEqual(laterBoardMs.get(options[0].id), [T0 + 1_200_000, T0 + 1_800_000]);
+  // The headline is still the soonest run; the later ones are only extra times.
+  assert.equal(optionBoardMs(options[0]), T0 + 600_000);
+});
+
+test('a slower distinct route is still offered — six runs of the best one cannot bury it', () => {
+  // Every 504 arrives before the 505 does, so an arrival-ranked list without grouping
+  // fills all six slots with 504s and the rider never learns the 505 goes there at all.
+  const fast = Array.from({ length: MAX_OPTIONS }, (_, i) => candidate({
+    tripId: `F${i}`, departureMs: T0 + 600_000 + i * 60_000, arrivalMs: T0 + 1_200_000 + i * 60_000,
+  }));
+  const slow = onOwnRoute({
+    route: '505', tripId: 'SLOW', departureMs: T0 + 900_000, arrivalMs: T0 + 3_000_000,
+  });
+  const { options } = buildOptions(rideRes([...fast, slow]), opts);
+  const routes = options.map((o) => optionLegs(o)[0].routeId);
+  assert.deepEqual(routes, ['504', '505']);
+});
+
+test('a card speaks for at most RUNS_PER_CARD runs; the rest stay in the honest remainder', () => {
+  const many = Array.from({ length: 7 }, (_, i) => candidate({
+    tripId: `T${i}`, departureMs: T0 + 600_000 + i * 60_000, arrivalMs: T0 + 1_200_000 + i * 60_000,
+  }));
+  const { options, laterBoardMs, totalCount, hiddenCount } = buildOptions(rideRes(many), opts);
+  assert.equal(options.length, 1);
+  assert.equal(laterBoardMs.get(options[0].id)?.length, RUNS_PER_CARD - 1);
+  assert.equal(totalCount, 7);
+  // 7 reachable, 3 spoken for by the single card, 4 stated as the remainder.
+  assert.equal(hiddenCount, 7 - RUNS_PER_CARD);
 });
 
 test('a ride nobody can walk to in time is not an option', () => {
@@ -131,7 +186,9 @@ test('one bus is one option, however many boarding pairs the server offered for 
     candidate({ tripId: 'SAME', departureMs: T0 + 600_000, arrivalMs: T0 + 1_200_000, boardStopId: 'B1' }),
     candidate({ tripId: 'SAME', departureMs: T0 + 660_000, arrivalMs: T0 + 1_260_000, boardStopId: 'B2' }),
     candidate({ tripId: 'SAME', departureMs: T0 + 720_000, arrivalMs: T0 + 1_320_000, boardStopId: 'B3' }),
-    candidate({ tripId: 'OTHER', departureMs: T0 + 900_000, arrivalMs: T0 + 1_500_000 }),
+    // A different route, so this test measures the boarding-pair dedupe alone and does
+    // not also depend on how runs of one route are grouped (covered above).
+    onOwnRoute({ route: '505', tripId: 'OTHER', departureMs: T0 + 900_000, arrivalMs: T0 + 1_500_000 }),
   ]), opts);
   assert.equal(totalCount, 2);
   assert.deepEqual(options.map((o) => optionLegs(o)[0].tripId), ['SAME', 'OTHER']);
@@ -140,7 +197,10 @@ test('one bus is one option, however many boarding pairs the server offered for 
 });
 
 test('the cap is applied and the remainder is counted, never dropped silently', () => {
-  const many = Array.from({ length: MAX_OPTIONS + 3 }, (_, i) => candidate({
+  // One run each on MAX_OPTIONS + 3 different routes: nothing to group, so the cap is
+  // the only thing deciding what is on screen and three whole routes fall past it.
+  const many = Array.from({ length: MAX_OPTIONS + 3 }, (_, i) => onOwnRoute({
+    route: `R${i}`,
     tripId: `T${i}`, departureMs: T0 + 600_000 + i * 60_000, arrivalMs: T0 + 1_200_000 + i * 60_000,
   }));
   const { options, hiddenCount, totalCount } = buildOptions(rideRes(many), opts);
@@ -422,9 +482,11 @@ test('the next ride to catch is the next one that has not departed, then nothing
 
 // ---------------------------------------------------------- the shared time axis
 
+// One route per spec: the axis is about comparing DIFFERENT options, and runs of a
+// single route are now one row, which would leave nothing to compare.
 const axisOptions = (specs: Array<[number, number]>) =>
   buildOptions(rideRes(specs.map(([dep, arr], i) =>
-    candidate({ tripId: 'T' + i, departureMs: T0 + dep, arrivalMs: T0 + arr }))), opts).options;
+    onOwnRoute({ route: 'R' + i, tripId: 'T' + i, departureMs: T0 + dep, arrivalMs: T0 + arr }))), opts).options;
 
 test('the axis spans every option and its gridlines land on wall-clock instants', () => {
   const options = axisOptions([[600_000, 1_200_000], [1_800_000, 2_400_000]]);

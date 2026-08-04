@@ -127,6 +127,17 @@
 }
 .opt-meta { font-size: 12px; line-height: 1.45; color: var(--text-2); }
 
+/* "then 6:09, 6:39" — the next runs of this same route sequence.
+   Quieter than `.opt-meta`, because it is the answer to a question the rider has not
+   asked yet ("what if I miss it"), and it must not compete with the countdown.
+   `line-height: 1.45` NOT 1: the string is translated, and "puis"/"luego" carry
+   descenders that a 1.0 line-height would clip inside the card's rounded overflow. */
+.opt-then {
+  font-size: 12px; line-height: 1.45;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+
 /* The countdown column, with a reserved minimum so a one-digit and a two-digit
    countdown do not reflow the text column beside them.
 

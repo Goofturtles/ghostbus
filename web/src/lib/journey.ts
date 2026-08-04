@@ -116,7 +116,26 @@ const itineraryId = (it: ItineraryDto): string => `${rideId(it.legs[0])}+${rideI
  */
 export interface OptionList {
   options: PlanOption[];
-  /** reachable options that exist but are past the cap. Never a guess. */
+  /**
+   * PER OPTION ID, THE NEXT DEPARTURES OF THE SAME ROUTE SEQUENCE — what turns a row into
+   * "5:39 PM, then 6:09, 6:39".
+   *
+   * Deliberately a property of the LIST rather than a field on `PlanOption`. An option is
+   * one trip on one vehicle, and it is that whether or not another one follows it; "what
+   * comes after this" is a fact about the menu it was drawn from. Keeping it here means
+   * `toJourney` and GO mode — which care about ONE ride and must never be handed a second
+   * one by accident — cannot see it at all.
+   *
+   * Ascending, excludes the option's own boarding time, and is empty for a sequence that
+   * runs once. Every entry is a real reachable plan's own boarding instant.
+   */
+  laterBoardMs: Map<string, number[]>;
+  /**
+   * Reachable options that NO card on screen speaks for. Never a guess.
+   *
+   * Not "options past the cap": one card now stands for up to `RUNS_PER_CARD` runs, so
+   * the count of rows and the count of trips have come apart. This is the trips.
+   */
   hiddenCount: number;
   /** reachable options in total, before the cap. */
   totalCount: number;
@@ -131,6 +150,36 @@ export interface OptionList {
    */
   asOfMs: number;
 }
+
+/**
+ * How many runs of the SAME route sequence one card is allowed to speak for.
+ *
+ * Three is Transit's own number and it is the right one: "5:39 PM, then 6:09, 6:39" tells
+ * a rider the headway without making them read a timetable. A fourth time adds a column
+ * of digits and no decision.
+ */
+export const RUNS_PER_CARD = 3;
+
+/**
+ * WHAT MAKES TWO ITINERARIES THE SAME OFFER.
+ *
+ * Not the trip — two 504s an hour apart are two different vehicles and the same choice.
+ * What a rider is picking between is the SEQUENCE: which routes, in which direction,
+ * boarded where, left where. Everything in that string changes the walk, the destination
+ * text or the door-to-door time the card prints, so two options that agree on all of it
+ * genuinely are one row with two times, and two that differ on any of it are not.
+ *
+ * Route identity is `agency:routeId`, never a bare `routeId`: Brampton shares 45 route_ids
+ * with the TTC, so a bare key would fold a Brampton bus and a TTC streetcar into one card
+ * and print one of them under the other's colour.
+ */
+function legSignature(c: RideCandidateDto): string {
+  const route = `${c.board.agency}:${c.routeId ?? c.shortName ?? '?'}`;
+  const dir = c.directionId ?? c.directionLabel ?? '?';
+  return `${route}:${dir}:${c.board.stopId}>${c.alight.stopId}`;
+}
+
+const sequenceSignature = (o: PlanOption): string => optionLegs(o).map(legSignature).join('|');
 
 export function buildOptions(res: PlanResponse, opts: PlanOptions): OptionList {
   let all: PlanOption[] = [];
@@ -156,9 +205,54 @@ export function buildOptions(res: PlanResponse, opts: PlanOptions): OptionList {
     }
   }
 
+  /**
+   * ONE CARD PER DISTINCT ROUTE SEQUENCE, CARRYING ITS NEXT FEW DEPARTURES.
+   *
+   * The ranking is by arrival, which is correct and — on its own — hid things. Six runs
+   * of the best route arrive before the first run of the second-best, so the cap filled
+   * with six spellings of ONE answer and the rider never learned that a different route
+   * goes there at all. That is the same defect as showing three boarding pairs of one
+   * trip, one level up: a menu of six items offering one choice.
+   *
+   * Grouping fixes both halves at once. Each sequence takes ONE row and speaks for its
+   * next `RUNS_PER_CARD` runs, so the list covers MORE of the clock than before while
+   * the cap now buys six genuinely different ways to make the trip. Order is untouched:
+   * groups appear in the order their best run did, so the soonest arrival is still first.
+   *
+   * The later times are boarding instants of real, reachable, individually-ranked plans —
+   * never extrapolated headways. A sequence with one run shows one time.
+   */
+  const order: string[] = [];
+  const bySequence = new Map<string, PlanOption[]>();
+  for (const o of all) {
+    const sig = sequenceSignature(o);
+    let group = bySequence.get(sig);
+    if (!group) { group = []; bySequence.set(sig, group); order.push(sig); }
+    group.push(o);
+  }
+
+  const leads: PlanOption[] = [];
+  const laterBoardMs = new Map<string, number[]>();
+  let spokenFor = 0;
+  for (const sig of order) {
+    const group = bySequence.get(sig)!;
+    if (leads.length >= MAX_OPTIONS) break;
+    const [lead, ...rest] = group;
+    leads.push(lead);
+    // Ascending, because `allRidePlans` ranks by ARRIVAL and a later bus can overtake an
+    // earlier one; a "then" list that ran backwards would read as a mistake.
+    const later = rest.slice(0, RUNS_PER_CARD - 1).map(optionBoardMs).sort((a, b) => a - b);
+    laterBoardMs.set(lead.id, later);
+    spokenFor += 1 + later.length;
+  }
+
   return {
-    options: all.slice(0, MAX_OPTIONS),
-    hiddenCount: Math.max(0, all.length - MAX_OPTIONS),
+    options: leads,
+    laterBoardMs,
+    // WHAT NO CARD SPEAKS FOR — not "what is past index six". A row now stands for up to
+    // three departures, so counting rows would overstate what is missing, and this number
+    // is printed to the rider as the fine print. It has to be the real remainder.
+    hiddenCount: Math.max(0, all.length - spokenFor),
     totalCount: all.length,
     // The SERVER's clock for this response. Using the client's would silently re-date the
     // predictions to now, which is the exact fiction the field exists to prevent.

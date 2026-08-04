@@ -350,9 +350,11 @@ function OptionAxis({ axis, o, destinationName }: {
   );
 }
 
-function OptionCard({ o, expanded, onToggle, imperial, destinationName, now, axis, asOfMs }: {
+function OptionCard({ o, expanded, onToggle, imperial, destinationName, now, axis, asOfMs, laterBoardMs }: {
   o: PlanOption; expanded: boolean; onToggle: () => void;
   imperial: boolean; destinationName: string; now: number; axis: TimeAxis | null; asOfMs: number;
+  /** The next departures of THIS card's route sequence. See `OptionList.laterBoardMs`. */
+  laterBoardMs: readonly number[];
 }) {
   const { t } = useTranslation();
   const startJourney = useStore((s) => s.startJourney);
@@ -424,6 +426,22 @@ function OptionCard({ o, expanded, onToggle, imperial, destinationName, now, axi
             {t('plan.arriveAt', { time: fmtClock(doorMs) })}
             {!sameDay && <span className="plan-date"> · {fmtServiceDate(boardMs)}</span>}
           </span>
+
+          {/* THE NEXT ONES ON THIS SAME ROUTE — "then 6:09, 6:39".
+              A rider deciding whether to run for this bus is really asking what happens
+              if they miss it, and the honest answer is a real later departure rather
+              than a headway we inferred. Every time here is another reachable plan's own
+              boarding instant, so the row covers more of the clock without claiming
+              anything the planner did not already establish.
+
+              It says nothing about liveness. The pill above speaks for THIS departure
+              only, and that is unchanged: a later run is a different vehicle, and this
+              line is not allowed to borrow the arc from the one in front of it. */}
+          {laterBoardMs.length > 0 && (
+            <span className="opt-then tnum">
+              {t('plan.thenAt', { times: laterBoardMs.map((ms) => fmtClock(ms)).join(', ') })}
+            </span>
+          )}
         </span>
 
         <span className="opt-when tnum">
@@ -552,6 +570,7 @@ export function PlanOptions({ list, selectedId, onSelect, imperial, destinationN
             now={now}
             axis={axis}
             asOfMs={list.asOfMs}
+            laterBoardMs={list.laterBoardMs.get(o.id) ?? []}
           />
         ))}
       </ul>
