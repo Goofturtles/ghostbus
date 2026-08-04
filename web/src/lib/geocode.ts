@@ -57,6 +57,31 @@ export function shouldGeocode(q: string, stopCount: number): boolean {
 const KEY = 'gb.geocodes';
 const CAP = 12;
 
+/**
+ * The ODbL credit, when the server has not just told us what it is.
+ *
+ * The response carries the attribution so it can never drift from the service that
+ * actually answered — but an address group can render from THIS DEVICE'S remembered
+ * addresses with no lookup behind it at all, and a licence that requires attribution
+ * wherever the data is shown does not stop requiring it because the data came from
+ * localStorage. So the group always has a credit, and the server's wording wins whenever
+ * there is one.
+ */
+export const OSM_ATTRIBUTION_FALLBACK = 'Address search © OpenStreetMap contributors, via Nominatim.';
+
+/**
+ * What a chosen address is CALLED once it becomes a pin.
+ *
+ * Nominatim's `display_name` runs to the postcode and the country — 105 characters for a
+ * doorway on Yonge Street — and that string ends up in the plan's destination chip and in
+ * the final walk leg, where it is unreadable. The row the rider picked from showed the
+ * full context, so nothing is being hidden: this is the same address, named the way a
+ * rider would say it. Still the geocoder's own words, just the front of them.
+ */
+export function pinLabel(r: { title: string; label: string }): string {
+  return r.title.trim() !== '' ? r.title : r.label;
+}
+
 export interface RecentGeocode extends GeocodeResultDto {
   /** epoch ms it was last chosen — the list is most-recent-first. */
   ts: number;

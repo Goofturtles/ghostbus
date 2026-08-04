@@ -34,6 +34,7 @@ import {
 } from '@/lib/search';
 import {
   shouldGeocode, saveRecentGeocode, readRecentGeocodes, filterRecentGeocodes,
+  pinLabel, OSM_ATTRIBUTION_FALLBACK,
 } from '@/lib/geocode';
 import { RouteBadge, StopRoutes } from './Primitives';
 import { SearchIcon, PinIcon, ClockIcon, StarIcon, RouteIcon, FlagIcon } from './icons';
@@ -111,6 +112,9 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
   const [addresses, setAddresses] = useState<GeocodeResultDto[]>([]);
   const [addrFailed, setAddrFailed] = useState(false);
   const [addrSearched, setAddrSearched] = useState(false);
+  /** An address lookup is scheduled or in flight. While it is, this sheet must not tell
+   *  the rider that nothing matches — see the empty state below. */
+  const [addrPending, setAddrPending] = useState(false);
   /** The credit the geocoder itself sent back, shown verbatim whenever its results are. */
   const [attribution, setAttribution] = useState<string | null>(null);
   // Read once per opening: the sheet is remounted each time it opens.
@@ -162,17 +166,20 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
     // it into something else, those two modes are not offered addresses at all.
     if (mode === 'home' || mode === 'work' || !shouldGeocode(query, stops.length)) {
       geoSeqRef.current += 1;
-      setAddresses([]); setAddrFailed(false); setAddrSearched(false);
+      setAddresses([]); setAddrFailed(false); setAddrSearched(false); setAddrPending(false);
       return;
     }
     const seq = ++geoSeqRef.current;
     const ctrl = new AbortController();
+    // PENDING FROM THE MOMENT IT IS SCHEDULED, not from the moment it is sent. The whole
+    // point is to stop the sheet claiming "nothing matches" during the debounce.
+    setAddrPending(true);
     const timer = window.setTimeout(() => {
       api.geocode(query, ctrl.signal)
         .then((res) => {
           if (seq !== geoSeqRef.current) return;
           setAddresses(res.results); setAttribution(res.attribution);
-          setAddrFailed(false); setAddrSearched(true);
+          setAddrFailed(false); setAddrSearched(true); setAddrPending(false);
         })
         .catch(() => {
           if (seq !== geoSeqRef.current) return;
@@ -180,7 +187,7 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
           // Rate-limited, offline, or the geocoder is down. All of them are OUR side of
           // the wire, and none of them is evidence that the address does not exist — so
           // the group says it could not look, rather than showing an empty list.
-          setAddresses([]); setAddrFailed(true); setAddrSearched(true);
+          setAddresses([]); setAddrFailed(true); setAddrSearched(true); setAddrPending(false);
         });
     }, GEOCODE_DEBOUNCE_MS);
     return () => { window.clearTimeout(timer); ctrl.abort(); };
@@ -367,7 +374,7 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
   const chooseAddress = useCallback((row: GeocodeResultDto) => {
     const store = useStore.getState();
     saveRecentGeocode(row);
-    const point = { kind: 'pin' as const, lat: row.lat, lon: row.lon, label: row.label };
+    const point = { kind: 'pin' as const, lat: row.lat, lon: row.lon, label: pinLabel(row) };
     if (mode === 'origin') store.setPlanOrigin(point);
     else store.setPlanTarget(point);
     store.setTab('plan');
@@ -471,7 +478,14 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
         : mode === 'work' ? t('search.setWorkTitle')
           : t('search.title');
   const placeholder = mode === 'destination' ? t('search.destinationPlaceholder') : t('search.placeholder');
-  const noResults = q.trim() !== '' && !loading && flat.length === 0;
+  /**
+   * "Nothing matches" IS A CLAIM, and it may only be made once every search that could
+   * contradict it has finished. The address lookup settles about a second after the stop
+   * search does, so without `addrPending` the sheet announced a definitive no-match for a
+   * query it was about to find — and then replaced it with the answer. Being briefly
+   * silent is honest; being briefly wrong is not.
+   */
+  const noResults = q.trim() !== '' && !loading && !addrPending && flat.length === 0;
   const nearestKnown = nearby[0]?.name ?? null;
 
   return (
@@ -579,8 +593,8 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
                   own, carried back in its response, so the credit cannot drift from the
                   service that actually answered. Untranslated, like every other licence
                   attribution in this app. */}
-              {section.key === 'addresses' && attribution != null && (
-                <p className="search-attrib" lang="en">{attribution}</p>
+              {section.key === 'addresses' && (
+                <p className="search-attrib" lang="en">{attribution ?? OSM_ATTRIBUTION_FALLBACK}</p>
               )}
             </div>
           ))}

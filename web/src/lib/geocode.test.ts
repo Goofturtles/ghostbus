@@ -7,7 +7,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  looksLikeAddress, shouldGeocode, pushRecentGeocode, filterRecentGeocodes,
+  looksLikeAddress, shouldGeocode, pushRecentGeocode, filterRecentGeocodes, pinLabel,
   THIN_STOP_RESULTS, type RecentGeocode,
 } from './geocode.ts';
 import type { GeocodeResultDto } from '../../../shared/types.ts';
@@ -78,4 +78,21 @@ test('remembered addresses are filtered by what has been typed', () => {
   assert.equal(filterRecentGeocodes(list, 'yonge').length, 1);
   assert.equal(filterRecentGeocodes(list, 'front')[0].label, '80 Front Street West, Toronto');
   assert.equal(filterRecentGeocodes(list, '').length, 0, 'an empty query matches nothing here');
+});
+
+// ---------------- what a chosen address is called ----------------
+
+test('a pin is named the way a rider would say the address, not the way OSM stores it', () => {
+  // display_name runs to the postcode and the country. That string becomes the plan's
+  // destination chip and the final walk leg, where 105 characters is unreadable.
+  const full = '193, Yonge Street, Downtown Yonge East, Toronto Centre, Toronto, Golden Horseshoe, Ontario, M5B 1M4, Canada';
+  const label = pinLabel({ title: '193, Yonge Street', label: full });
+  assert.equal(label, '193, Yonge Street');
+  assert.ok(label.length < 40, 'a destination chip has to be able to show it');
+  // Still the geocoder's own words — a prefix of them, never a rewrite.
+  assert.ok(full.startsWith(label));
+});
+
+test('an address with no title falls back to the full label rather than to nothing', () => {
+  assert.equal(pinLabel({ title: '', label: 'Somewhere, Toronto' }), 'Somewhere, Toronto');
 });
