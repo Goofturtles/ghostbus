@@ -1293,22 +1293,6 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
   // The response is a small MENU, not a verdict: which option is best depends on how
   // fast the rider walks, and that preference stays on their device.
   app.get('/api/plan', { config: routeLimit(PLAN_MAX_PER_MIN) }, async (req, reply) => {
-    /**
-     * THE WALL, STARTED BEFORE ANYTHING ELSE — see rule 5 in itinerary.ts.
-     *
-     * The rate limit above bounds how MANY plans one IP may ask for; it cannot bound what
-     * one of them costs, and the cost is the thing that froze the board for the city. This
-     * does. It is checked at tier and per-day boundaries below rather than mid-query,
-     * because the database call already running is not something this process can cancel.
-     *
-     * DELIBERATELY NOT ENFORCED ON THE SINGLE-RIDE TIER. That tier is bounded by
-     * PLAN_SQL_ROW_LIMIT and measured in the low seconds, and truncating it would quietly
-     * shorten a MENU — dropping real rides the rider was entitled to see, with nothing on
-     * the wire to say some were dropped. The budget therefore bounds the stitching tiers,
-     * which is where the 12-26 s searches actually live, and where being cut short has an
-     * honest name to report itself under.
-     */
-    const budget = startSearchBudget(planBudgetMs);
     const q = req.query as Record<string, string | undefined>;
     const num = (v: string | undefined) => (v == null || v.trim() === '' ? NaN : Number(v));
     const fromLat = num(q.fromLat), fromLon = num(q.fromLon);
@@ -1484,6 +1468,33 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       await breathe();
     }
     }
+
+    /**
+     * THE WALL, AND IT STARTS HERE — not at the top of the handler. See rule 5 in
+     * itinerary.ts for what it is for; this is about where its clock begins.
+     *
+     * The rate limit above bounds how MANY plans one IP may ask for; it cannot bound what
+     * one of them costs, and the cost is what froze the board for the city. This does. It
+     * is checked at tier and per-day boundaries rather than mid-query, because the database
+     * call already running is not something this process can cancel.
+     *
+     * IT DELIBERATELY DOES NOT COVER THE SINGLE-RIDE TIER ABOVE, and starting the clock at
+     * the top of the handler amounted to the same thing by the back door — MEASURED on the
+     * live board, not reasoned about: the ride tier plus the exists-ever probe spend eight
+     * to ten seconds on a wide cross-region query, so a wall started at request entry was
+     * already spent before the first stitching statement, and four journeys the planner
+     * used to answer (Steeles/Etobicoke Creek to Union, Harmony to SMARTVMC, VMC to
+     * Scarborough) came back as refusals instead of the two- and three-leg itineraries
+     * they really have. A budget that refuses answers the search can find is not a budget,
+     * it is an outage with better manners.
+     *
+     * So the wall bounds the STITCHING SWEEP, which is the part that is actually unbounded
+     * in shape and where being cut short has an honest name to report itself under. The
+     * ride tier stays outside it for its own reason: it is capped by PLAN_SQL_ROW_LIMIT,
+     * and truncating it would quietly shorten a MENU — dropping real rides the rider was
+     * entitled to see, with nothing on the wire to say some were dropped.
+     */
+    const budget = startSearchBudget(planBudgetMs);
 
     if (raw.length === 0) {
       // Nothing departs in the window. Two very different facts hide behind that, and
