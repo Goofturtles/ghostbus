@@ -232,7 +232,14 @@ test('an itinerary whose connection no longer holds is not an option', () => {
 });
 
 test('a planner outcome that is not a menu produces no options at all', () => {
-  for (const outcome of ['transfer', 'noService', 'noStopsNearYou', 'noStopsNearDestination'] as const) {
+  // The two refusals added when the planner learned to say WHICH kind of nothing it found
+  // belong here for the same reason as the rest: a refusal is not a menu, so it can never
+  // produce a card. `searchBudgetExhausted` especially — a search that was cut short must
+  // not leave a half-built option behind that reads like an answer.
+  for (const outcome of [
+    'transfer', 'noService', 'noStopsNearYou', 'noStopsNearDestination',
+    'beyondSearchDepth', 'searchBudgetExhausted',
+  ] as const) {
     const { options, totalCount } = buildOptions({ ...rideRes([]), outcome }, opts);
     assert.equal(options.length, 0);
     assert.equal(totalCount, 0);

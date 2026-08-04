@@ -543,6 +543,16 @@ const en = {
     transferBody: 'No single vehicle runs from a stop near you to a stop near your destination, and no two-ride connection with a short enough walk between them was found either. GhostBus will not invent a connection it cannot see.',
     transferFine: 'The link below opens your maps app with the destination only. Your own position never leaves this device.',
     openInMaps: 'Open in a maps app',
+    // THE DEPTH CEILING, SAID AS A FACT ABOUT GHOSTBUS — never as a fact about the trip.
+    // GhostBus searches one ride, two joined by a walk, and three joined by two, and it
+    // stops there on purpose. When a journey needs a fourth, the true sentence is about
+    // where our search ends, not about whether the journey exists.
+    depthTitle: 'This trip needs more connections than GhostBus checks',
+    depthBody: 'GhostBus searches one ride, two rides joined by a walk, and three joined by two walks — and stops there. Nothing within that reach connects these two points in the time searched. A longer chain of rides may well do it; GhostBus does not search that far, so it will not tell you either way.',
+    // THE WALL CLOCK, AND IT PROVED NOTHING. A search that was stopped is not a search
+    // that found nothing, and the copy must never let those read as the same sentence.
+    searchBudgetTitle: 'GhostBus ran out of time on this one',
+    searchBudgetBody: 'This trip needs more searching than GhostBus can do right now, so the search was stopped before it finished. That is not a finding: no route was ruled out, and nothing was proved impossible. GhostBus stops rather than hold up everyone else’s departure board while it keeps looking.',
     noServiceTitle: 'Nothing direct is running',
     noServiceBody: 'A direct ride exists in the schedule, but none departs in the days GhostBus searched.',
     noStopsYouTitle: 'No stop near you',

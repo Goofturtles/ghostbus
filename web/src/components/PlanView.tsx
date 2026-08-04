@@ -35,7 +35,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { PlanResponse } from '@shared/types';
+import type { PlanResponse, PlanOutcome } from '@shared/types';
 import { api } from '@/lib/api';
 import { useLive, liveNow, isBackedOff, selectedNearbyStop, isGeoFailure } from '@/hooks/useLive';
 import { useTick } from '@/hooks/useTick';
@@ -833,6 +833,26 @@ function PlanState({ glyph, title, body, tone = 'neutral', children }: {
   );
 }
 
+/**
+ * THREE REFUSALS, THREE SENTENCES, ONE SHAPE.
+ *
+ * They share a card and the maps escape hatch because the rider's next move is the same
+ * in all three. They do NOT share a sentence, because they are not the same fact:
+ * `transfer` is "nothing runs at either end inside this window"; `beyondSearchDepth` is
+ * "we searched to the end of three rides and no chain of them connects these points";
+ * `searchBudgetExhausted` is "we stopped early and therefore proved nothing at all".
+ * Letting any of them read as another is exactly the dishonesty they were split to
+ * prevent — the planner's limits are ours to own, not the trip's to wear.
+ *
+ * `Partial` on purpose: every other outcome is an ANSWER and is rendered below. An
+ * outcome added later gets no card here until someone writes its sentence.
+ */
+const REFUSAL_COPY: Partial<Record<PlanOutcome, { title: string; body: string }>> = {
+  transfer: { title: 'plan.transferTitle', body: 'plan.transferBody' },
+  beyondSearchDepth: { title: 'plan.depthTitle', body: 'plan.depthBody' },
+  searchBudgetExhausted: { title: 'plan.searchBudgetTitle', body: 'plan.searchBudgetBody' },
+};
+
 function PlanOutcomeView({ res, widened, options, selectedId, onSelect, imperial, destinationName }: {
   res: PlanResponse;
   widened: boolean;
@@ -844,12 +864,14 @@ function PlanOutcomeView({ res, widened, options, selectedId, onSelect, imperial
 }) {
   const { t } = useTranslation();
 
-  if (res.outcome === 'transfer') {
+  const refusal = REFUSAL_COPY[res.outcome];
+
+  if (refusal) {
     return (
       <PlanState
         glyph={<RouteIcon width={24} height={24} />}
-        title={t('plan.transferTitle')}
-        body={t('plan.transferBody')}
+        title={t(refusal.title)}
+        body={t(refusal.body)}
       >
         {/* The disclosure comes BEFORE the control it qualifies, which is also the only
             arrangement that makes its own wording true: `plan.transferFine` says "The link

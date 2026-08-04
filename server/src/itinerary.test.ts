@@ -6,7 +6,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  stitchItineraries, stitchThreeLeg,
+  stitchItineraries, stitchThreeLeg, startSearchBudget, breathe, PLAN_SEARCH_BUDGET_MS,
   TRANSFER_MAX_WALK_M, TRANSFER_MIN_SLACK_S, TRANSFER_MAX_WAIT_S,
   type StitchRide, type StitchStop,
 } from './itinerary.ts';
@@ -30,11 +30,11 @@ const ride = (o: Partial<StitchRide> & Pick<StitchRide, 'agency' | 'tripId' | 'b
 
 const opts = { paceMps: 1.3, limit: 10 };
 
-test('a known two-leg journey is found: MiWay to the hub, walk, TTC onward', () => {
+test('a known two-leg journey is found: MiWay to the hub, walk, TTC onward', async () => {
   const leg1 = [ride({ agency: 'miway', tripId: 'M1', boardStopId: 'HOME', alightStopId: 'HUB_A', departureMs: T0, arrivalMs: T0 + min(15) })];
   const leg2 = [ride({ agency: 'ttc', tripId: 'T1', boardStopId: 'HUB_B', alightStopId: 'WORK', departureMs: T0 + min(22), arrivalMs: T0 + min(40) })];
 
-  const [it] = stitchItineraries(leg1, leg2, STOPS, opts);
+  const [it] = await stitchItineraries(leg1, leg2, STOPS, opts);
   assert.ok(it, 'the connection exists and must be offered');
   assert.equal(it.legs[0].tripId, 'M1');
   assert.equal(it.legs[1].tripId, 'T1');
@@ -44,63 +44,63 @@ test('a known two-leg journey is found: MiWay to the hub, walk, TTC onward', () 
   assert.ok(it.transfers[0].walkM > 0 && it.transfers[0].walkM <= TRANSFER_MAX_WALK_M);
 });
 
-test('RULE 1: a connection that cannot physically be made is refused', () => {
+test('RULE 1: a connection that cannot physically be made is refused', async () => {
   // Leg 2 leaves 30 s after leg 1 lands — the timetable permits it and a rider cannot.
   const leg1 = [ride({ agency: 'miway', tripId: 'M1', boardStopId: 'HOME', alightStopId: 'HUB_A', departureMs: T0, arrivalMs: T0 + min(15) })];
   const leg2 = [ride({ agency: 'ttc', tripId: 'T1', boardStopId: 'HUB_B', alightStopId: 'WORK', departureMs: T0 + min(15) + 30_000, arrivalMs: T0 + min(40) })];
 
-  assert.deepEqual(stitchItineraries(leg1, leg2, STOPS, opts), [],
+  assert.deepEqual(await stitchItineraries(leg1, leg2, STOPS, opts), [],
     'a sprint the schedule allows is still not a plan');
 });
 
-test('RULE 1: the slack floor is real — one second under it is still refused', () => {
+test('RULE 1: the slack floor is real — one second under it is still refused', async () => {
   const leg1 = [ride({ agency: 'miway', tripId: 'M1', boardStopId: 'HOME', alightStopId: 'HUB_A', departureMs: T0, arrivalMs: T0 + min(15) })];
   // MEASURED, not guessed: the walk is whatever the module says it is for these two
   // stops at this pace, and the point of the test is the boundary around it.
-  const walkSec = stitchItineraries(
+  const walkSec = (await stitchItineraries(
     leg1,
     [ride({ agency: 'ttc', tripId: 'T0', boardStopId: 'HUB_B', alightStopId: 'WORK', departureMs: T0 + min(30), arrivalMs: T0 + min(40) })],
     STOPS, opts,
-  )[0].transfers[0].walkSec;
+  ))[0].transfers[0].walkSec;
   const at = (extraS: number) => [ride({
     agency: 'ttc', tripId: 'T1', boardStopId: 'HUB_B', alightStopId: 'WORK',
     departureMs: T0 + min(15) + extraS * 1000, arrivalMs: T0 + min(40),
   })];
 
-  assert.equal(stitchItineraries(leg1, at(walkSec + TRANSFER_MIN_SLACK_S - 1), STOPS, opts).length, 0);
-  assert.equal(stitchItineraries(leg1, at(walkSec + TRANSFER_MIN_SLACK_S + 5), STOPS, opts).length, 1);
+  assert.equal((await stitchItineraries(leg1, at(walkSec + TRANSFER_MIN_SLACK_S - 1), STOPS, opts)).length, 0);
+  assert.equal((await stitchItineraries(leg1, at(walkSec + TRANSFER_MIN_SLACK_S + 5), STOPS, opts)).length, 1);
 });
 
-test('RULE 2: a transfer past the walk cap is not a transfer', () => {
+test('RULE 2: a transfer past the walk cap is not a transfer', async () => {
   const leg1 = [ride({ agency: 'miway', tripId: 'M1', boardStopId: 'HOME', alightStopId: 'HUB_A', departureMs: T0, arrivalMs: T0 + min(15) })];
   // Plenty of time; the only problem is that FAR is 1.6 km away.
   const leg2 = [ride({ agency: 'ttc', tripId: 'T1', boardStopId: 'FAR', alightStopId: 'WORK', departureMs: T0 + min(40), arrivalMs: T0 + min(55) })];
 
-  assert.deepEqual(stitchItineraries(leg1, leg2, STOPS, opts), [],
+  assert.deepEqual(await stitchItineraries(leg1, leg2, STOPS, opts), [],
     'past the cap this is a second journey, and the app must say it cannot plan it');
 });
 
-test('an impossible journey still refuses — no connection is ever fabricated', () => {
+test('an impossible journey still refuses — no connection is ever fabricated', async () => {
   // Nothing leg-2 touches anything leg-1 reaches.
   const leg1 = [ride({ agency: 'miway', tripId: 'M1', boardStopId: 'HOME', alightStopId: 'HUB_A', departureMs: T0, arrivalMs: T0 + min(15) })];
   const leg2 = [ride({ agency: 'ttc', tripId: 'T1', boardStopId: 'WORK', alightStopId: 'FAR', departureMs: T0 + min(30), arrivalMs: T0 + min(45) })];
-  assert.deepEqual(stitchItineraries(leg1, leg2, STOPS, opts), []);
+  assert.deepEqual(await stitchItineraries(leg1, leg2, STOPS, opts), []);
 
   // And the degenerate inputs, which must be silence rather than a throw.
-  assert.deepEqual(stitchItineraries([], leg2, STOPS, opts), []);
-  assert.deepEqual(stitchItineraries(leg1, [], STOPS, opts), []);
-  assert.deepEqual(stitchItineraries(leg1, leg2, [], opts), []);
+  assert.deepEqual(await stitchItineraries([], leg2, STOPS, opts), []);
+  assert.deepEqual(await stitchItineraries(leg1, [], STOPS, opts), []);
+  assert.deepEqual(await stitchItineraries(leg1, leg2, [], opts), []);
 });
 
-test('a service gap is not a connection', () => {
+test('a service gap is not a connection', async () => {
   const leg1 = [ride({ agency: 'miway', tripId: 'M1', boardStopId: 'HOME', alightStopId: 'HUB_A', departureMs: T0, arrivalMs: T0 + min(15) })];
   const tooLate = Math.ceil(TRANSFER_MAX_WAIT_S / 60) + 16;
   const leg2 = [ride({ agency: 'ttc', tripId: 'T1', boardStopId: 'HUB_B', alightStopId: 'WORK', departureMs: T0 + min(tooLate), arrivalMs: T0 + min(tooLate + 15) })];
-  assert.deepEqual(stitchItineraries(leg1, leg2, STOPS, opts), [],
+  assert.deepEqual(await stitchItineraries(leg1, leg2, STOPS, opts), [],
     'waiting out an hour-long gap is not something to call a transfer');
 });
 
-test('RULE 4: ranked by ARRIVAL, and the earliest catchable leg 2 is the one offered', () => {
+test('RULE 4: ranked by ARRIVAL, and the earliest catchable leg 2 is the one offered', async () => {
   const leg1 = [
     ride({ agency: 'miway', tripId: 'EARLY', boardStopId: 'HOME', alightStopId: 'HUB_A', departureMs: T0, arrivalMs: T0 + min(15) }),
     ride({ agency: 'miway', tripId: 'LATER', boardStopId: 'HOME', alightStopId: 'HUB_A', departureMs: T0 + min(10), arrivalMs: T0 + min(25) }),
@@ -110,7 +110,7 @@ test('RULE 4: ranked by ARRIVAL, and the earliest catchable leg 2 is the one off
     ride({ agency: 'ttc', tripId: 'FAST', boardStopId: 'HUB_B', alightStopId: 'WORK', departureMs: T0 + min(30), arrivalMs: T0 + min(45) }),
   ];
 
-  const out = stitchItineraries(leg1, leg2, STOPS, opts);
+  const out = await stitchItineraries(leg1, leg2, STOPS, opts);
   assert.equal(out[0].arrivalMs, T0 + min(45), 'the soonest ARRIVAL leads, not the soonest departure');
   assert.equal(out[0].legs[0].tripId, 'LATER',
     'and among equal arrivals the rider waits at home, not at the transfer stop');
@@ -120,20 +120,20 @@ test('RULE 4: ranked by ARRIVAL, and the earliest catchable leg 2 is the one off
     'one itinerary per first leg: the earliest leg 2 it can actually catch');
 });
 
-test('the same vehicle is never both legs of its own transfer', () => {
+test('the same vehicle is never both legs of its own transfer', async () => {
   const leg1 = [ride({ agency: 'ttc', tripId: 'SAME', boardStopId: 'HOME', alightStopId: 'HUB_A', departureMs: T0, arrivalMs: T0 + min(15) })];
   const leg2 = [ride({ agency: 'ttc', tripId: 'SAME', boardStopId: 'HUB_A', alightStopId: 'WORK', departureMs: T0 + min(20), arrivalMs: T0 + min(35) })];
   const stops: StitchStop[] = [...STOPS, { agency: 'ttc', stopId: 'HUB_A', lat: 43.6300, lon: -79.5500 }];
-  assert.deepEqual(stitchItineraries(leg1, leg2, stops, opts), [],
+  assert.deepEqual(await stitchItineraries(leg1, leg2, stops, opts), [],
     'staying on the bus is a one-leg ride the first tier already answers');
 });
 
-test('a same-stop transfer needs no walk, only a wait', () => {
+test('a same-stop transfer needs no walk, only a wait', async () => {
   const leg1 = [ride({ agency: 'ttc', tripId: 'A', boardStopId: 'HOME', alightStopId: 'HUB_B', departureMs: T0, arrivalMs: T0 + min(15) })];
   const leg2 = [ride({ agency: 'ttc', tripId: 'B', boardStopId: 'HUB_B', alightStopId: 'WORK', departureMs: T0 + min(20), arrivalMs: T0 + min(35) })];
   const stops: StitchStop[] = [...STOPS, { agency: 'ttc', stopId: 'HOME', lat: 43.6000, lon: -79.6000 }];
 
-  const [it] = stitchItineraries(leg1, leg2, stops, opts);
+  const [it] = await stitchItineraries(leg1, leg2, stops, opts);
   assert.ok(it);
   assert.equal(it.transfers[0].walkM, 0);
   assert.equal(it.crossAgency, false);
@@ -170,8 +170,8 @@ const DRT_1 = ride({ agency: 'durham', tripId: 'DRT-1', boardStopId: 'OSH_GO_DRT
 
 const opts3 = { paceMps: 1.3, limit: 3 };
 
-test('THREE LEGS: Burlington to Oshawa resolves — local bus, GO train, Durham bus', () => {
-  const [it] = stitchThreeLeg([BT_1], [GO_1], [DRT_1], GTA, opts3);
+test('THREE LEGS: Burlington to Oshawa resolves — local bus, GO train, Durham bus', async () => {
+  const [it] = await stitchThreeLeg([BT_1], [GO_1], [DRT_1], GTA, opts3);
   assert.ok(it, 'three real legs exist and the app must stop refusing this journey');
   assert.deepEqual(it.legs.map((l) => l.tripId), ['BT-1', 'GO-LSW-1', 'DRT-1']);
   assert.equal(it.crossAgency, true);
@@ -194,48 +194,118 @@ test('THREE LEGS: Burlington to Oshawa resolves — local bus, GO train, Durham 
   }
 });
 
-test('THREE LEGS: the walk cap is enforced at the SECOND seam, not just the first', () => {
+test('THREE LEGS: the walk cap is enforced at the SECOND seam, not just the first', async () => {
   const far = ride({ agency: 'go', tripId: 'GO-FAR', boardStopId: 'BURL_GO', alightStopId: 'OSH_FAR', departureMs: T0 + min(25), arrivalMs: T0 + min(90) });
-  assert.deepEqual(stitchThreeLeg([BT_1], [far], [DRT_1], GTA, opts3), [],
+  assert.deepEqual(await stitchThreeLeg([BT_1], [far], [DRT_1], GTA, opts3), [],
     'a 3 km hike between the last two legs is not a transfer, whichever seam it is on');
 });
 
-test('THREE LEGS: an unmakeable second connection is refused, timetable or not', () => {
+test('THREE LEGS: an unmakeable second connection is refused, timetable or not', async () => {
   // The Durham bus leaves 30 s after the train lands. The board permits it; a rider cannot.
   const tooSoon = ride({ agency: 'durham', tripId: 'DRT-SPRINT', boardStopId: 'OSH_GO_DRT', alightStopId: 'OSH_DEST', departureMs: T0 + min(90) + 30_000, arrivalMs: T0 + min(110) });
-  assert.deepEqual(stitchThreeLeg([BT_1], [GO_1], [tooSoon], GTA, opts3), []);
+  assert.deepEqual(await stitchThreeLeg([BT_1], [GO_1], [tooSoon], GTA, opts3), []);
 });
 
-test('THREE LEGS: a truly impossible journey still refuses — nothing is fabricated', () => {
+test('THREE LEGS: a truly impossible journey still refuses — nothing is fabricated', async () => {
   // The middle leg lands nowhere near anything the last leg departs from.
   const orphan = ride({ agency: 'go', tripId: 'GO-ORPHAN', boardStopId: 'BURL_GO', alightStopId: 'OSH_FAR', departureMs: T0 + min(25), arrivalMs: T0 + min(90) });
   const stranded = ride({ agency: 'durham', tripId: 'DRT-STRANDED', boardStopId: 'OSH_DEST', alightStopId: 'OSH_GO_DRT', departureMs: T0 + min(100), arrivalMs: T0 + min(120) });
-  assert.deepEqual(stitchThreeLeg([BT_1], [orphan], [stranded], GTA, opts3), []);
+  assert.deepEqual(await stitchThreeLeg([BT_1], [orphan], [stranded], GTA, opts3), []);
 
   // And the degenerate inputs, which must be silence rather than a throw.
-  assert.deepEqual(stitchThreeLeg([], [GO_1], [DRT_1], GTA, opts3), []);
-  assert.deepEqual(stitchThreeLeg([BT_1], [], [DRT_1], GTA, opts3), []);
-  assert.deepEqual(stitchThreeLeg([BT_1], [GO_1], [], GTA, opts3), []);
-  assert.deepEqual(stitchThreeLeg([BT_1], [GO_1], [DRT_1], [], opts3), []);
+  assert.deepEqual(await stitchThreeLeg([], [GO_1], [DRT_1], GTA, opts3), []);
+  assert.deepEqual(await stitchThreeLeg([BT_1], [], [DRT_1], GTA, opts3), []);
+  assert.deepEqual(await stitchThreeLeg([BT_1], [GO_1], [], GTA, opts3), []);
+  assert.deepEqual(await stitchThreeLeg([BT_1], [GO_1], [DRT_1], [], opts3), []);
 });
 
-test('THREE LEGS: the same vehicle is never two legs of its own journey', () => {
+test('THREE LEGS: the same vehicle is never two legs of its own journey', async () => {
   const back = ride({ agency: 'go', tripId: 'GO-LSW-1', boardStopId: 'OSH_GO_DRT', alightStopId: 'OSH_DEST', departureMs: T0 + min(100), arrivalMs: T0 + min(120) });
-  assert.deepEqual(stitchThreeLeg([BT_1], [GO_1], [back], GTA, opts3), [],
+  assert.deepEqual(await stitchThreeLeg([BT_1], [GO_1], [back], GTA, opts3), [],
     'trip GO-LSW-1 cannot also be the leg the rider transfers onto');
 });
 
-test('THREE LEGS: the total-time budget drops a detour, and keeps a merely slower option', () => {
+test('THREE LEGS: the total-time budget drops a detour, and keeps a merely slower option', async () => {
   // A second path to Oshawa through its own pair of stops, so the frontier prune (which
   // keeps the earliest arrival PER STOP) cannot be what decides this — only the budget can.
   const slowMid = (arriveMin: number) => ride({ agency: 'go', tripId: 'GO-MILKRUN', boardStopId: 'BURL_GO_2', alightStopId: 'OSH_GO_2', departureMs: T0 + min(25), arrivalMs: T0 + min(arriveMin) });
   const slowLast = (departMin: number) => ride({ agency: 'durham', tripId: 'DRT-2', boardStopId: 'OSH_DRT_2', alightStopId: 'OSH_DEST', departureMs: T0 + min(departMin), arrivalMs: T0 + min(departMin + 20) });
 
   // Best span is 120 min, so the budget is max(120 x 1.6, 120 + 45) = 192 min.
-  const kept = stitchThreeLeg([BT_1], [GO_1, slowMid(120)], [DRT_1, slowLast(130)], GTA, opts3);
+  const kept = await stitchThreeLeg([BT_1], [GO_1, slowMid(120)], [DRT_1, slowLast(130)], GTA, opts3);
   assert.equal(kept.length, 2, 'a 150-minute alternative is inside the budget and is offered');
 
-  const dropped = stitchThreeLeg([BT_1], [GO_1, slowMid(210)], [DRT_1, slowLast(220)], GTA, opts3);
+  const dropped = await stitchThreeLeg([BT_1], [GO_1, slowMid(210)], [DRT_1, slowLast(220)], GTA, opts3);
   assert.deepEqual(dropped.map((i) => i.legs[1].tripId), ['GO-LSW-1'],
     'a 240-minute journey against a 120-minute one is a detour, not a second option');
+});
+
+// ---------------------------------------------------------------------------
+// RULE 5: the search is polite and bounded. These pin the two mechanisms that
+// stopped one rider's cross-region question from freezing the board for the
+// whole city — and, just as importantly, that neither of them may change WHICH
+// journeys come back.
+// ---------------------------------------------------------------------------
+
+/** A `breathe` that counts, and really does hand the event loop back each time. */
+function countingBreath() {
+  const state = { calls: 0 };
+  return {
+    state,
+    breathe: async () => { state.calls++; await breathe(); },
+  };
+}
+
+test('RULE 5: the two-leg join breathes — the event loop is handed back at the seam', async () => {
+  const leg1 = [ride({ agency: 'miway', tripId: 'M1', boardStopId: 'HOME', alightStopId: 'HUB_A', departureMs: T0, arrivalMs: T0 + min(15) })];
+  const leg2 = [ride({ agency: 'ttc', tripId: 'T1', boardStopId: 'HUB_B', alightStopId: 'WORK', departureMs: T0 + min(22), arrivalMs: T0 + min(40) })];
+  const b = countingBreath();
+
+  const out = await stitchItineraries(leg1, leg2, STOPS, { ...opts, breathe: b.breathe });
+  assert.equal(b.state.calls, 1, 'one seam, one breath — not zero');
+  // And the answer is the SAME answer. A breath must never change what is found.
+  assert.deepEqual(
+    out.map((i) => i.legs.map((l) => l.tripId)),
+    (await stitchItineraries(leg1, leg2, STOPS, opts)).map((i) => i.legs.map((l) => l.tripId)),
+  );
+});
+
+test('RULE 5: a three-leg search breathes ONCE PER TIER, not once for the whole sweep', async () => {
+  const b = countingBreath();
+  const out = await stitchThreeLeg([BT_1], [GO_1], [DRT_1], GTA, { ...opts3, breathe: b.breathe });
+
+  // Two seams are two joins, and the second is the expensive one — a search that
+  // breathed only before the first would still hold the thread through the sweep
+  // that actually costs the twenty seconds.
+  assert.equal(b.state.calls, 2, 'both seams breathe, so no tier runs unbroken');
+  assert.deepEqual(out[0].legs.map((l) => l.tripId), ['BT-1', 'GO-LSW-1', 'DRT-1'],
+    'and the journey found is exactly the one found without breathing');
+});
+
+test('RULE 5: breathing is OPTIONAL, and a caller that omits it pays nothing', async () => {
+  // No `breathe` in the options at all: the join must not invent one, and the result
+  // must be identical. This is what keeps every other test in this file a pure unit.
+  const three = await stitchThreeLeg([BT_1], [GO_1], [DRT_1], GTA, opts3);
+  assert.equal(three.length, 1);
+});
+
+test('RULE 5: a fresh budget is unspent, and an exhausted one stays exhausted', async () => {
+  let clock = 1_000;
+  const budget = startSearchBudget(8_000, () => clock);
+  assert.equal(budget.expired(), false, 'a search that just started has spent nothing');
+
+  clock += 7_999;
+  assert.equal(budget.expired(), false, 'one millisecond short of the wall is still inside it');
+
+  clock += 1;
+  assert.equal(budget.expired(), true, 'the wall is the wall');
+  clock += 60_000;
+  assert.equal(budget.expired(), true, 'and it never un-expires');
+});
+
+test('RULE 5: a zero budget is already spent — the expiry path is reachable in a test', async () => {
+  // The property the API test leans on: `planBudgetMs: 0` forces the refusal branch
+  // without a test that waits eight real seconds to get there.
+  assert.equal(startSearchBudget(0).expired(), true);
+  assert.equal(PLAN_SEARCH_BUDGET_MS, 8_000, 'the shipped wall, stated out loud');
 });

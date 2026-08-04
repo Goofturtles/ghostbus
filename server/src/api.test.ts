@@ -1153,7 +1153,10 @@ test('/api/plan stitches TWO rides through a walkable transfer when no single ri
 test('/api/plan still REFUSES when the only connection is past the walk cap', async () => {
   // Everything about this journey works except the geography: the second leg leaves from
   // a stop 1.2 km from where the first one lands. That is not a transfer, it is a second
-  // journey, and the refusal the app shipped before tier 2 existed must survive intact.
+  // journey, and the refusal must survive intact — with no invented hike and no
+  // half-answer. What the refusal is CALLED is the part that changed: rides do run at
+  // both ends, they simply do not chain within the three legs GhostBus searches, so the
+  // honest name for it is the depth ceiling and not "needs a transfer".
   const db = planDb([
     { when: LEG1_FROM_RIDER, rows: LEG1_ROWS },
     { when: LEG2_TO_DESTINATION, rows: [{ ...LEG2_ROWS[0], board_stop: 'X3' }] },
@@ -1161,9 +1164,178 @@ test('/api/plan still REFUSES when the only connection is past the walk cap', as
   const app = await buildApi({ db, poller: fakePoller });
   try {
     const body = (await app.inject({ method: 'GET', url: planUrl() })).json() as PlanResponse;
-    assert.equal(body.outcome, 'transfer');
+    assert.equal(body.outcome, 'beyondSearchDepth');
     assert.deepEqual(body.candidates, []);
     assert.deepEqual(body.itineraries, [], 'no half-answer, and no invented hike');
+    // The claim is bounded by what was searched: the three-leg tier really did run.
+    assert.ok(db.calls.some((c) => c.sql.includes('three-leg:middle')),
+      'the depth refusal may only be given by a search that actually reached the third tier');
+  } finally {
+    await app.close();
+  }
+});
+
+// ---------------------------------------------------------------------------------
+// THE TWO REFUSALS THAT REFUSE DIFFERENT THINGS
+// ---------------------------------------------------------------------------------
+//
+// A GTA-wide fuzz run found one rider's cross-region /api/plan holding the single
+// threaded board for 24-26 s — freezing /api/health and every other rider's request —
+// and found Burlington -> Oshawa refusing as `transfer` when what is actually true is
+// that the journey needs FOUR legs and the planner searches three by design. Neither is
+// a correctness bug: both are the planner describing itself dishonestly. These pin the
+// three things the fix must hold: the search breathes, the wall is real, and a search
+// stopped by the wall never reports itself as a finding.
+
+test('/api/plan says WHICH kind of nothing: a depth ceiling is not "needs a transfer"', async () => {
+  // Rides run from the rider's stops and rides run to the destination's, and no chain of
+  // three connects them. That is the Burlington -> Oshawa class exactly: a journey that
+  // needs a fourth leg, refused by a planner that stops at three ON PURPOSE.
+  const db = planDb([
+    { when: LEG1_FROM_RIDER, rows: LEG1_ROWS },
+    { when: LEG2_TO_DESTINATION, rows: [{ ...LEG2_ROWS[0], board_stop: 'X3' }] },
+  ]);
+  const app = await buildApi({ db, poller: fakePoller });
+  try {
+    const body = (await app.inject({ method: 'GET', url: planUrl() })).json() as PlanResponse;
+    assert.equal(body.outcome, 'beyondSearchDepth');
+  } finally {
+    await app.close();
+  }
+});
+
+test('/api/plan keeps saying "transfer" when there was nothing to search at all', async () => {
+  // NO ride leaves the rider's stops in the window and none reaches the destination's, so
+  // the stitching tiers never had material. Calling that a depth ceiling would be
+  // inventing a conclusion out of an empty board — the same lie in the other direction.
+  const app = await buildApi({ db: planDb(), poller: fakePoller });
+  try {
+    const body = (await app.inject({ method: 'GET', url: planUrl() })).json() as PlanResponse;
+    assert.equal(body.outcome, 'transfer');
+  } finally {
+    await app.close();
+  }
+});
+
+test('/api/plan refuses HONESTLY when its own clock stops the search', async () => {
+  // The budget is already spent when the request arrives, so every stitching tier is cut
+  // short. The one thing the answer may NOT be is a finding: nothing was searched, so
+  // nothing was proved, and `beyondSearchDepth` / `transfer` would both be claims the
+  // server cannot back.
+  const db = planDb([
+    { when: LEG1_FROM_RIDER, rows: LEG1_ROWS },
+    { when: LEG2_TO_DESTINATION, rows: [{ ...LEG2_ROWS[0], board_stop: 'X3' }] },
+  ]);
+  const app = await buildApi({ db, poller: fakePoller, planBudgetMs: 0 });
+  try {
+    const body = (await app.inject({ method: 'GET', url: planUrl() })).json() as PlanResponse;
+    assert.equal(body.outcome, 'searchBudgetExhausted');
+    assert.deepEqual(body.candidates, []);
+    assert.deepEqual(body.itineraries, []);
+    // And it stopped rather than swept: the widest tier was never asked for.
+    assert.equal(db.calls.some((c) => c.sql.includes('three-leg:middle')), false,
+      'an expired budget must not start the widest tier');
+  } finally {
+    await app.close();
+  }
+});
+
+test('/api/plan keeps a PROVEN noService even when the budget stopped the stitching sweep', async () => {
+  // The exists-ever probe found a direct connection in the published schedule, and that
+  // probe ran to completion — it is outside the budget, as is the windowed join. So
+  // "a direct ride exists, but none departs in the window" stays true whatever happened
+  // to the stitching tiers afterwards, and it is more useful than "we ran out of time".
+  const db = planDb([{ when: 'SELECT 1 AS ok', rows: [{ ok: 1 }] }]);
+  const app = await buildApi({ db, poller: fakePoller, planBudgetMs: 0 });
+  try {
+    const body = (await app.inject({ method: 'GET', url: planUrl() })).json() as PlanResponse;
+    assert.equal(body.outcome, 'noService');
+  } finally {
+    await app.close();
+  }
+});
+
+test('/api/plan PREFERS a found itinerary to a budget refusal — the wall never discards an answer', async () => {
+  /**
+   * Budget spent, and the two-leg search found a real journey anyway. A found 2-leg beats
+   * an aborted 3-leg sweep: the budget exists to stop searching, never to throw away a
+   * journey the search already has in its hands.
+   *
+   * The times are GTFS past-midnight (09:10 stated as 33:10 on the previous service day),
+   * which is what puts these rides inside the window on the FIRST service day the search
+   * looks at — the one day the wall always allows. Real rows, real rule: a service day is
+   * not a calendar day, and the planner has always had to search the day before.
+   */
+  const past = (s: number) => s + 86_400;
+  const db = planDb([
+    { when: LEG1_FROM_RIDER, rows: [{ ...LEG1_ROWS[0], board_s: past(33_000), alight_s: past(33_600) }] },
+    { when: LEG2_TO_DESTINATION, rows: [{ ...LEG2_ROWS[0], board_s: past(34_200), alight_s: past(35_400) }] },
+  ]);
+  const app = await buildApi({ db, poller: fakePoller, planBudgetMs: 0 });
+  try {
+    const body = (await app.inject({ method: 'GET', url: planUrl() })).json() as PlanResponse;
+    assert.equal(body.outcome, 'twoLeg');
+    assert.equal(body.itineraries.length, 1);
+    assert.deepEqual(body.itineraries[0].legs.map((l) => l.tripId), ['LEG-1', 'LEG-2']);
+  } finally {
+    await app.close();
+  }
+});
+
+test('/api/plan hands the event loop back mid-search instead of holding it to the end', async () => {
+  /**
+   * THE HEAD-OF-LINE MEASUREMENT, in a unit test.
+   *
+   * `fakeDb` answers on a microtask, which is precisely the shape the real in-process
+   * board has: awaiting it stays inside the same tick, so a chain of queries can run to
+   * completion without the event loop ever reaching a pending socket. That is how a 26 s
+   * plan came to freeze /api/health for 24 s.
+   *
+   * Counting macrotask turns that elapse DURING the request measures the fix directly: a
+   * search that never yields turns the loop a handful of times (the inject machinery's
+   * own), and a search that breathes at every statement turns it dozens.
+   */
+  const db = planDb([
+    { when: LEG1_FROM_RIDER, rows: LEG1_ROWS },
+    { when: LEG2_TO_DESTINATION, rows: [{ ...LEG2_ROWS[0], board_stop: 'X3' }] },
+  ]);
+  const app = await buildApi({ db, poller: fakePoller });
+  try {
+    let turns = 0;
+    let counting = true;
+    const spin = () => { if (counting) { turns++; setImmediate(spin); } };
+    setImmediate(spin);
+
+    const body = (await app.inject({ method: 'GET', url: planUrl() })).json() as PlanResponse;
+    counting = false;
+
+    assert.equal(body.outcome, 'beyondSearchDepth', 'the same answer, just not a selfish one');
+    assert.ok(turns >= 10,
+      `the event loop turned only ${turns} times during a full three-tier search — the plan is holding the thread`);
+  } finally {
+    await app.close();
+  }
+});
+
+test('/api/health is answered DURING a plan, not queued behind it', async () => {
+  // The product claim the fuzz run falsified: one rider's cross-region search must not
+  // freeze the arrivals board for everyone else. Both requests are started against the
+  // same instance with the plan first; health must not have to wait for it.
+  const db = planDb([
+    { when: LEG1_FROM_RIDER, rows: LEG1_ROWS },
+    { when: LEG2_TO_DESTINATION, rows: [{ ...LEG2_ROWS[0], board_stop: 'X3' }] },
+  ]);
+  const app = await buildApi({ db, poller: fakePoller });
+  try {
+    const order: string[] = [];
+    const plan = app.inject({ method: 'GET', url: planUrl() }).then((r) => { order.push('plan'); return r; });
+    const health = app.inject({ method: 'GET', url: '/api/health' }).then((r) => { order.push('health'); return r; });
+    const [planRes, healthRes] = await Promise.all([plan, health]);
+
+    assert.equal(healthRes.statusCode, 200);
+    assert.equal(planRes.statusCode, 200);
+    assert.deepEqual(order, ['health', 'plan'],
+      'health finished behind the plan — the search is holding the event loop');
   } finally {
     await app.close();
   }

@@ -24,6 +24,7 @@ import { activeServiceIds, type CalendarRow, type CalendarDateRow } from './gtfs
 import { torontoDay, torontoMidnightEpoch, hourOfWeek, torontoParts } from './tz.ts';
 import {
   stitchItineraries, stitchThreeLeg, withinTransferWalk, TRANSFER_MAX_WALK_M,
+  breathe, startSearchBudget, PLAN_SEARCH_BUDGET_MS,
   type StitchStop,
 } from './itinerary.ts';
 import type {
@@ -125,6 +126,24 @@ const GHOSTS_DEFAULT_HOURS = 24;
 const GHOSTS_MAX_HOURS = 168;    // one week — the counters already cover the week
 const GHOSTS_MAX_EVENTS = 200;
 const FORECAST_REFRESH_MS = 30 * 60_000; // the denominator query is heavy; twice an hour is plenty
+
+/**
+ * How the stitching search ended. Three outcomes, and the caller must be able to tell
+ * them apart — see the note on `findItineraries`.
+ *
+ *   'found'      real itineraries, two legs or three.
+ *   'exhausted'  the search ran to the end of its depth and found none. It had material
+ *                to work with: rides depart near the rider and arrive near the
+ *                destination, they simply do not chain within three legs.
+ *   'budget'     the wall clock stopped it. Proves nothing either way.
+ *   'noRides'    there was nothing to search: no ride leaves the rider's stops, or none
+ *                reaches the destination's, inside the window. Not a depth finding.
+ */
+type PlanSearchResult =
+  | { kind: 'found'; outcome: 'twoLeg' | 'threeLeg'; itineraries: ItineraryDto[] }
+  | { kind: 'exhausted' }
+  | { kind: 'budget' }
+  | { kind: 'noRides' };
 
 interface RouteMeta { shortName: string | null; longName: string | null; routeType: number | null; color: string | null }
 
@@ -432,10 +451,19 @@ export function agencyLocalStamp(epochMs: number): string {
   return `${p.year}-${pad(p.month)}-${pad(p.day)} ${pad(p.hour)}:${pad(p.minute)}`;
 }
 
-export interface BuildApiOptions { db: Db; poller: PollerHandle }
+export interface BuildApiOptions {
+  db: Db;
+  poller: PollerHandle;
+  /**
+   * The wall budget one /api/plan search may spend, in ms. Defaults to
+   * `PLAN_SEARCH_BUDGET_MS`; injectable ONLY so a test can drive the expiry path without
+   * spending eight real seconds to reach it. Nothing in production passes it.
+   */
+  planBudgetMs?: number;
+}
 
 export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> {
-  const { db, poller } = opts;
+  const { db, poller, planBudgetMs = PLAN_SEARCH_BUDGET_MS } = opts;
 
   /**
    * TWO NAMESPACES, BECAUSE THERE ARE TWO KINDS OF ROW — and collapsing them into one was
@@ -1254,15 +1282,33 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
 
   // ---------- /api/plan?fromLat=&fromLon=&toLat=&toLon=&at=&windowMin=&radius= ----------
   //
-  // SINGLE-RIDE ONLY, AND THAT IS THE POINT. A candidate exists only when one real
-  // `trip_id` calls at a stop near the rider and LATER (strictly greater stop_sequence)
-  // at a stop near the destination. A journey needing a transfer produces no candidate
-  // and is reported as `outcome: 'transfer'` — the planner never stitches two rides
-  // together and calls it a trip.
+  // THE RIDE TIER IS SINGLE-RIDE ONLY, AND THAT IS THE POINT. A `ride` candidate exists
+  // only when one real `trip_id` calls at a stop near the rider and LATER (strictly
+  // greater stop_sequence) at a stop near the destination. A journey needing a transfer
+  // produces no candidate here at all; it falls through to the stitching tiers below,
+  // and if those find nothing either the answer names WHICH kind of nothing it is —
+  // `beyondSearchDepth`, `searchBudgetExhausted`, `noService` or `transfer`. No tier ever
+  // stitches two rides together and calls the result a single trip.
   //
   // The response is a small MENU, not a verdict: which option is best depends on how
   // fast the rider walks, and that preference stays on their device.
   app.get('/api/plan', { config: routeLimit(PLAN_MAX_PER_MIN) }, async (req, reply) => {
+    /**
+     * THE WALL, STARTED BEFORE ANYTHING ELSE — see rule 5 in itinerary.ts.
+     *
+     * The rate limit above bounds how MANY plans one IP may ask for; it cannot bound what
+     * one of them costs, and the cost is the thing that froze the board for the city. This
+     * does. It is checked at tier and per-day boundaries below rather than mid-query,
+     * because the database call already running is not something this process can cancel.
+     *
+     * DELIBERATELY NOT ENFORCED ON THE SINGLE-RIDE TIER. That tier is bounded by
+     * PLAN_SQL_ROW_LIMIT and measured in the low seconds, and truncating it would quietly
+     * shorten a MENU — dropping real rides the rider was entitled to see, with nothing on
+     * the wire to say some were dropped. The budget therefore bounds the stitching tiers,
+     * which is where the 12-26 s searches actually live, and where being cut short has an
+     * honest name to report itself under.
+     */
+    const budget = startSearchBudget(planBudgetMs);
     const q = req.query as Record<string, string | undefined>;
     const num = (v: string | undefined) => (v == null || v.trim() === '' ? NaN : Number(v));
     const fromLat = num(q.fromLat), fromLon = num(q.fromLon);
@@ -1432,6 +1478,10 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
           departureS: Math.round(departureMs / 1000),
         });
       }
+      // One breath per (agency, day) statement. The board is in-process and single
+      // threaded, so without this the whole sweep is one unbroken tick and every other
+      // rider's request waits behind all of it (rule 5, itinerary.ts).
+      await breathe();
     }
     }
 
@@ -1453,6 +1503,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
            WHERE b.agency = $1 AND b.stop_id = ANY($2::text[]) AND a.stop_id = ANY($3::text[])
            LIMIT 1`, [planAgency, idsFor(boardStops, planAgency), idsFor(alightStops, planAgency)])).rows.length > 0;
         if (hit) { anyDirect = true; break; }
+        await breathe();
       }
       // TIERS 2 AND 3. No single vehicle does it — but two joined by a walk often do,
       // and across the region's agency boundaries sometimes only three do. This
@@ -1461,10 +1512,36 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       // be affected by anything below. An empty result falls through to the refusal that
       // shipped before this tier existed, word for word.
       const stitched = await findItineraries();
-      if (stitched) return answer(stitched.outcome, [], stitched.itineraries);
-      return answer(anyDirect ? 'noService' : 'transfer');
+      if (stitched.kind === 'found') return answer(stitched.outcome, [], stitched.itineraries);
+      /**
+       * FOUR REFUSALS, AND THEY ARE NOT INTERCHANGEABLE. Ordered by how much each one has
+       * actually PROVED, most-proved first.
+       *
+       * 'noService' leads because it is the only one of the four that is a proven fact
+       * about the schedule rather than a statement about our search. Both halves of it
+       * were established by statements that ran to completion — the windowed join and the
+       * exists-ever probe are outside the budget — so an unfinished stitching sweep cannot
+       * make it any less true. It is also the most useful thing we can say, and the copy
+       * claims nothing about transfers, so nothing is smuggled in with it.
+       *
+       * 'searchBudgetExhausted' comes next and outranks both findings below it, because a
+       * search that was cut short is not evidence of anything. Reporting it as a finding
+       * would be claiming to have looked where we stopped looking.
+       *
+       * 'beyondSearchDepth' is a real finding, bounded by its own words: one, two and
+       * three rides were all searched and none of them connects.
+       *
+       * 'transfer' survives for exactly one case: nothing at all runs from the rider's
+       * stops (or to the destination's) inside the window, so the stitching tiers had no
+       * material to work with. Saying "this needs a fourth ride" there would be inventing
+       * a conclusion out of an empty board — the same class of lie in the other direction.
+       */
+      if (anyDirect) return answer('noService');
+      if (stitched.kind === 'budget') return answer('searchBudgetExhausted');
+      return answer(stitched.kind === 'exhausted' ? 'beyondSearchDepth' : 'transfer');
     }
 
+    await breathe();
     const ranked = rankRideCandidates(raw);
     return answer('ride', await buildCandidates(ranked, staticAgency,
       (r) => boardById.get(metaKey(r.agency, r.boardStopId)),
@@ -1547,6 +1624,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       }
     }));
 
+    await breathe();
     const candidates: RideCandidateDto[] = [];
     for (const r of rides) {
       // A ride whose endpoints cannot both be resolved is dropped rather than shipped
@@ -1622,7 +1700,18 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       // in the tests, which match statements by substring. `end` is a literal union, so
       // there is nothing interpolable here from a request.
       const tag = end === 'board' ? 'two-leg:from-rider' : 'two-leg:to-destination';
+      let issued = 0;
       for (const day of dayList) {
+        /**
+         * THE WALL TRIMS THE SWEEP; IT NEVER CANCELS THE SEARCH.
+         *
+         * `break`, never `return []`: a truncated day list is still real board rows, and a
+         * genuine two-leg journey found among them beats refusing over the days we did not
+         * reach. And `issued > 0` so at least ONE service day is always fetched — a wall
+         * that fires before any statement leaves an empty set behind, which can only ever
+         * refuse, which would make an expired budget an off switch rather than a bound.
+         */
+        if (issued > 0 && budget.expired()) break;
         const svc = activeServicesFor(agencyId, day.ymd, day.dow);
         if (svc.length === 0) continue;
         const midnight = midnightFor(day.ymd);
@@ -1650,6 +1739,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
            ORDER BY COALESCE(b.departure_s, b.arrival_s), b.trip_id, a.stop_sequence
            LIMIT $6`,
           [agencyId, fixedStopIds, svc, Math.max(0, loSec), hiSec, TWO_LEG_SQL_ROW_LIMIT])).rows;
+        issued++;
         for (const r of rows) {
           if (r.board_s == null || r.alight_s == null) continue;
           const departureMs = midnight + Number(r.board_s) * 1000;
@@ -1670,6 +1760,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
             departureS: Math.round(departureMs / 1000),
           });
         }
+        await breathe();
       }
       return out;
     }
@@ -1684,8 +1775,14 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
      *
      * TWO IS TRIED FIRST AND THREE ONLY IF TWO FAILS, which is not an optimisation but the
      * honesty rule: a journey that can be done with one transfer is never shown with two.
+     *
+     * WHAT IT RETURNS IS NOT A BOOLEAN. It used to be an itinerary set or `null`, and the
+     * caller turned `null` into "needs a transfer" — which was true when the only way to
+     * get here was an exhausted search, and became a lie the moment a search could also be
+     * stopped by a clock. So the three ways this can end are three distinct answers, and
+     * `budget` is the one that must never be collapsed into either of the others.
      */
-    async function findItineraries(): Promise<{ outcome: 'twoLeg' | 'threeLeg'; itineraries: ItineraryDto[] } | null> {
+    async function findItineraries(): Promise<PlanSearchResult> {
       // Deliberately NOT `planAgencies`: that set is agencies with stops at BOTH ends,
       // which is exactly the wrong filter here. The journey this tier exists for is
       // MiWay to the edge of Toronto and TTC onwards, and neither agency has stops at
@@ -1702,7 +1799,20 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       ]);
       const leg1 = leg1Sets.flat();
       const legLast = legLastSets.flat();
-      if (leg1.length === 0 || legLast.length === 0) return null;
+      // THE BUDGET IS ASKED BEFORE THE EMPTINESS IS INTERPRETED, and the order matters:
+      // an expired budget can itself be the reason a set came back empty (legRides breaks
+      // out of its day loop at the wall), so reading "no rides at all" off a truncated
+      // fetch would report a fact about the board that is really a fact about the clock.
+      if (budget.expired() && (leg1.length === 0 || legLast.length === 0)) return { kind: 'budget' };
+      if (leg1.length === 0 || legLast.length === 0) return { kind: 'noRides' };
+
+      /**
+       * The search found nothing. WHICH truth that is depends on one question only: did it
+       * get to the end, or did it stop? Every dead end below routes through here rather
+       * than deciding for itself, so no path can ever grow a claim of exhaustion that the
+       * clock has not earned.
+       */
+      const nothing = (): PlanSearchResult => (budget.expired() ? { kind: 'budget' } : { kind: 'exhausted' });
 
       // Coordinates for every stop a transfer could happen at. Keyed by (agency, stop)
       // because two agencies routinely number different stops the same.
@@ -1723,6 +1833,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
         }
         const learned: StitchStop[] = [];
         for (const [agencyId, ids] of byAgency) {
+          await breathe();
           for (const r of (await db.query<{ stop_id: string; name: string | null; lat: number | null; lon: number | null; wheelchair_boarding: number | null }>(
             `SELECT stop_id, name, lat, lon, wheelchair_boarding FROM stops
              WHERE agency = $1 AND stop_id = ANY($2::text[])`, [agencyId, ids])).rows) {
@@ -1753,13 +1864,21 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       for (const r of legLast) seam.set(metaKey(r.agency, r.boardStopId), { agency: r.agency, stopId: r.boardStopId });
       await learnStops(seam.values());
 
-      const two = stitchItineraries(leg1, legLast, stitchStops, {
-        paceMps: TRANSFER_PACE_MPS, limit: PLAN_MAX_ITINERARIES,
+      const two = await stitchItineraries(leg1, legLast, stitchStops, {
+        paceMps: TRANSFER_PACE_MPS, limit: PLAN_MAX_ITINERARIES, breathe,
       });
       if (two.length > 0) {
         const itineraries = await toItineraryDtos(two);
-        if (itineraries.length > 0) return { outcome: 'twoLeg', itineraries };
+        // A FOUND ANSWER IS RETURNED WHATEVER THE CLOCK SAYS. The budget exists to stop
+        // searching, never to throw away a journey the search already has in its hands.
+        if (itineraries.length > 0) return { kind: 'found', outcome: 'twoLeg', itineraries };
       }
+
+      // THE TIER BOUNDARY, and the one place the wall is worth the coverage it costs. The
+      // third tier is the widest thing the planner does — a middle leg touching neither
+      // query point — and it is where the 25 s searches were measured. Starting it with
+      // the budget already spent buys nothing but a longer freeze.
+      if (budget.expired()) return { kind: 'budget' };
 
       // TIER 3. No single vehicle, and no single transfer either. A middle leg touches
       // NEITHER query point, so its candidate stops cannot come from a radius around the
@@ -1771,7 +1890,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       for (const r of leg1) { const st = stitchByKey.get(metaKey(r.agency, r.alightStopId)); if (st) anchorsIn.push(st); }
       const anchorsOut: StitchStop[] = [];
       for (const r of legLast) { const st = stitchByKey.get(metaKey(r.agency, r.boardStopId)); if (st) anchorsOut.push(st); }
-      if (anchorsIn.length === 0 || anchorsOut.length === 0) return null;
+      if (anchorsIn.length === 0 || anchorsOut.length === 0) return nothing();
 
       /** Every stop within one transfer walk of these anchors, learned and returned. */
       async function walkableFrom(anchors: readonly StitchStop[]): Promise<StitchStop[]> {
@@ -1790,7 +1909,10 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
           if (r.lat == null || r.lon == null) continue;
           cands.push({ agency: r.agency, stopId: r.stop_id, lat: Number(r.lat), lon: Number(r.lon) });
         }
-        // The bounding box is a superset of the cap — this is the line that makes it the cap.
+        // The bounding box is a superset of the cap — this is the line that makes it the
+        // cap, and on a THREE_LEG_STOP_LIMIT-wide box it is also the longest unbroken
+        // stretch of arithmetic in the request. Breathe before it, not after.
+        await breathe();
         const near = withinTransferWalk(anchors, cands);
         await learnStops(near.map((s) => ({ agency: s.agency, stopId: s.stopId })));
         return near;
@@ -1799,7 +1921,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       const [midBoardStops, midAlightStops] = await Promise.all([
         walkableFrom(anchorsIn), walkableFrom(anchorsOut),
       ]);
-      if (midBoardStops.length === 0 || midAlightStops.length === 0) return null;
+      if (midBoardStops.length === 0 || midAlightStops.length === 0) return nothing();
 
       // A middle leg is ONE vehicle, so like every other leg it cannot cross agencies:
       // only an agency present at both ends of the middle can supply one.
@@ -1811,14 +1933,15 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
         midAlightStops.filter((s) => s.agency === a).map((s) => s.stopId),
       )));
       const mid = midSets.flat();
-      if (mid.length === 0) return null;
+      if (mid.length === 0) return nothing();
 
-      const three = stitchThreeLeg(leg1, mid, legLast, stitchStops, {
-        paceMps: TRANSFER_PACE_MPS, limit: PLAN_MAX_THREE_LEG,
+      const three = await stitchThreeLeg(leg1, mid, legLast, stitchStops, {
+        paceMps: TRANSFER_PACE_MPS, limit: PLAN_MAX_THREE_LEG, breathe,
       });
-      if (three.length === 0) return null;
+      if (three.length === 0) return nothing();
       const itineraries = await toItineraryDtos(three);
-      return itineraries.length > 0 ? { outcome: 'threeLeg', itineraries } : null;
+      // Same rule as the two-leg tier: what the search HAS is returned, clock or no clock.
+      return itineraries.length > 0 ? { kind: 'found', outcome: 'threeLeg', itineraries } : nothing();
 
       /**
        * Stitched chains into wire DTOs, whatever their length.
@@ -1904,7 +2027,11 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       if (boardIds.length === 0 || alightIds.length === 0) return [];
       const out: RawRide[] = [];
       const horizonMs = windowMs + TWO_LEG_HORIZON_MS;
+      let issued = 0;
       for (const day of dayList) {
+        // The wall, and the same reasoning as legRides: one service day is always
+        // fetched, and past that the wall stops the sweep without discarding it.
+        if (issued > 0 && budget.expired()) break;
         const svc = activeServicesFor(agencyId, day.ymd, day.dow);
         if (svc.length === 0) continue;
         const midnight = midnightFor(day.ymd);
@@ -1933,6 +2060,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
            ORDER BY COALESCE(b.departure_s, b.arrival_s), b.trip_id, a.stop_sequence
            LIMIT $7`,
           [agencyId, boardIds, alightIds, svc, Math.max(0, loSec), hiSec, TWO_LEG_SQL_ROW_LIMIT])).rows;
+        issued++;
         for (const r of rows) {
           if (r.board_s == null || r.alight_s == null) continue;
           const departureMs = midnight + Number(r.board_s) * 1000;
@@ -1951,6 +2079,7 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
             departureS: Math.round(departureMs / 1000),
           });
         }
+        await breathe();
       }
       return out;
     }

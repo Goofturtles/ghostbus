@@ -23,6 +23,12 @@
 //   4. RANK BY WHEN THE RIDER ARRIVES, not by departure and not by leg count — the same
 //      standard the single-ride planner already uses.
 //
+// A FIFTH RULE was added after the search was measured against everybody else's requests
+// rather than only against its own answer: the search must be polite and bounded, and a
+// search that was cut short must say so rather than call itself a refusal. It is stated
+// in full beside PLAN_SEARCH_BUDGET_MS below, because unlike the four above it is not
+// about which journeys are honest — it is about who pays for the question.
+//
 // WHY A THIRD LEG IS FENCED RATHER THAN FREE. Two was where the honest evidence used to
 // run out, and the fear was real: by the third leg the compounding schedule assumption
 // does more work than the data. So the third leg is not a general graph search. It is the
@@ -35,6 +41,60 @@
 
 /** Metres a rider will walk between two rides. Rule 2. */
 export const TRANSFER_MAX_WALK_M = 400;
+
+/**
+ * THE FIFTH RULE, and it is about everyone who is NOT this rider.
+ *
+ * The board this search reads is single-threaded and in-process, so the whole of it — the
+ * queries and the joins below — happens on the one thread that also answers every other
+ * rider's request. A cross-region search measured 24 s of that thread, during which the
+ * arrivals board was frozen for the entire city. Nothing about the answer was wrong; the
+ * cost of computing it was simply charged to strangers.
+ *
+ * Two mechanisms, and they do different jobs:
+ *
+ *   `breathe()` hands the event loop back at a boundary, so a health check or an arrivals
+ *   board that arrived mid-search is served now rather than in twenty seconds. It makes
+ *   the search POLITE. It does not make it shorter.
+ *
+ *   `startSearchBudget()` puts a wall on how long the search may run at all. It makes the
+ *   search BOUNDED — and the honesty rule that comes with it is absolute: a search that
+ *   was cut short has proved NOTHING, so it must never be reported as "no connection
+ *   exists". It reports that it ran out of time, in those words. Anything already found
+ *   when the wall is hit is returned, because a real two-leg answer in hand beats an
+ *   aborted sweep for a third leg every time.
+ */
+export const PLAN_SEARCH_BUDGET_MS = 8_000;
+
+/** How long a search may run before it must stop and say so. */
+export interface SearchBudget {
+  /** True once the wall is spent. Cheap enough to ask in a loop. */
+  expired(): boolean;
+}
+
+/**
+ * Start the wall clock. `now` is injected rather than read from `Date` so the expiry path
+ * can be tested without a test that actually waits eight seconds.
+ */
+export function startSearchBudget(
+  budgetMs: number = PLAN_SEARCH_BUDGET_MS,
+  now: () => number = Date.now,
+): SearchBudget {
+  const deadline = now() + budgetMs;
+  return { expired: () => now() >= deadline };
+}
+
+/**
+ * Give the event loop one turn.
+ *
+ * `setImmediate` and not `Promise.resolve()`: an awaited microtask keeps the same tick and
+ * so lets exactly nobody else in, which is how a chain of a hundred awaited queries can
+ * still block every socket on the process. The macrotask boundary is the entire point.
+ */
+export const breathe = (): Promise<void> => new Promise((resolve) => { setImmediate(resolve); });
+
+/** Transfer pairs joined between breaths. Small enough that no breath is far away. */
+export const STITCH_BREATH_PAIRS = 256;
 
 /**
  * Seconds of slack demanded on top of the walk.
@@ -174,6 +234,15 @@ export interface StitchOptions {
   paceMps: number;
   /** at most this many itineraries come back, soonest arrival first. */
   limit: number;
+  /**
+   * Called at every seam and every `STITCH_BREATH_PAIRS` transfer pairs — see rule 5.
+   *
+   * OPTIONAL, and the default is to do nothing: a caller with no other riders to be
+   * polite to (a test, a script) should not pay a macrotask per seam, and the join's
+   * RESULT is identical either way. Nothing inside this module reads a clock or decides
+   * anything from how long it took.
+   */
+  breathe?: () => Promise<void>;
 }
 
 /** Total walking across every seam — the tie-break, and the dedupe's preference. */
@@ -195,13 +264,16 @@ const tripsOf = <R extends StitchRide>(it: StitchedItinerary<R>) =>
  * search is one call; a three-leg search is two. Nothing about the rules is relaxed for
  * the second seam — that is the entire reason it is written once.
  */
-function joinOnward<R extends StitchRide>(
+async function joinOnward<R extends StitchRide>(
   chains: readonly StitchedItinerary<R>[],
   onward: readonly R[],
   stopByKey: ReadonlyMap<string, StitchStop>,
   opts: StitchOptions,
-): Array<StitchedItinerary<R>> {
+): Promise<Array<StitchedItinerary<R>>> {
   if (chains.length === 0 || onward.length === 0) return [];
+  // Rule 5, at the seam boundary: one breath before a join starts, so a two-leg search
+  // breathes once and a three-leg search twice however small the fixture is.
+  if (opts.breathe) await opts.breathe();
 
   // Index by where each side touches the seam, so the pair loop walks rides rather than
   // re-scanning both lists for every candidate stop pair.
@@ -230,7 +302,11 @@ function joinOnward<R extends StitchRide>(
    * journey an hour apart, and the rider asked when they can get there.
    */
   const best = new Map<string, StitchedItinerary<R>>();
+  let sinceBreath = 0;
   for (const pair of nearbyPairs(fromStops, toStops)) {
+    // Rule 5, inside the loop: a downtown seam is tens of thousands of pairs, and the
+    // rest of the city should not wait behind all of them.
+    if (opts.breathe && ++sinceBreath >= STITCH_BREATH_PAIRS) { sinceBreath = 0; await opts.breathe(); }
     const walkSec = Math.round(pair.distanceM / Math.max(0.1, opts.paceMps));
     const arrivals = arrivingAt.get(key(pair.from.agency, pair.from.stopId)) ?? [];
     const departures = departingFrom.get(key(pair.to.agency, pair.to.stopId)) ?? [];
@@ -291,15 +367,15 @@ const seed = <R extends StitchRide>(r: R): StitchedItinerary<R> =>
  * destination. Both are the same shape the single-ride planner already produces, which
  * is the point — this tier adds a join, not a second planner.
  */
-export function stitchItineraries<R extends StitchRide>(
+export async function stitchItineraries<R extends StitchRide>(
   leg1: readonly R[],
   leg2: readonly R[],
   stops: readonly StitchStop[],
   opts: StitchOptions,
-): Array<StitchedItinerary<R>> {
+): Promise<Array<StitchedItinerary<R>>> {
   if (leg1.length === 0 || leg2.length === 0) return [];
   const stopByKey = new Map(stops.map((s) => [key(s.agency, s.stopId), s]));
-  return joinOnward(leg1.map(seed), leg2, stopByKey, opts)
+  return (await joinOnward(leg1.map(seed), leg2, stopByKey, opts))
     .sort(rankByArrival)
     .slice(0, opts.limit);
 }
@@ -318,17 +394,17 @@ export function stitchItineraries<R extends StitchRide>(
  * `THREE_LEG_BUDGET_*` beyond the best journey found is dropped. A three-leg answer that
  * survives is not a long tail of maybes, it is a small set of real ones.
  */
-export function stitchThreeLeg<R extends StitchRide>(
+export async function stitchThreeLeg<R extends StitchRide>(
   leg1: readonly R[],
   mid: readonly R[],
   leg3: readonly R[],
   stops: readonly StitchStop[],
   opts: StitchOptions,
-): Array<StitchedItinerary<R>> {
+): Promise<Array<StitchedItinerary<R>>> {
   if (leg1.length === 0 || mid.length === 0 || leg3.length === 0) return [];
   const stopByKey = new Map(stops.map((s) => [key(s.agency, s.stopId), s]));
 
-  const firstSeam = joinOnward(leg1.map(seed), mid, stopByKey, opts);
+  const firstSeam = await joinOnward(leg1.map(seed), mid, stopByKey, opts);
   if (firstSeam.length === 0) return [];
 
   // THE PRUNE. Among partial journeys standing at the same stop, the earliest arrival can
@@ -344,7 +420,7 @@ export function stitchThreeLeg<R extends StitchRide>(
   }
   const pruned = [...frontier.values()].sort(rankByArrival).slice(0, THREE_LEG_MAX_FRONTIER);
 
-  const full = joinOnward(pruned, leg3, stopByKey, opts).sort(rankByArrival);
+  const full = (await joinOnward(pruned, leg3, stopByKey, opts)).sort(rankByArrival);
   if (full.length === 0) return [];
 
   // THE BUDGET, measured against the best journey this search actually found rather than

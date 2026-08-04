@@ -442,13 +442,34 @@ export interface RideCandidateDto {
  *                               departs inside the searched window (e.g. overnight).
  *   'noStopsNearYou'            no stop at all within `radiusM` of the rider.
  *   'noStopsNearDestination'    no stop at all within `radiusM` of the destination.
+ *
+ * TWO OF THESE ARE REFUSALS THAT REFUSE DIFFERENT THINGS, and the difference is the
+ * product. A planner that answers "no" has to say whether it looked and found nothing, or
+ * stopped looking — because those licence completely different next moves for the rider,
+ * and because claiming the first when only the second happened is a lie the rider has no
+ * way to check:
+ *
+ *   'beyondSearchDepth'         the search ran to the end of what GhostBus checks — one
+ *                               ride, two joined by a walk, three joined by two — and
+ *                               none of them connects these points in the window. The
+ *                               journey needs a FOURTH ride, which is past the depth this
+ *                               planner searches BY DESIGN. Nothing here says no journey
+ *                               exists; it says none exists inside the depth searched.
+ *   'searchBudgetExhausted'     the search hit its wall clock and stopped mid-sweep. It
+ *                               proved NOTHING at all — not that a journey exists, not
+ *                               that one does not. The only honest thing to report is
+ *                               that GhostBus ran out of time.
  */
 export type PlanOutcome =
   | 'ride' | 'transfer' | 'noService' | 'noStopsNearYou' | 'noStopsNearDestination'
   /** No single ride does it, but TWO rides joined by a walk do — `itineraries`. */
   | 'twoLeg'
   /** Not even two — but three rides and two walks do. Same `itineraries` array. */
-  | 'threeLeg';
+  | 'threeLeg'
+  /** One, two and three rides were all searched and none connects. Needs a fourth. */
+  | 'beyondSearchDepth'
+  /** The search was stopped by its own time budget. Not a finding — an interruption. */
+  | 'searchBudgetExhausted';
 
 /**
  * The walk between the two rides of a two-leg itinerary.
