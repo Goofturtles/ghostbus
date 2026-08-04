@@ -125,6 +125,7 @@ export function SettingsSheet() {
           </button>
 
           <p className="settings-privacy">{t('privacy.body')}</p>
+          <p className="settings-maker">{t('about.madeBy')}</p>
         </div>
       </div>
     </div>

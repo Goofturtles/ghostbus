@@ -259,6 +259,7 @@ const frCA: Dict = {
     retryAuto: 'Les départs reviennent d’eux-mêmes dès que la connexion revient.',
   },
   about: {
+    madeBy: 'Conçu par AERIS',
     title: 'À propos et crédits',
     what: 'GhostBus est un moteur de reddition de comptes auquel on a greffé une appli de transport : il surveille les flux de la TTC et consigne ce qui s’est réellement passé.',
     what2: 'Chaque chiffre affiché est accompagné de la preuve qui le soutient, et là où il n’y a pas de preuve, il le dit au lieu de deviner.',
@@ -442,6 +443,18 @@ const frCA: Dict = {
     pickedOrigin: 'Départ fixé à {{name}}',
     pickedDest: 'Destination fixée à {{name}}',
     pickDismiss: 'Fermer',
+  },
+  geo: {
+    deniedTitle: 'La localisation est bloquée',
+    deniedBody: 'Votre navigateur refuse de partager votre position. Sur iPhone : Réglages › Safari › Localisation. Sur Android : touchez le cadenas dans la barre d’adresse › Autorisations › Localisation. Puis réessayez.',
+    unavailableTitle: 'Votre appareil n’a pas pu vous localiser',
+    unavailableBody: 'Les services de localisation sont peut-être désactivés, ou le signal est absent là où vous êtes. Vérifiez que la localisation est activée, puis réessayez.',
+    timeoutTitle: 'La localisation prend trop de temps',
+    timeoutBody: 'Nous avons attendu une position sans l’obtenir, ce qui indique souvent un signal faible à l’intérieur. Se rapprocher d’une fenêtre aide souvent.',
+    insecureTitle: 'Cette page ne peut pas demander votre position',
+    insecureBody: 'Les navigateurs ne partagent la position que sur une connexion sécurisée (https) : rien de ce que vous changez sur votre appareil n’y changera quoi que ce soit. Ouvrez GhostBus en https.',
+    retry: 'Réessayer',
+    useDefault: 'Utiliser une position par défaut',
   },
   modes: {
     head: 'Autres façons de s’y rendre',

@@ -300,6 +300,7 @@ const en = {
     retryAuto: 'Departures come back on their own once you reconnect.',
   },
   about: {
+    madeBy: 'Made by AERIS',
     title: 'About & credits',
     what: "GhostBus is an accountability engine with a transit app attached: it watches the TTC's own feeds and records what actually happened.",
     what2: 'Every number it prints carries the evidence behind it, and where there is no evidence it says so instead of guessing.',
@@ -492,6 +493,20 @@ const en = {
     pickedOrigin: 'Start set to {{name}}',
     pickedDest: 'Destination set to {{name}}',
     pickDismiss: 'Dismiss',
+  },
+  geo: {
+    // Each cause names the remedy that actually works for it. iOS and Android put the
+    // control in different places, so both are named rather than guessing the device.
+    deniedTitle: 'Location is blocked',
+    deniedBody: 'Your browser is refusing to share your location. On iPhone: Settings › Safari › Location. On Android: tap the padlock in the address bar › Permissions › Location. Then try again.',
+    unavailableTitle: 'Your device could not get a fix',
+    unavailableBody: 'Location services may be off, or there is no signal where you are. Check that location is turned on for your device, then try again.',
+    timeoutTitle: 'Locating is taking too long',
+    timeoutBody: 'We waited for a fix and did not get one — that usually means a weak signal indoors. Moving near a window often helps.',
+    insecureTitle: 'This page cannot ask for your location',
+    insecureBody: 'Browsers only share location over a secure (https) connection, so nothing you change on your device will help here. Open GhostBus over https.',
+    retry: 'Try again',
+    useDefault: 'Use a default location',
   },
   modes: {
     head: 'Other ways to get there',

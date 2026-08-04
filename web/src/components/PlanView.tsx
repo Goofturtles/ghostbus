@@ -37,7 +37,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { PlanResponse } from '@shared/types';
 import { api } from '@/lib/api';
-import { useLive, liveNow, isBackedOff, selectedNearbyStop } from '@/hooks/useLive';
+import { useLive, liveNow, isBackedOff, selectedNearbyStop, isGeoFailure } from '@/hooks/useLive';
 import { useTick } from '@/hooks/useTick';
 import { useStore, paceMps } from '@/store';
 import { fmtDistance } from '@/lib/format';
@@ -352,6 +352,11 @@ export function PlanView() {
           <span>{t('empty.defaultLocation')}</span>
         </button>
       )}
+
+      {/* THE FOUR WAYS ASKING FOR A LOCATION FAILS, each said plainly and each with the
+          one thing that actually helps. Previously all four silently became a downtown
+          coordinate and no message at all. */}
+      <GeoProblem />
 
       <OutOfCoverageCard />
 
@@ -712,6 +717,44 @@ function ModeAlternatives({ from, to, originIsRider, destIsRider, destinationNam
           So the gap is named and its reason given. */}
       <p className="plan-fineprint">{t('modes.noFares')}</p>
     </section>
+  );
+}
+
+/**
+ * WHAT WENT WRONG WITH THE LOCATION, AND WHAT TO DO — one card, four honest states.
+ *
+ * The copy is per-cause because the remedies are genuinely different: a denial is fixed
+ * in browser settings and nowhere else, a timeout is worth simply retrying, an
+ * unavailable device needs its location services turned on, and an insecure page cannot
+ * be fixed by the rider at all. Telling a rider on plain http to "allow location in
+ * Settings" would send them to a screen where nothing they do can work.
+ *
+ * The default location is offered as an EXPLICIT choice rather than taken silently, and
+ * pressing it is what puts a coordinate on screen — labelled, from then on, as a default.
+ */
+function GeoProblem() {
+  const { t } = useTranslation();
+  const geoStatus = useLive((s) => s.geoStatus);
+  const requestLocation = useLive((s) => s.requestLocation);
+  const useDefaultLocation = useLive((s) => s.useDefaultLocation);
+  if (!isGeoFailure(geoStatus)) return null;
+
+  // 'insecure' is the one state with no rider-side remedy, so it is not offered a retry
+  // that cannot succeed.
+  const canRetry = geoStatus !== 'insecure';
+
+  return (
+    <div className="state-card state-warn geo-problem" role="status">
+      <div className="state-glyph" aria-hidden><LocateIcon width={22} height={22} /></div>
+      <h3 className="state-title">{t(`geo.${geoStatus}Title`)}</h3>
+      <p className="state-body">{t(`geo.${geoStatus}Body`)}</p>
+      <div className="geo-actions">
+        {canRetry && (
+          <button className="btn btn-primary" onClick={requestLocation}>{t('geo.retry')}</button>
+        )}
+        <button className="btn btn-quiet" onClick={useDefaultLocation}>{t('geo.useDefault')}</button>
+      </div>
+    </div>
   );
 }
 

@@ -259,6 +259,7 @@ const es: Dict = {
     retryAuto: 'Las salidas vuelven solas en cuanto se restablezca la conexión.',
   },
   about: {
+    madeBy: 'Creado por AERIS',
     title: 'Acerca de y créditos',
     what: 'GhostBus es un motor de rendición de cuentas con una app de transporte encima: vigila los propios feeds de la TTC y registra lo que realmente pasó.',
     what2: 'Cada número que muestra viene con la evidencia que lo respalda, y donde no hay evidencia lo dice en vez de adivinar.',
@@ -442,6 +443,18 @@ const es: Dict = {
     pickedOrigin: 'Salida fijada en {{name}}',
     pickedDest: 'Destino fijado en {{name}}',
     pickDismiss: 'Cerrar',
+  },
+  geo: {
+    deniedTitle: 'La ubicación está bloqueada',
+    deniedBody: 'Tu navegador se niega a compartir tu ubicación. En iPhone: Ajustes › Safari › Ubicación. En Android: toca el candado en la barra de direcciones › Permisos › Ubicación. Luego inténtalo de nuevo.',
+    unavailableTitle: 'Tu dispositivo no pudo obtener la posición',
+    unavailableBody: 'Puede que los servicios de ubicación estén desactivados o que no haya señal donde estás. Comprueba que la ubicación esté activada y vuelve a intentarlo.',
+    timeoutTitle: 'La ubicación tarda demasiado',
+    timeoutBody: 'Esperamos una posición y no llegó, lo que suele indicar poca señal en interiores. Acercarte a una ventana suele ayudar.',
+    insecureTitle: 'Esta página no puede pedir tu ubicación',
+    insecureBody: 'Los navegadores solo comparten la ubicación mediante una conexión segura (https), así que nada que cambies en tu dispositivo servirá aquí. Abre GhostBus con https.',
+    retry: 'Reintentar',
+    useDefault: 'Usar una ubicación predeterminada',
   },
   modes: {
     head: 'Otras formas de llegar',

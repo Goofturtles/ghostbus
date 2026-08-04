@@ -818,6 +818,7 @@
 
 .placeholder-view {
   min-height: 40vh;
+  min-height: 40dvh;
   display: flex; align-items: center; justify-content: center;
   padding: var(--s6) 0;
 }
@@ -1043,6 +1044,7 @@
   width: 100%;
   max-width: 560px;
   max-height: 86vh;
+  max-height: 86dvh;
   border-radius: var(--r-lg) var(--r-lg) 0 0;
   padding: var(--s3) var(--s5) calc(var(--s6) + env(safe-area-inset-bottom, 0px));
   display: flex; flex-direction: column; min-height: 0;
@@ -1140,6 +1142,7 @@
 /* ============================ about & credits ============================ */
 .about-sheet {
   max-height: 92vh;
+  max-height: 92dvh;
   background: var(--surface-solid);
   box-shadow: var(--shadow-float), var(--inner-top);
 }
@@ -1234,6 +1237,7 @@
   width: 100%;
   max-width: 560px;
   max-height: min(88vh, 720px);
+  max-height: min(88dvh, 720px);
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -1719,19 +1723,20 @@
   .catch-sheet {
     max-width: 460px;
     max-height: 86vh;
+    max-height: 86dvh;
     border-radius: var(--r-lg);
     padding: var(--s5) var(--s6) var(--s6);
   }
   .catch-headline { font-size: 34px; }
 
   .alerts-title { font-size: 21px; }
-  .placeholder-view { min-height: 32vh; }
+  .placeholder-view { min-height: 32vh; min-height: 32dvh; }
 
   /* The search sheet clears the window chrome instead of covering it, so the
      wordmark and the Live pill stay readable behind the glass — which is the whole
      point of a translucent surface. */
   .search-scrim { padding-top: calc(var(--topbar-h) + var(--s3)); }
-  .search-sheet { max-height: min(76vh, 640px); }
+  .search-sheet { max-height: min(76vh, 640px); max-height: min(76dvh, 640px); }
   .plan-title { font-size: 21px; }
   .plan-total { font-size: 25px; }
 }
@@ -1841,7 +1846,11 @@
      chip drew 380px on a 334px line: it overhung the row's rounded right edge by a measured
      34px on all four mobile combinations, hidden from the overlap probe because a child
      escaping its own parent is not an overlap, and stopped from scrolling the page only by
-     `.scroll { overflow-x: hidden }`. It was also two-thirds empty — ~120px of content in a
+     `/* A sheet scrolled to its end must not start dragging the page behind it — on iOS that
+   reads as the whole app coming loose under your thumb. `contain` keeps the gesture in
+   the surface the rider is actually touching. */
+.scroll {
+  overscroll-behavior: contain; overflow-x: hidden }`. It was also two-thirds empty — ~120px of content in a
      334px bar. Hugging its content makes it a pill again, exactly as on desktop. */
   flex: 0 0 auto;
   max-width: none;
@@ -1867,3 +1876,16 @@
   }
   .stop-save:hover { background: none; }
 }
+
+
+/* MAKER CREDIT. Authorship, not attribution — the licence lines below it in About are
+   obligations several agencies impose, and this must read as distinct from them.
+   Quiet, letter-spaced, and line-height 1.4 so the descender in "Conçu" clears. */
+.abt-maker,
+.settings-maker {
+  margin: var(--s2) 0 0;
+  font-size: 11.5px; font-weight: 700; line-height: 1.4;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--text-3);
+}
+.settings-maker { margin-top: var(--s3); text-align: center; }

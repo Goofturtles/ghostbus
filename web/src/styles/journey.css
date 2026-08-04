@@ -433,7 +433,7 @@
 
 .stopsheet-scrim { align-items: flex-end; }
 .stopsheet {
-  width: 100%; max-width: 620px; max-height: 88vh;
+  width: 100%; max-width: 620px; max-height: 88vh; max-height: 88dvh;
   display: flex; flex-direction: column; min-height: 0;
   border-radius: var(--r-lg) var(--r-lg) 0 0;
   /* Not .glass: translucency over the 0.45 scrim drops --text-3 under AA. */
@@ -605,12 +605,12 @@
   /* Both full-screen surfaces become centred dialogs, matching the catch sheet. */
   .jr-scrim, .stopsheet-scrim { align-items: center; }
   .jr-sheet {
-    max-width: 520px; max-height: 88vh;
+    max-width: 520px; max-height: 88vh; max-height: 88dvh;
     border-radius: var(--r-lg);
     padding: var(--s5) var(--s6) var(--s6);
   }
   .stopsheet {
-    max-width: 560px; max-height: 86vh;
+    max-width: 560px; max-height: 86vh; max-height: 86dvh;
     border-radius: var(--r-lg);
     padding: var(--s5) var(--s6) var(--s6);
   }

@@ -114,6 +114,11 @@ export function AboutSheet() {
         <div className="about-body scroll" tabIndex={0} role="group" aria-label={t('about.bodyLabel')}>
           <p className="abt-lede">{t('about.what')}</p>
           <p className="abt-p">{t('about.what2')}</p>
+          {/* THE MAKER CREDIT, kept distinct from the licence attributions below it.
+              Those are obligations — several agencies REQUIRE their wording wherever
+              their data appears — and this is authorship. Folding ours in among them
+              would dilute the ones that are legally load-bearing. */}
+          <p className="abt-maker">{t('about.madeBy')}</p>
 
           <Section title={t('about.statsTitle')}>
             {statsError ? (

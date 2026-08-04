@@ -75,6 +75,13 @@ import { startCompass } from '@/hooks/useCompassHeading';
  * UI says so on its face: "Using a default location — tap to use yours".
  */
 export const DEFAULT_LOCATION = { lat: 43.64354, lon: -79.39699 };
+
+/** How far the rider must move before the nearby board is re-asked. A watch fires on
+ *  every jitter; 120 m is about a city block and well under the 800 m nearby radius. */
+const GEO_REFRESH_M = 120;
+
+/** The live watch, so a second request replaces the first rather than stacking. */
+let geoWatchId: number | null = null;
 export const NEARBY_RADIUS_M = 800;
 const HEALTH_INTERVAL_MS = 20_000;
 const ARRIVALS_INTERVAL_MS = 30_000;
@@ -115,7 +122,37 @@ const BACKOFF_MAX_MS = 60_000;
 const NEXT_SERVICE_MAX_DAYS = 8;
 const NEXT_SERVICE_WINDOW_MIN = 24 * 60;
 
-export type GeoStatus = 'pending' | 'granted' | 'default';
+/**
+ * WHY WE DO NOT HAVE THE RIDER'S POSITION — four different answers, four different things
+ * they can do about it.
+ *
+ * This used to be three values, and every geolocation failure collapsed into `default`:
+ * denied, position-unavailable, timed-out and insecure-context all silently became
+ * downtown Toronto, WITH a real coordinate written into `geo`. A rider who tapped "use my
+ * location" on a phone that refused got King & Spadina presented as where they were
+ * standing. That is the app's original sin and this type is what ends it.
+ *
+ *   pending      · not asked yet.
+ *   granted      · a real fix. The only value that may be treated as the rider's position.
+ *   default      · the rider EXPLICITLY chose the default location. Their decision, not
+ *                  our fallback.
+ *   denied       · permission refused. Recoverable only in browser/OS settings, so the
+ *                  copy has to name them.
+ *   unavailable  · the device has no fix to give (no GPS lock, location services off).
+ *   timeout      · it took too long. Retrying is genuinely worth a tap.
+ *   insecure     · the page is not on HTTPS, so the API will never answer. Nothing the
+ *                  rider can do, and saying "denied" here would send them to a settings
+ *                  screen that cannot fix it.
+ *
+ * EVERY FAILING VALUE LEAVES `geo` NULL. Not one of them may put a coordinate on screen.
+ */
+export type GeoStatus =
+  | 'pending' | 'granted' | 'default'
+  | 'denied' | 'unavailable' | 'timeout' | 'insecure';
+
+/** The four that mean "we asked and it did not work". */
+export const GEO_FAILURES: readonly GeoStatus[] = ['denied', 'unavailable', 'timeout', 'insecure'];
+export const isGeoFailure = (s: GeoStatus): boolean => GEO_FAILURES.includes(s);
 
 interface LiveState {
   health: HealthResponse | null;
@@ -322,19 +359,72 @@ export const useLive = create<LiveState>((set, get) => ({
     // user gesture, and "use my location" is the one gesture where a rider has already
     // said they want the app oriented around them. Nothing auto-prompts, and a refusal
     // costs only the facing wedge — the dot renders exactly as it did before.
+    //
+    // MUST STAY ON A REAL TAP for a second reason: Safari on iOS only surfaces the
+    // permission sheet from inside a user gesture, and a request fired from an effect is
+    // rejected without ever showing the rider a prompt they could have accepted.
     void startCompass();
-    const apply = (lat: number, lon: number, status: GeoStatus) => {
-      set({ geo: { lat, lon }, geoStatus: status });
-      void loadNearby(lat, lon, status, set, get);
+
+    /**
+     * A FAILURE NEVER WRITES A COORDINATE. It records WHY and leaves `geo` exactly as it
+     * was — null on a cold start. Downtown Toronto is not a guess at where somebody is,
+     * it is a different city block, and printing it under "your location" is the lie this
+     * whole app exists to argue against.
+     */
+    const fail = (status: GeoStatus) => set({ geoStatus: status });
+
+    if (!('geolocation' in navigator)) { fail('unavailable'); return; }
+    // Geolocation is gated on a secure context, and a page served over plain http gets a
+    // PERMISSION_DENIED that looks exactly like a refusal. Told apart here so the copy
+    // does not send somebody to a settings screen that cannot help them.
+    if (typeof isSecureContext === 'boolean' && !isSecureContext) { fail('insecure'); return; }
+
+    if (geoWatchId != null) navigator.geolocation.clearWatch(geoWatchId);
+
+    const onFix = (pos: GeolocationPosition) => {
+      const { latitude: lat, longitude: lon } = pos.coords;
+      const prev = get().geo;
+      set({ geo: { lat, lon }, geoStatus: 'granted' });
+      // The board only follows the rider once they have MOVED enough to matter. A watch
+      // fires on every jitter, and refetching nearby on each one would spend the rate
+      // limit on a phone sitting still on a table.
+      if (!prev || haversineM(prev, { lat, lon }) > GEO_REFRESH_M) {
+        void loadNearby(lat, lon, 'granted', set, get);
+      }
     };
-    if (!('geolocation' in navigator)) {
-      apply(DEFAULT_LOCATION.lat, DEFAULT_LOCATION.lon, 'default');
-      return;
-    }
-    navigator.geolocation.getCurrentPosition(
-      (pos) => apply(pos.coords.latitude, pos.coords.longitude, 'granted'),
-      () => apply(DEFAULT_LOCATION.lat, DEFAULT_LOCATION.lon, 'default'),
-      { enableHighAccuracy: false, timeout: 8000, maximumAge: 60_000 },
+
+    /**
+     * WATCH, NOT ONE-SHOT. The old `getCurrentPosition` took a single fix and the app
+     * then described a rider who had walked three blocks since. A watch also fixes the
+     * cold-start case on phones: the first callback is often a coarse cell fix, and the
+     * GPS refinement that follows arrives seconds later — with one-shot, that better
+     * answer was simply never collected.
+     */
+    const watch = (opts: PositionOptions, onErr: (e: GeolocationPositionError) => void) => {
+      geoWatchId = navigator.geolocation.watchPosition(onFix, onErr, opts);
+    };
+
+    watch(
+      { enableHighAccuracy: true, timeout: 10_000, maximumAge: 30_000 },
+      (err) => {
+        if (err.code === err.PERMISSION_DENIED) { fail('denied'); return; }
+        if (err.code === err.TIMEOUT) {
+          /**
+           * ONE GRACEFUL DOWNGRADE. A high-accuracy request indoors waits on a GPS lock
+           * that may never come, while the coarse wifi/cell fix the same device already
+           * has would have answered instantly. So a timeout retries once without the
+           * accuracy demand rather than reporting failure the device could have avoided.
+           */
+          if (geoWatchId != null) navigator.geolocation.clearWatch(geoWatchId);
+          watch(
+            { enableHighAccuracy: false, timeout: 15_000, maximumAge: 60_000 },
+            (e2) => fail(e2.code === e2.PERMISSION_DENIED ? 'denied'
+              : e2.code === e2.TIMEOUT ? 'timeout' : 'unavailable'),
+          );
+          return;
+        }
+        fail('unavailable');
+      },
     );
   },
 
