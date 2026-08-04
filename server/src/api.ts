@@ -24,7 +24,7 @@ import { activeServiceIds, type CalendarRow, type CalendarDateRow } from './gtfs
 import { torontoDay, torontoMidnightEpoch, hourOfWeek, torontoParts } from './tz.ts';
 import { stitchItineraries, type StitchStop } from './itinerary.ts';
 import type {
-  HealthResponse, VehiclesResponse, VehicleDto, StopsResponse, StopDto,
+  HealthResponse, VehiclesResponse, VehicleDto, StopsResponse, StopDto, StopRouteDto,
   ArrivalsResponse, DepartureDto, StatsResponse, FeedId,
   RouteShapeResponse, RouteStopDto,
   AlertsResponse, AlertDto, AlertInformedDto,
@@ -128,6 +128,28 @@ function colorFor(meta: RouteMeta | undefined): string {
     case 2: return '00853F';  // rail — green
     default: return '3C4A5B'; // bus / other — slate
   }
+}
+
+/**
+ * ROUTE BADGE ORDER — "7, 29, 29A, 300, Line 2", not "29A, 29, 300, 7".
+ *
+ * Route short names are strings that riders read as numbers, and a plain
+ * `localeCompare` puts 300 before 7 on every board in the city. Leading digits are
+ * compared numerically, the suffix breaks the tie ("29" before "29A"), and anything with
+ * no leading digit at all ("Line 2", "BLUE") sorts after the numbered routes rather than
+ * being interleaved with them by accident of ASCII.
+ */
+export function compareRouteShortName(a: string, b: string): number {
+  const ma = /^(\d+)/.exec(a);
+  const mb = /^(\d+)/.exec(b);
+  if (ma && mb) {
+    const d = Number(ma[1]) - Number(mb[1]);
+    if (d !== 0) return d;
+    return a.localeCompare(b);
+  }
+  if (ma) return -1;
+  if (mb) return 1;
+  return a.localeCompare(b);
 }
 
 function haversineM(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -531,6 +553,70 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     routeId == null ? undefined : routeMeta.get(metaKey(agencyId, routeId));
 
   /**
+   * WHICH ROUTES CALL AT A SET OF STOPS, from the published schedule.
+   *
+   * A BOUNDED QUERY, NOT A BOOT-TIME INDEX, and the choice is the whole point. The
+   * obvious shape — precompute every stop's routes once at startup — is a `DISTINCT`
+   * over all 2.15M `stop_times` rows, which is the exact scan migration 005 exists to
+   * stop paying: on Render's free tier every wake is a fresh boot, so that cost recurs
+   * forever and it is what exhausted the Neon transfer quota once already.
+   *
+   * This asks only about the handful of stops actually on screen. `idx_stop_times_stop_dep`
+   * is `(agency, stop_id, departure_s)`, so `agency = $1 AND stop_id = ANY($2)` is an
+   * index scan over one stop's worth of rows per id, joined to `trips` by its primary
+   * key. A search page's 25 stops cost a few thousand index-scanned rows and return a
+   * few dozen — small enough to run per request, on any agency, with no cache to go stale.
+   *
+   * EVERY STOP ASKED ABOUT GETS AN ANSWER, including `[]`. "We looked and found nothing"
+   * and "we never looked" are different claims, and the caller can only keep them apart
+   * if the empty case is present rather than missing.
+   */
+  const routesForStops = async (
+    agencyId: string, stopIds: readonly string[],
+  ): Promise<Map<string, StopRouteDto[]>> => {
+    const out = new Map<string, StopRouteDto[]>();
+    if (stopIds.length === 0) return out;
+    const ids = [...new Set(stopIds)];
+    for (const id of ids) out.set(id, []);
+    const rows = (await db.query<{ stop_id: string; route_id: string }>(
+      `SELECT DISTINCT st.stop_id, t.route_id
+         FROM stop_times st
+         JOIN trips t ON t.agency = st.agency AND t.trip_id = st.trip_id
+        WHERE st.agency = $1 AND st.stop_id = ANY($2::text[]) AND t.route_id IS NOT NULL`,
+      [agencyId, ids])).rows;
+    for (const r of rows) {
+      const meta = routeMetaFor(agencyId, r.route_id);
+      out.get(r.stop_id)?.push({
+        routeId: r.route_id,
+        // The agency's own short name where it published one. Falling back to the id is
+        // not cosmetic: a badge with no text is a coloured smudge a rider cannot act on.
+        shortName: meta?.shortName?.trim() || r.route_id,
+        color: colorFor(meta),
+        routeType: meta?.routeType ?? null,
+      });
+    }
+    for (const list of out.values()) list.sort((a, b) => compareRouteShortName(a.shortName, b.shortName));
+    return out;
+  };
+
+  /** Fill `routes` on a set of stop DTOs, one query per agency involved. */
+  const attachStopRoutes = async (stops: StopDto[]): Promise<void> => {
+    const byAgency = new Map<string, StopDto[]>();
+    for (const s of stops) {
+      let a = byAgency.get(s.agency);
+      if (!a) { a = []; byAgency.set(s.agency, a); }
+      a.push(s);
+    }
+    await Promise.all([...byAgency].map(async ([agencyId, group]) => {
+      // Agency-scoped, because a stop_id is unique only within an agency — 2,824 of them
+      // are shared between the TTC and YRT alone, and a blended lookup would badge a TTC
+      // stop with York Region routes.
+      const found = await routesForStops(agencyId, group.map((s) => s.stopId));
+      for (const s of group) s.routes = found.get(s.stopId) ?? [];
+    }));
+  };
+
+  /**
    * Per-agency calendars. A `Map` rather than two bare arrays for the reason spelled out
    * over `activeServicesFor` below: one blended calendar is a silently-wrong board.
    */
@@ -901,6 +987,9 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
        WHERE agency = ANY($1::text[]) AND (stop_id = $2 OR name ILIKE $3) ORDER BY (stop_id = $2) DESC, name LIMIT $4`,
       [seeded, q, `%${q}%`, SEARCH_MAX_RESULTS])).rows;
     const stops: StopDto[] = rows.map((r) => ({ agency: r.agency, stopId: r.stop_id, name: r.name, lat: r.lat == null ? null : Number(r.lat), lon: r.lon == null ? null : Number(r.lon), wheelchairBoarding: r.wheelchair_boarding == null ? null : Number(r.wheelchair_boarding) }));
+    // What SERVES this stop, so the row can say "504, 508 · 240 m" instead of showing a
+    // rider our internal stop id.
+    await attachStopRoutes(stops);
     const body: StopsResponse = { stops, count: stops.length };
     return reply.send(body);
   });
@@ -1109,6 +1198,9 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       lat: stopRow.lat == null ? null : Number(stopRow.lat), lon: stopRow.lon == null ? null : Number(stopRow.lon),
       wheelchairBoarding: stopRow.wheelchair_boarding == null ? null : Number(stopRow.wheelchair_boarding),
       serverNowMs: now, atMs, windowMinutes: windowMin, departures,
+      // The SCHEDULE's answer, not this window's. A board with nothing due for two hours
+      // still serves the routes it serves, and the header says so.
+      routes: (await routesForStops(stopAgency, [stopRow.stop_id])).get(stopRow.stop_id) ?? [],
     };
     return reply.send(body);
   });

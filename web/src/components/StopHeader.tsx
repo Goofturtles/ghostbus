@@ -1,6 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import type { ArrivalsResponse } from '@shared/types';
 import { PinIcon, HeartIcon, StarIcon } from './icons';
+import { StopRoutes } from './Primitives';
 import { useStore, paceMps } from '@/store';
 import { fmtDistance } from '@/lib/format';
 import { walkFor, walkMinutes } from '@/lib/walk';
@@ -60,9 +61,17 @@ export function StopHeader({ arr, distanceM, headsigns }: {
             "·", leaving "Eastbound · Stop 15644 ·" with a separator dangling at
             the end of a line and nothing after it. A separator that is part of the
             next fact's own nowrap box can never be the last thing on a row. */}
+        {/* WHAT SERVES THIS STOP, in the agencies' own route colours, where the board
+            told us. It replaces the stop id that used to sit here: 1425 is our primary
+            key, "504, 508" is what the rider is standing at. The id is still reachable —
+            `StopRoutes` keeps it in the strip's accessible label — and a board whose
+            routes we do not have falls back to printing it, because an absent fact must
+            not silently become no fact at all. */}
         <p className="stop-sub">
           {dir && <span className="stop-fact stop-dir">{t(`direction.${dir}`)}</span>}
-          <span className={dir ? 'stop-fact' : 'stop-fact stop-dir'}>{t('stop.code', { code: arr.stopId })}</span>
+          {arr.routes && arr.routes.length > 0
+            ? <StopRoutes routes={arr.routes} stopId={arr.stopId} />
+            : <span className={dir ? 'stop-fact' : 'stop-fact stop-dir'}>{t('stop.code', { code: arr.stopId })}</span>}
           {walk != null && (
             <span className="stop-fact">{fmtDistance(walk.distanceM, units === 'imperial')}</span>
           )}

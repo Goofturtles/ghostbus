@@ -84,6 +84,12 @@ const en = {
     walkEst: '≈{{min}} min walk',
     walkRange: '{{a}}–{{b}} min walk',
     away: '{{dist}} away',
+    // The route strip's whole spoken label. It carries the stop code because the code
+    // left the visible line and must not leave the app: it is what a rider reads out to
+    // the agency on the phone. Sighted riders get the badges; everyone gets the id.
+    servedBy_one: 'Route {{routes}}. Stop {{code}}.',
+    servedBy_other: 'Routes {{routes}}. Stop {{code}}.',
+    moreRoutes: '+{{count}}',
     showOnMap: 'Show on map',
     save: 'Save stop',
     saved: 'Saved',
@@ -502,6 +508,9 @@ const en = {
     nextServiceEyebrow: 'Next scheduled service',
     doorToDoor: 'About {{min}} min door to door',
     arriveAt: 'Arrive around {{time}}',
+    // The next runs of the SAME route on the same card. "then" is doing real work: it
+    // marks these as later departures of this row's route, not alternatives to it.
+    thenAt: 'then {{times}}',
     walkTo: 'Walk {{dist}} · {{min}} min to {{stop}}',
     walkToEst: 'Walk ≈{{dist}} · {{min}} min to {{stop}}',
     leaveBy: 'Leave by {{time}}',

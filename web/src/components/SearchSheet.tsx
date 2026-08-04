@@ -32,7 +32,7 @@ import {
   shapeStopResults, matchRoutes, filterRecents, dedupeAgainst,
   type RecentPlace, type RouteResult, type StopResult,
 } from '@/lib/search';
-import { RouteBadge } from './Primitives';
+import { RouteBadge, StopRoutes } from './Primitives';
 import { SearchIcon, PinIcon, ClockIcon, StarIcon, RouteIcon, FlagIcon } from './icons';
 
 /** Long enough that a normal typing burst is one request, short enough to feel live. */
@@ -440,6 +440,7 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
                           recent={opt.kind === 'recent'}
                           saved={section.key === 'saved'}
                           chip={chip}
+                          routes={opt.kind === 'stop' ? opt.row.routes : undefined}
                         />
                       )}
                     </div>
@@ -494,7 +495,7 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
   );
 }
 
-function StopRow({ name, stopId, distanceM, imperial, recent, saved, chip }: {
+function StopRow({ name, stopId, distanceM, imperial, recent, saved, chip, routes }: {
   name: string;
   stopId: string;
   distanceM: number | null;
@@ -502,6 +503,8 @@ function StopRow({ name, stopId, distanceM, imperial, recent, saved, chip }: {
   recent: boolean;
   saved: boolean;
   chip: { short: string; color: string; time: string; live: boolean } | null;
+  /** the routes serving this stop, when the server told us. See `StopRoutes`. */
+  routes?: readonly { routeId: string; shortName: string; color: string }[];
 }) {
   const { t } = useTranslation();
   return (
@@ -513,8 +516,15 @@ function StopRow({ name, stopId, distanceM, imperial, recent, saved, chip }: {
       </span>
       <span className="search-text">
         <span className="search-title">{name}</span>
+        {/* WHAT SERVES THIS STOP, then how far — the two facts a rider chooses on. Our
+            internal stop id used to lead this line; it now lives in the strip's
+            accessible label, and on the board this row opens. A recent or saved row the
+            server has not answered for yet has no strip, and falls back to the id
+            rather than to an empty line. */}
         <span className="search-sub">
-          <span className="search-fact">{t('stop.code', { code: stopId })}</span>
+          {routes && routes.length > 0
+            ? <StopRoutes routes={routes} stopId={stopId} />
+            : <span className="search-fact">{t('stop.code', { code: stopId })}</span>}
           {/* Distance is printed only when it was actually measured. */}
           {distanceM != null && (
             <span className="search-fact">{t('stop.away', { dist: fmtDistance(distanceM, imperial) })}</span>

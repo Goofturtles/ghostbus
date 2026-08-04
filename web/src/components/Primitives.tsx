@@ -28,6 +28,56 @@ export function RouteBadge({ color, short, size = 'md' }: { color: string; short
   );
 }
 
+/** Beyond this the strip is a wall of colour nobody reads, so the rest is counted. */
+export const MAX_STOP_ROUTE_BADGES = 5;
+
+/**
+ * WHAT SERVES THIS STOP — the strip of route badges that replaced our internal stop id
+ * on every stop row and stop-board header.
+ *
+ * "Stop 1425 · 8.4 km away" told a rider one useful thing and one thing that is ours,
+ * not theirs: 1425 is a primary key. It is not printed on the pole, it is not unique
+ * across agencies (2,824 TTC stop_ids collide with YRT's), and no rider has ever chosen
+ * a stop by it. What they choose by is the route, so the route is what the row shows —
+ * in the agency's own published `route_color`, which makes the strip real data rather
+ * than decoration.
+ *
+ * THE ID IS NOT DELETED, IT IS DEMOTED. It stays in this strip's accessible label and on
+ * the expanded board, because it is exactly what a rider needs when they phone the
+ * agency or compare against a pole — it just is not the headline.
+ *
+ * Renders NOTHING for an empty or absent list. A stop we have no routes for gets no
+ * strip, not an empty box or a placeholder: an absent claim is honest, an invented one
+ * is not. The two cases are the same on screen because they are the same to a rider.
+ */
+export function StopRoutes({ routes, stopId, max = MAX_STOP_ROUTE_BADGES }: {
+  routes: readonly { routeId: string; shortName: string; color: string }[] | undefined;
+  /** Kept for the accessible label only — see above. */
+  stopId: string;
+  max?: number;
+}) {
+  const { t } = useTranslation();
+  if (!routes || routes.length === 0) return null;
+  const shown = routes.slice(0, max);
+  const rest = routes.length - shown.length;
+  return (
+    <span
+      className="stop-routes"
+      role="img"
+      aria-label={t('stop.servedBy', {
+        routes: routes.map((r) => r.shortName).join(', '),
+        code: stopId,
+        count: routes.length,
+      })}
+    >
+      {shown.map((r) => (
+        <RouteBadge key={r.routeId} color={r.color} short={r.shortName} size="sm" />
+      ))}
+      {rest > 0 && <span className="stop-routes-more tnum">{t('stop.moreRoutes', { count: rest })}</span>}
+    </span>
+  );
+}
+
 type PillKind = 'live' | 'stale' | 'scheduled' | 'catchingUp' | 'demo' | 'loading';
 
 /**

@@ -537,6 +537,44 @@
   margin: 0 6px;
   color: var(--text-3);
 }
+/* THE ROUTE STRIP that replaced the stop id on both stop surfaces (see `StopRoutes`).
+   Inline-flex so it sits INSIDE the existing sub-line rather than becoming a second row,
+   and `flex-wrap` + `max-width: 100%` so five badges on a 390px phone wrap onto a second
+   line instead of pushing the line box wider than its column. The container grows; the
+   §F rule is that nothing here may ever be clipped, and nothing here clips. */
+.stop-routes {
+  display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px;
+  max-width: 100%; vertical-align: middle;
+}
+/* The strip participates in the sub-line's separator scheme. The dot belongs to the box
+   that FOLLOWS it — same rule as `.stop-fact + .stop-fact` above, so a wrap can never
+   leave a "·" dangling at the end of a line. The leading one is a flex item of the strip
+   itself, hence `flex: 0 0 auto`. */
+.stop-fact + .stop-routes::before,
+.search-fact + .stop-routes::before {
+  content: '·';
+  content: '·' / '';
+  margin-right: 2px;
+  color: var(--text-3);
+  flex: 0 0 auto;
+}
+.stop-routes + .stop-fact::before,
+.stop-routes + .search-fact::before {
+  content: '·';
+  content: '·' / '';
+  margin: 0 6px;
+  color: var(--text-3);
+}
+/* "+3" — the routes past the cap, counted rather than dropped silently.
+   line-height stays well above 1: this is text with no descenders TODAY, and the
+   locales below it are free to translate the string into something that has them. */
+.stop-routes-more {
+  font-size: 11px; font-weight: 700; line-height: 1.35;
+  color: var(--text-3);
+  padding: 0 2px;
+  white-space: nowrap;
+}
+
 .stop-dir { color: var(--accent); font-weight: 600; }
 /* The separator inherits its fact's colour, so an accent-coloured first fact must
    not tint the dot that precedes the SECOND one. */

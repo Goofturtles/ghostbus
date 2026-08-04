@@ -196,6 +196,33 @@ export interface StopDto {
   wheelchairBoarding: number | null;
   /** metres from the query point; present only on /nearby. */
   distanceM?: number;
+  /**
+   * WHICH ROUTES CALL HERE, from the published schedule — the fact a rider actually
+   * wants on a stop row, in place of our internal stop id.
+   *
+   * Read out of static `stop_times ⋈ trips ⋈ routes` for THIS stop only (the
+   * `(agency, stop_id, …)` index makes it a bounded lookup rather than a table scan),
+   * so it is the agency's own answer to "what serves this stop", not an inference from
+   * whatever happened to be departing in the last poll. A stop whose routes we have not
+   * looked up carries `undefined`; a stop we looked up and found nothing for carries
+   * `[]`. The two are different claims and the UI must not render them the same way.
+   */
+  routes?: StopRouteDto[];
+}
+
+/**
+ * One route serving a stop — the minimum a badge needs, and nothing else.
+ *
+ * `color` is already resolved server-side through the same `colorFor` every other
+ * route-coloured surface uses, so a badge on a search row and the same route's badge on
+ * a departure board can never be two different colours. Six uppercase hex digits, no `#`.
+ */
+export interface StopRouteDto {
+  routeId: string;
+  /** the agency's own `route_short_name`, falling back to the id when it published none. */
+  shortName: string;
+  color: string;
+  routeType: number | null;
 }
 
 export interface StopsResponse {
@@ -306,6 +333,13 @@ export interface ArrivalsResponse {
   atMs: number;
   windowMinutes: number;
   departures: DepartureDto[];
+  /**
+   * Every route the SCHEDULE says calls here — deliberately not "every route with a
+   * departure in this window". A board opened at 03:00 has an empty `departures` and
+   * still serves the 504; deriving the header's badges from the departures would erase
+   * the route exactly when the rider most needs to know what this stop is.
+   */
+  routes?: StopRouteDto[];
 }
 
 // ---------- /api/routes/:routeId/shape ----------

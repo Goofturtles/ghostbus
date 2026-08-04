@@ -12,7 +12,7 @@
 //      the app is ALREADY holding: every route row carries the real stop it leaves
 //      from and the real time it leaves, which is also what makes it navigable.
 
-import type { DepartureDto, StopDto } from '@shared/types';
+import type { DepartureDto, StopDto, StopRouteDto } from '@shared/types';
 import { parseHeadsign } from './headsign';
 
 export interface Point { lat: number; lon: number }
@@ -41,6 +41,15 @@ export interface StopResult {
   /** metres from the rider, straight line. null when their position is unknown. */
   distanceM: number | null;
   wheelchairBoarding: number | null;
+  /**
+   * The routes the schedule says call here, straight from the server's DTO.
+   *
+   * `undefined` where the row did not come from a stop-search response — a saved or
+   * recent place is reconstructed from what this device already holds, and that does not
+   * include a route list. The row renders the stop code in the strip's place rather than
+   * an empty gap, so "we never asked" never looks like "nothing serves this stop".
+   */
+  routes?: StopRouteDto[];
 }
 
 export interface RouteResult {
@@ -115,6 +124,7 @@ export function shapeStopResults(
       ? Math.round(haversineM(from, { lat: s.lat, lon: s.lon }))
       : s.distanceM ?? null,
     wheelchairBoarding: s.wheelchairBoarding,
+    routes: s.routes,
   }));
 
   const exact = (r: StopResult) => (r.stopId === q ? 0 : 1);
