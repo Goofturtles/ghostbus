@@ -493,6 +493,16 @@ const en = {
     pickedDest: 'Destination set to {{name}}',
     pickDismiss: 'Dismiss',
   },
+  modes: {
+    head: 'Other ways to get there',
+    walkTitle: 'Walk the whole way',
+    uberTitle: 'Open in Uber',
+    // NOT a price, and worded so it cannot be read as one.
+    uberSub: 'Uber quotes its own fare',
+    // The absence is stated. On a transit app, silence about cost reads as "free", and a
+    // number we invented would be the fiction this whole project argues against.
+    noFares: 'GhostBus does not show fares. The agencies’ published feeds we read do not include them, and we will not print a number we cannot source.',
+  },
   plan: {
     title: 'Plan a trip',
     sub: 'One ride where one will do, or two joined by a short walk. Never a connection GhostBus cannot check.',

@@ -44,12 +44,14 @@ import { fmtDistance } from '@/lib/format';
 import { transitDirectionsUrl } from '@/lib/plan';
 import { buildOptions, type OptionList } from '@/lib/journey';
 import { planPointCoords, planPointKey, needsFix, HERE, type PlanPoint } from '@/lib/planpoint';
+import { walkAlternative, uberUrl } from '@/lib/modes';
 import { PlanOptions } from './PlanOptions';
 import { SavedPlacesSection } from './SavedPlaces';
 import { OfflineCard } from './OfflineCard';
 import {
   SearchIcon, RouteIcon, FlagIcon, ClockIcon, WarningIcon, PinIcon, LocateIcon,
   ChevronIcon, CloseIcon, ArrowRightIcon, SwapIcon, HomeIcon, BriefcaseIcon,
+  WalkerIcon, CarIcon,
 } from './icons';
 
 /** How far ahead the first request looks. Matches the departure board's own window. */
@@ -455,15 +457,29 @@ export function PlanView() {
       )}
 
       {target && ready && phase.kind === 'done' && (
-        <PlanOutcomeView
-          res={phase.res}
-          widened={phase.widened}
-          options={options}
-          selectedId={selected?.id ?? null}
-          onSelect={setSelectedId}
-          imperial={imperial}
-          destinationName={label(target)}
-        />
+        <>
+          <PlanOutcomeView
+            res={phase.res}
+            widened={phase.widened}
+            options={options}
+            selectedId={selected?.id ?? null}
+            onSelect={setSelectedId}
+            imperial={imperial}
+            destinationName={label(target)}
+          />
+          {/* Under EVERY outcome, not just the successful one. A rider told "this trip
+              needs a transfer GhostBus cannot check" is exactly the rider who most needs
+              to know the walk is fifteen minutes — withholding the alternatives on the
+              failures would offer them only when they are least needed. */}
+          <ModeAlternatives
+            from={planPointCoords(origin, geo)}
+            to={phase.res.to}
+            originIsRider={origin.kind === 'here'}
+            destIsRider={target.kind === 'here'}
+            destinationName={label(target)}
+            imperial={imperial}
+          />
+        </>
       )}
 
       {geoStatus === 'default' && target && (needsFix(origin) || needsFix(target)) && (
@@ -619,6 +635,83 @@ function NamedChips() {
         </button>
       ))}
     </div>
+  );
+}
+
+/**
+ * OTHER WAYS TO GET THERE — and, pointedly, no prices on any of them.
+ *
+ * A planner that only ever answers "transit" lies by omission: sometimes the true answer
+ * is that the walk is twelve minutes. So the honest alternatives sit under the options
+ * list, and the absence of fares is STATED rather than left as a gap the rider might read
+ * as "free" or as an oversight.
+ *
+ * Every row here either computes from data we hold (the walk, from real coordinates and
+ * the rider's own pace setting) or hands off to somebody who will quote their own real
+ * price (the Uber link). Nothing in between — see lib/modes.ts for what was checked and
+ * rejected for each mode, including the two City of Toronto sources that disagree about
+ * the taxi drop rate, which is why there is no taxi row.
+ */
+function ModeAlternatives({ from, to, originIsRider, destIsRider, destinationName, imperial }: {
+  from: { lat: number; lon: number } | null;
+  to: { lat: number; lon: number };
+  originIsRider: boolean;
+  /** True when the DESTINATION is the rider's own fix — a swapped "office to here" trip.
+   *  Its coordinates must not be serialised into the handoff either. */
+  destIsRider: boolean;
+  destinationName: string;
+  imperial: boolean;
+}) {
+  const { t } = useTranslation();
+  const pace = useStore((s) => s.pace);
+  const walk = walkAlternative(from, to, paceMps(pace));
+
+  return (
+    <section className="modes" aria-labelledby="gb-modes-head">
+      <div className="section-head">
+        <span className="eyebrow" id="gb-modes-head">{t('modes.head')}</span>
+      </div>
+
+      <ul className="modes-list">
+        {/* Offered only where walking is genuinely one of the answers. The distance is a
+            straight line padded by the route factor, so it wears the app's estimate mark
+            exactly as every other unrouted walk does. */}
+        {walk && (
+          <li className="mode-row mode-walk">
+            <span className="mode-tile" aria-hidden><WalkerIcon width={18} height={18} /></span>
+            <span className="mode-text">
+              <span className="mode-title">{t('modes.walkTitle')}</span>
+              <span className="mode-sub">
+                {t('stop.walkEst', { min: Math.max(1, Math.round(walk.seconds / 60)) })}
+                {' · '}{fmtDistance(walk.distanceM, imperial)}
+              </span>
+            </span>
+          </li>
+        )}
+
+        <li className="mode-row">
+          <a
+            className="mode-link"
+            href={uberUrl(from, to, { originIsRider, destIsRider, dropoffName: destinationName })}
+            target="_blank"
+            rel="noreferrer noopener"
+          >
+            <span className="mode-tile" aria-hidden><CarIcon width={18} height={18} /></span>
+            <span className="mode-text">
+              <span className="mode-title">{t('modes.uberTitle')}</span>
+              {/* NOT a price, and deliberately worded so it cannot be mistaken for one. */}
+              <span className="mode-sub">{t('modes.uberSub')}</span>
+            </span>
+            <ArrowRightIcon width={16} height={16} aria-hidden />
+          </a>
+        </li>
+      </ul>
+
+      {/* THE ABSENCE, SAID OUT LOUD. Silence about fares would read as "free" on a transit
+          app, and a made-up number would be the exact fiction this project argues against.
+          So the gap is named and its reason given. */}
+      <p className="plan-fineprint">{t('modes.noFares')}</p>
+    </section>
   );
 }
 

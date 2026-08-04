@@ -86,6 +86,15 @@ export const BriefcaseIcon = (p: P) => (
 export const HomeIcon = (p: P) => (
   <svg {...base(p)}><path d="M4 11 12 4l8 7" /><path d="M6 10v9h12v-9" /></svg>
 );
+/** A car, for the rideshare handoff. Deliberately generic — this is "a car", not any
+ *  operator's brand mark, and GhostBus does not carry third-party logos. */
+export const CarIcon = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M4.5 16.5v2a1 1 0 0 0 1 1h1.5a1 1 0 0 0 1-1v-2M15 16.5v2a1 1 0 0 0 1 1h1.5a1 1 0 0 0 1-1v-2" />
+    <path d="M3.5 16.5v-4l2-5a1.5 1.5 0 0 1 1.4-1h10.2a1.5 1.5 0 0 1 1.4 1l2 5v4a1 1 0 0 1-1 1h-15a1 1 0 0 1-1-1Z" />
+    <path d="M3.5 12.5h17M7 15h1M16 15h1" />
+  </svg>
+);
 export const WalkerIcon = (p: P) => (
   <svg {...base(p)}><circle cx="13" cy="4.5" r="1.6" /><path d="M13 8v4l3 3M13 12l-2 6M11 10 8 9M13 12l-3 1" /></svg>
 );

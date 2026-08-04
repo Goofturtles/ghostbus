@@ -443,6 +443,13 @@ const es: Dict = {
     pickedDest: 'Destino fijado en {{name}}',
     pickDismiss: 'Cerrar',
   },
+  modes: {
+    head: 'Otras formas de llegar',
+    walkTitle: 'Ir caminando',
+    uberTitle: 'Abrir en Uber',
+    uberSub: 'Uber calcula su propia tarifa',
+    noFares: 'GhostBus no muestra tarifas. Los datos publicados por las agencias que consultamos no las incluyen, y no vamos a mostrar una cifra que no podamos justificar.',
+  },
   plan: {
     title: 'Planificar un viaje',
     sub: 'Un solo viaje cuando basta, o dos unidos por una caminata corta. Nunca una conexión que GhostBus no pueda verificar.',

@@ -443,6 +443,13 @@ const frCA: Dict = {
     pickedDest: 'Destination fixée à {{name}}',
     pickDismiss: 'Fermer',
   },
+  modes: {
+    head: 'Autres façons de s’y rendre',
+    walkTitle: 'Y aller à pied',
+    uberTitle: 'Ouvrir dans Uber',
+    uberSub: 'Uber calcule son propre tarif',
+    noFares: 'GhostBus n’affiche pas les tarifs. Les données publiées par les agences que nous lisons ne les contiennent pas, et nous n’afficherons pas un chiffre que nous ne pouvons pas justifier.',
+  },
   plan: {
     title: 'Planifier un trajet',
     sub: 'Un seul trajet quand cela suffit, ou deux reliés par une courte marche. Jamais une correspondance que GhostBus ne peut vérifier.',
