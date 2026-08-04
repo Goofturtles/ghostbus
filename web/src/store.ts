@@ -411,20 +411,36 @@ export const useStore = create<State>((set, get) => ({
   }),
   cancelMapPick: () => set({ mapPick: null }),
   /**
-   * The pick is finished. Pick mode ends here, and that is ALL this does today.
+   * THE PICK IS FINISHED, and it now lands on the end it was picked for.
    *
-   * TODO(plan-ui): the plan surface owns where a completed pick lands. Route `place`
-   * into `planOrigin` / `planTarget` off `get().mapPick?.target` here — this action is
-   * the agreed seam, and the map already calls it with a real coordinate and an honest
-   * label (see `MapPickPlace`). Deliberately NOT routed through `setPlanTarget` in the
-   * meantime: that pushes a `RecentPlace` onto the persisted trips list, and a
-   * map-picked point has no agency and no stop id, so every such row would be written
-   * to localStorage only to be discarded by `recentPlaces` on the next boot.
+   * It arrives as a `pin` — the kind that exists precisely for this. A map-picked point
+   * has no agency and no stop id, and the reason this action spent so long as a stub is
+   * that there was nowhere honest to put it: routed through `setPlanTarget` as a
+   * `RecentPlace` it would have been written to localStorage and then silently discarded
+   * by `recentPlaces` on the very next boot, so the rider's recents would fail to
+   * remember something the app appeared to accept. `pin` is not persisted, which is why
+   * that failure cannot happen now.
    *
-   * Until that lands the map shows the confirmed point itself, so the flow is real and
-   * demoable end to end without this store guessing at fields it does not own.
+   * The tab follows the pick for the same reason it follows a search: the answer to
+   * "route me here" is on the plan surface, and on a phone that surface is below the map
+   * the rider is looking at.
+   *
+   * A pick with no target in flight only ends pick mode. That is not a defensive
+   * flourish — `confirmPick` re-asserts the target first, so the null case means the
+   * store was reset underneath the map, and inventing an end for it would be a guess.
    */
-  completeMapPick: (_place) => set({ mapPick: null }),
+  completeMapPick: (place) => {
+    const target = get().mapPick?.target;
+    if (!target) { set({ mapPick: null }); return; }
+    const point: PlanPoint = { kind: 'pin', lat: place.lat, lon: place.lon, label: place.label };
+    set({
+      ...(target === 'origin' ? { planOrigin: point } : { planTarget: point }),
+      mapPick: null,
+      // A new end is a new question, so the previous answer's geometry goes with it.
+      planUnresolved: false,
+      tab: 'plan',
+    });
+  },
 }));
 
 // ---- side effects that touch <html> ----

@@ -139,6 +139,39 @@ test('cancel and complete both end pick mode', () => {
   assert.equal(useStore.getState().mapPick, null);
 });
 
+test('a completed pick lands on the END it was picked for, as a pin', () => {
+  const s = useStore.getState();
+  s.setPlanTarget(null);
+  s.setPlanOrigin({ kind: 'here' });
+
+  s.beginMapPick('dest');
+  s.completeMapPick({ lat: 43.6465, lon: -79.39, label: 'King St W' });
+  assert.equal(useStore.getState().planTarget?.kind, 'pin');
+  // The origin is untouched: picking one end is not a statement about the other.
+  assert.equal(useStore.getState().planOrigin.kind, 'here');
+  // And the rider is taken to the surface that answers the question they just asked.
+  assert.equal(useStore.getState().tab, 'plan');
+
+  useStore.getState().beginMapPick('origin');
+  useStore.getState().completeMapPick({ lat: 43.7, lon: -79.5, label: 'Somewhere' });
+  assert.equal(useStore.getState().planOrigin.kind, 'pin');
+  assert.equal(useStore.getState().planTarget?.kind, 'pin');
+
+  useStore.getState().setPlanTarget(null);
+  useStore.getState().setPlanOrigin({ kind: 'here' });
+});
+
+test('a pick with no target in flight ends pick mode and invents no end', () => {
+  const s = useStore.getState();
+  s.setPlanTarget(null);
+  s.setPlanOrigin({ kind: 'here' });
+  s.cancelMapPick();
+  s.completeMapPick({ lat: 43.6, lon: -79.4, label: 'Nowhere' });
+  assert.equal(useStore.getState().mapPick, null);
+  assert.equal(useStore.getState().planTarget, null);
+  assert.equal(useStore.getState().planOrigin.kind, 'here');
+});
+
 test('a completed pick must not be written to the persisted trips list', () => {
   // A map-picked point has no agency and no stop id, so a `RecentPlace` built from one
   // is dropped by `recentPlaces` on the next boot. Writing it anyway would put rows in
