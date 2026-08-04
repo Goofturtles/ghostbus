@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { setLocale, type LocaleId } from './i18n';
 import { pushRecent, type RecentPlace } from './lib/search';
+import { HERE, swapEnds, type PlanPoint } from './lib/planpoint';
 import type { MeasuredWalk } from './lib/walk';
 import type { Journey } from './lib/journey';
 
@@ -21,7 +22,7 @@ export type Pace = 'slow' | 'average' | 'fast';
  */
 export type Tab = 'plan' | 'saved' | 'alerts';
 /** What the search sheet is being opened FOR. Same UI, two destinations for the pick. */
-export type SearchMode = 'stop' | 'destination';
+export type SearchMode = 'stop' | 'destination' | 'origin';
 export type AccessProfile = 'none' | 'wheelchair' | 'walker' | 'stroller' | 'lowVision' | 'slower';
 /** Which end of the trip a map pick is being made for. */
 export type MapPickTarget = 'origin' | 'dest';
@@ -143,9 +144,18 @@ interface State {
   /** null = closed. 'stop' searches for somewhere to open, 'destination' for
    *  somewhere to travel to — the same sheet, two jobs. */
   searchMode: SearchMode | null;
+  /**
+   * WHERE THE TRIP STARTS. Defaults to `here` — the rider's live fix — which is what it
+   * always silently was; the difference is that it is now a value the rider can change
+   * rather than an assumption baked into a label.
+   *
+   * Session-only, like the target. A persisted origin is a claim about where somebody is
+   * that survives them going somewhere else.
+   */
+  planOrigin: PlanPoint;
   /** The destination the Plan tab is planning to. Session-only: a stale trip
    *  restored on launch would be a plan nobody asked for. */
-  planTarget: RecentPlace | null;
+  planTarget: PlanPoint | null;
   /**
    * A DESTINATION IS ON SCREEN AND THE PLANNER COULD NOT ANSWER IT — transfer needed, no
    * service in range, or no stop near an end. The map reads this and draws NO walk
@@ -230,7 +240,10 @@ interface State {
   openAbout: (v: boolean) => void;
   openSearch: (mode: SearchMode | null) => void;
   rememberStop: (p: RecentPlace) => void;
-  setPlanTarget: (p: RecentPlace | null) => void;
+  setPlanTarget: (p: PlanPoint | null) => void;
+  setPlanOrigin: (p: PlanPoint) => void;
+  /** Reverse the two ends. No-op with no destination chosen — see `swapEnds`. */
+  swapPlanEnds: () => void;
   setPlanUnresolved: (v: boolean) => void;
   setWalkLeg: (v: MeasuredWalk | null) => void;
   setMapExpanded: (v: boolean) => void;
@@ -285,6 +298,7 @@ export const useStore = create<State>((set, get) => ({
   settingsOpen: false,
   aboutOpen: false,
   searchMode: null,
+  planOrigin: HERE,
   planTarget: null,
   planUnresolved: false,
   walkLeg: null,
@@ -343,13 +357,23 @@ export const useStore = create<State>((set, get) => ({
     // A new destination is a new question: nothing is known about it yet, so the previous
     // answer's geometry must not linger on the map while this one is being worked out.
     set({ planUnresolved: false });
-    if (planTarget) {
-      const next = pushRecent(get().recentTrips, planTarget, RECENTS_CAP);
+    set({ planTarget });
+    // ONLY A REAL STOP IS REMEMBERED. `here` has no identity to store, and a map `pin`
+    // has no agency and no stop id — writing either to the persisted trips list would
+    // put a row there that `recentPlaces` discards on the next boot, so the rider would
+    // watch their recents silently fail to remember what they just did.
+    if (planTarget?.kind === 'stop') {
+      const next = pushRecent(get().recentTrips, planTarget.place, RECENTS_CAP);
       save('gb.trips', next);
-      set({ planTarget, recentTrips: next });
-    } else {
-      set({ planTarget: null });
+      set({ recentTrips: next });
     }
+  },
+  setPlanOrigin: (planOrigin) => set({ planOrigin, planUnresolved: false }),
+  swapPlanEnds: () => {
+    const { planOrigin, planTarget } = get();
+    // Reversing the question invalidates the answer AND the geometry drawn for it, the
+    // same way picking a new destination does.
+    set({ ...swapEnds(planOrigin, planTarget), planUnresolved: false });
   },
   setMapExpanded: (mapExpanded) => set({ mapExpanded }),
   // The board replaces the other sheets for the same reason About replaces Settings and

@@ -229,7 +229,8 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
     // A saved stop we have never had coordinates for still has to be plannable. The
     // exact-id branch of /api/stops answers that in one request with the agency's own
     // coordinates — which is a lookup, not an invention.
-    if (mode === 'destination' && (lat == null || lon == null)) {
+    const forPlan = mode === 'destination' || mode === 'origin';
+    if (forPlan && (lat == null || lon == null)) {
       try {
         const res = await api.stops(place.stopId);
         // Match on BOTH, not just the id: another agency can carry the same stopId.
@@ -239,11 +240,12 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
     }
     const remembered: RecentPlace = { agency: place.agency, stopId: place.stopId, name: place.name, lat, lon, ts: Date.now() };
 
-    if (mode === 'destination') {
-      // Without coordinates there is nothing to plan a journey to, so the destination
+    if (forPlan) {
+      // Without coordinates there is nothing to plan a journey to OR from, so the pick
       // is not accepted at all rather than accepted and then quietly failing.
       if (lat == null || lon == null) return;
-      store.setPlanTarget(remembered);
+      if (mode === 'origin') store.setPlanOrigin({ kind: 'stop', place: remembered });
+      else store.setPlanTarget({ kind: 'stop', place: remembered });
       store.setTab('plan');
     } else {
       store.rememberStop(remembered);
@@ -346,7 +348,9 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
     return { short: d.shortName ?? d.routeId ?? '—', color: d.color, time, live: d.liveEtaMs != null };
   };
 
-  const title = mode === 'destination' ? t('search.destinationTitle') : t('search.title');
+  const title = mode === 'destination' ? t('search.destinationTitle')
+    : mode === 'origin' ? t('search.originTitle')
+      : t('search.title');
   const placeholder = mode === 'destination' ? t('search.destinationPlaceholder') : t('search.placeholder');
   const noResults = q.trim() !== '' && !loading && flat.length === 0;
   const nearestKnown = nearby[0]?.name ?? null;

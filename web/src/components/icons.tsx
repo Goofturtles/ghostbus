@@ -39,6 +39,14 @@ export const StarIcon = (p: P & { filled?: boolean }) => {
 export const LocateIcon = (p: P) => (
   <svg {...base(p)}><circle cx="12" cy="12" r="3.2" /><path d="M12 3v3M12 18v3M3 12h3M18 12h3" /></svg>
 );
+/** SWAP THE TWO ENDS — two arrows reversing past each other, the trip-planner
+ *  convention. Vertical, because the two fields it sits between are stacked. */
+export const SwapIcon = (p: P) => (
+  <svg {...base(p)}>
+    <path d="M7.5 4.5v13M7.5 4.5 4.5 7.6M7.5 4.5l3 3.1" />
+    <path d="M16.5 19.5v-13M16.5 19.5l3-3.1M16.5 19.5l-3-3.1" />
+  </svg>
+);
 /** The map's "locate me" glyph. A plain paper-plane navigation arrow — the notched
  *  five-point star the first version drew read as a fast-forward chevron, not as
  *  the navigation arrow the reference uses. */

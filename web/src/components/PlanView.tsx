@@ -43,12 +43,13 @@ import { useStore, paceMps } from '@/store';
 import { fmtDistance } from '@/lib/format';
 import { transitDirectionsUrl } from '@/lib/plan';
 import { buildOptions, type OptionList } from '@/lib/journey';
+import { planPointCoords, planPointKey, needsFix, HERE, type PlanPoint } from '@/lib/planpoint';
 import { PlanOptions } from './PlanOptions';
 import { SavedPlacesSection } from './SavedPlaces';
 import { OfflineCard } from './OfflineCard';
 import {
   SearchIcon, RouteIcon, FlagIcon, ClockIcon, WarningIcon, PinIcon, LocateIcon,
-  ChevronIcon, CloseIcon, ArrowRightIcon,
+  ChevronIcon, CloseIcon, ArrowRightIcon, SwapIcon,
 } from './icons';
 
 /** How far ahead the first request looks. Matches the departure board's own window. */
@@ -61,6 +62,25 @@ const NEXT_SERVICE_WINDOW_MIN = 4320;
  *  list can be. See the re-plan effect for why once-and-never-again was a defect. */
 const REPLAN_INTERVAL_MS = 60_000;
 
+/**
+ * WHAT AN END OF THE TRIP IS CALLED ON SCREEN.
+ *
+ * `here` is the only kind with no name of its own, and the word it gets depends on
+ * whether the fix is really the rider's: a default city-centre location presented as
+ * "Your location" would be the app telling somebody it knows where they are when it does
+ * not. That distinction already existed for the old fixed origin line and is preserved.
+ */
+function usePointLabel() {
+  const { t } = useTranslation();
+  const geoStatus = useLive((s) => s.geoStatus);
+  return (p: PlanPoint | null): string => {
+    if (p == null) return t('plan.chooseDestination');
+    if (p.kind === 'here') return geoStatus === 'granted' ? t('plan.fromYou') : t('plan.fromDefault');
+    if (p.kind === 'pin') return p.label;
+    return p.place.name;
+  };
+}
+
 type Phase =
   | { kind: 'idle' }
   | { kind: 'loading' }
@@ -71,8 +91,12 @@ export function PlanView() {
   const { t } = useTranslation();
   useTick(30_000);
   const target = useStore((s) => s.planTarget);
+  const origin = useStore((s) => s.planOrigin);
+  const swapPlanEnds = useStore((s) => s.swapPlanEnds);
   const recentTrips = useStore((s) => s.recentTrips);
   const setPlanTarget = useStore((s) => s.setPlanTarget);
+  const setPlanOrigin = useStore((s) => s.setPlanOrigin);
+  const label = usePointLabel();
   const openSearch = useStore((s) => s.openSearch);
   const pace = useStore((s) => s.pace);
   const imperial = useStore((s) => s.units) === 'imperial';
@@ -119,15 +143,20 @@ export function PlanView() {
     const onVis = () => { if (!document.hidden) bump(); };
     document.addEventListener('visibilitychange', onVis);
     return () => { clearInterval(timer); document.removeEventListener('visibilitychange', onVis); };
-  }, [target, geo]);
+  }, [origin, target, geo]);
 
   useEffect(() => {
-    if (!target || target.lat == null || target.lon == null || !geo) {
+    // BOTH ENDS RESOLVE THE SAME WAY. The origin used to be the rider's fix by
+    // construction; now it is a value, so it can fail to resolve exactly as the
+    // destination can — an unfixed `here`, or a stop the agency published with no
+    // coordinate. Either way there is no question to ask, and none is asked.
+    const from = planPointCoords(origin, geo);
+    const to = planPointCoords(target, geo);
+    if (!from || !to) {
       seqRef.current += 1;
       setPhase({ kind: 'idle' });
       return;
     }
-    const to = { lat: target.lat, lon: target.lon };
     const seq = ++seqRef.current;
     const ctrl = new AbortController();
     /**
@@ -142,19 +171,22 @@ export function PlanView() {
      * So the two cases are told apart by what the effect is actually running FOR. Same
      * question, keep the answer; anything else, show that we are working on it.
      */
-    const key = `${target.agency}/${target.stopId}/${to.lat},${to.lon}/${geo.lat},${geo.lon}`;
+    // U+001E between the two ends, for the same reason `planPointKey` uses U+001F inside
+    // one: a printable separator is one agency's odd stop_id away from making two
+    // different questions look like the same one.
+    const key = `${planPointKey(origin, geo)}${planPointKey(target, geo)}`;
     const isRefresh = lastAskedRef.current === key;
     lastAskedRef.current = key;
     setPhase((cur) => (isRefresh && cur.kind === 'done' ? cur : { kind: 'loading' }));
 
     (async () => {
       try {
-        const first = await api.plan(geo, to, { windowMin: FIRST_WINDOW_MIN }, ctrl.signal);
+        const first = await api.plan(from, to, { windowMin: FIRST_WINDOW_MIN }, ctrl.signal);
         if (seq !== seqRef.current) return;
         // A direct ride exists but not in the next 90 minutes — reach forward to the
         // service day that actually has one instead of reporting a dead end.
         if (first.outcome === 'noService') {
-          const wide = await api.plan(geo, to, { windowMin: NEXT_SERVICE_WINDOW_MIN }, ctrl.signal);
+          const wide = await api.plan(from, to, { windowMin: NEXT_SERVICE_WINDOW_MIN }, ctrl.signal);
           if (seq !== seqRef.current) return;
           setPhase({ kind: 'done', res: wide, widened: true });
           return;
@@ -167,7 +199,15 @@ export function PlanView() {
     })();
 
     return () => { ctrl.abort(); };
-  }, [target, geo, replanNonce]);
+  }, [origin, target, geo, replanNonce]);
+
+  /**
+   * IS THERE A QUESTION WE CAN ACTUALLY ASK — both ends resolvable to a coordinate.
+   *
+   * Either end may be `here`, so either end may be waiting on the fix; a trip between two
+   * named stops waits on neither.
+   */
+  const ready = (!needsFix(origin) || geo != null) && (!needsFix(target) || geo != null);
 
   const now = liveNow();
 
@@ -322,12 +362,49 @@ export function PlanView() {
           STATED rather than assumed, so a default location can never quietly masquerade
           as one the rider gave. */}
       <div className="plan-route">
+        {/* THE ORIGIN IS A CONTROL NOW, not a caption. It read "From your location" and
+            could not be changed, which made the two most ordinary questions a rider
+            asks — how do I get home from work, how do I get downtown tomorrow — things
+            this app could not be asked at all. `here` is still the default, and it is
+            still labelled honestly as a default location when the fix is not really
+            theirs. */}
         <div className="plan-from">
-          <span className="plan-from-glyph" aria-hidden><LocateIcon width={16} height={16} /></span>
-          <span className="plan-from-text truncate">
-            {geoStatus === 'granted' ? t('plan.fromYou') : t('plan.fromDefault')}
-          </span>
+          <button
+            className="plan-from-btn"
+            aria-haspopup="dialog"
+            onClick={() => openSearch('origin')}
+          >
+            <span className="plan-from-glyph" aria-hidden>
+              {origin.kind === 'here'
+                ? <LocateIcon width={16} height={16} />
+                : <PinIcon width={16} height={16} />}
+            </span>
+            <span className="plan-from-text truncate">{label(origin)}</span>
+            <ChevronIcon width={16} height={16} aria-hidden />
+          </button>
+          {origin.kind !== 'here' && (
+            <button
+              className="plan-from-reset"
+              aria-label={t('plan.originReset')}
+              onClick={() => setPlanOrigin(HERE)}
+            >
+              <LocateIcon width={16} height={16} />
+            </button>
+          )}
         </div>
+
+        {/* SWAP. Disabled rather than hidden with no destination chosen: a control that
+            appears and disappears as the rider types is harder to find than one that is
+            visibly not yet available, and there is nothing to reverse until both ends
+            exist. */}
+        <button
+          className="plan-swap"
+          onClick={swapPlanEnds}
+          disabled={target == null}
+          aria-label={t('plan.swapEnds')}
+        >
+          <SwapIcon width={17} height={17} aria-hidden />
+        </button>
 
         <div className="plan-dest">
           <button
@@ -337,7 +414,7 @@ export function PlanView() {
           >
             <span className="plan-dest-glyph" aria-hidden><SearchIcon width={18} height={18} /></span>
             <span className="plan-dest-text truncate">
-              {target ? target.name : t('plan.chooseDestination')}
+              {target ? label(target) : t('plan.chooseDestination')}
             </span>
             <ChevronIcon width={17} height={17} aria-hidden />
           </button>
@@ -353,17 +430,22 @@ export function PlanView() {
 
       {!target && online && <PlanIdle recents={recentTrips} />}
 
-      {target && !geo && (
+      {/* THE FIX IS ONLY REQUIRED WHERE AN END ACTUALLY DEPENDS ON IT.
+          This used to be `!geo`, which was right while the origin was always the rider.
+          Now a trip from one named stop to another needs no fix at all, and refusing to
+          plan it for want of a permission it does not use would be the app inventing a
+          dependency. `needsFix` asks the two ends instead of assuming. */}
+      {target && !ready && (
         <PlanState glyph={<WarningIcon width={24} height={24} />} tone="warn" title={t('plan.noGeoTitle')} body={t('plan.noGeoBody')} />
       )}
 
-      {target && geo && phase.kind === 'loading' && (
+      {target && ready && phase.kind === 'loading' && (
         <div className="plan-legs" aria-hidden>
           {[0, 1, 2].map((i) => <div key={i} className="skeleton plan-skeleton" />)}
         </div>
       )}
 
-      {target && geo && phase.kind === 'error' && (
+      {target && ready && phase.kind === 'error' && (
         <PlanState
           glyph={<WarningIcon width={24} height={24} />}
           tone="warn"
@@ -372,7 +454,7 @@ export function PlanView() {
         />
       )}
 
-      {target && geo && phase.kind === 'done' && (
+      {target && ready && phase.kind === 'done' && (
         <PlanOutcomeView
           res={phase.res}
           widened={phase.widened}
@@ -380,11 +462,11 @@ export function PlanView() {
           selectedId={selected?.id ?? null}
           onSelect={setSelectedId}
           imperial={imperial}
-          destinationName={target.name}
+          destinationName={label(target)}
         />
       )}
 
-      {geoStatus === 'default' && target && (
+      {geoStatus === 'default' && target && (needsFix(origin) || needsFix(target)) && (
         <p className="plan-fineprint">{t('plan.defaultLocationNote')}</p>
       )}
 
@@ -515,7 +597,7 @@ function PlanIdle({ recents }: { recents: ReturnType<typeof useStore.getState>['
                 <button
                   className="saved-open"
                   disabled={r.lat == null || r.lon == null}
-                  onClick={() => setPlanTarget({ ...r, ts: Date.now() })}
+                  onClick={() => setPlanTarget({ kind: 'stop', place: { ...r, ts: Date.now() } })}
                 >
                   <span className="saved-tile" aria-hidden><FlagIcon width={17} height={17} /></span>
                   <span className="saved-text">

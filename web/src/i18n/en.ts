@@ -13,6 +13,7 @@ const en = {
     routes: 'Routes',
     places: 'Places',
     title: 'Search stops and routes',
+    originTitle: 'Choose a starting point',
     destinationTitle: 'Choose a destination',
     destinationPlaceholder: 'Where are you going?',
     open: 'Search stops and routes',
@@ -462,6 +463,8 @@ const en = {
     zoomOut: 'Zoom out',
     layers: 'Map layers',
     expand: 'Expand map',
+    resetNorth: 'Point the map north',
+    chooseOnMap: 'Choose a point on the map',
   },
   map: {
     placeholder: 'Map arrives in the next build',
@@ -476,6 +479,17 @@ const en = {
     tilesUnavailable: 'Map tiles unavailable — showing list only.',
     engineUnavailable: "Map can't load right now — the list below is still live.",
     selectedVehicle: 'Selected route {{route}}.',
+    tools: 'Map orientation and picking',
+    pickTitle: 'Chosen point',
+    pickNearStreet: 'Near {{name}}',
+    pickCoords: '{{lat}}, {{lon}}',
+    pickSnap: 'Snap to {{name}}',
+    pickAsOrigin: 'Start here',
+    pickAsDest: 'End here',
+    pickCancel: 'Cancel',
+    pickedOrigin: 'Start set to {{name}}',
+    pickedDest: 'Destination set to {{name}}',
+    pickDismiss: 'Dismiss',
   },
   plan: {
     title: 'Plan a trip',
@@ -508,6 +522,10 @@ const en = {
     nextServiceEyebrow: 'Next scheduled service',
     doorToDoor: 'About {{min}} min door to door',
     arriveAt: 'Arrive around {{time}}',
+    // The origin is a control now. "Reset" returns it to the rider's own position, which
+    // is a different act from clearing a destination — hence its own word.
+    swapEnds: 'Swap start and destination',
+    originReset: 'Start from my location',
     // The next runs of the SAME route on the same card. "then" is doing real work: it
     // marks these as later departures of this row's route, not alternatives to it.
     thenAt: 'then {{times}}',
