@@ -611,6 +611,36 @@ export interface GhostFeedResponse {
   };
 }
 
+// ---------- /api/geocode?q= ----------
+
+/**
+ * An address, as OpenStreetMap knows it. NOT a stop, and deliberately not shaped like one:
+ * it has no agency, no stop id, and nothing about it is a claim that transit serves it.
+ * It is a point a rider named, which is exactly what the map-pick pin already is.
+ */
+export interface GeocodeResultDto {
+  /** The full display address, as the geocoder wrote it. Shown verbatim. */
+  label: string;
+  /** The leading part — house number and street — for the row's title line. */
+  title: string;
+  /** The rest, for the row's second line. Empty when the label has no remainder. */
+  context: string;
+  lat: number;
+  lon: number;
+}
+
+export interface GeocodeResponse {
+  results: GeocodeResultDto[];
+  /** The query these answer, echoed so a late response can be matched to its request. */
+  q: string;
+  /**
+   * The attribution the ODbL requires wherever these results are shown. Carried in the
+   * response rather than hardcoded in the client so the credit can never drift from the
+   * service that actually answered.
+   */
+  attribution: string;
+}
+
 // ---------- /api/stats ----------
 
 export interface StatsResponse {

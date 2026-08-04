@@ -34,7 +34,9 @@ import type {
   GhostFeedResponse, GhostEventDto, GhostKind, GhostCounters,
   TrustGrade, GradeLetter, GhostRisk, EtaBucket,
   PlanResponse, PlanStopDto, RideCandidateDto, PlanOutcome, ItineraryDto,
+  GeocodeResponse,
 } from '../../shared/types.ts';
+import { geocode, OSM_ATTRIBUTION } from './geocode.ts';
 
 // The agency namespace is NOT a module constant: it is read off the poller inside
 // `buildApi` (see the note there), because the poller is what decides which namespace
@@ -825,6 +827,10 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
    */
   const PLAN_MAX_PER_MIN = 60;
   const SEARCH_MAX_PER_MIN = 120;
+  // Lower than the stop search on purpose: every miss here costs a stranger's free
+  // endpoint a request, and the client already debounces past Nominatim's rate. This is
+  // the backstop for a client that does not.
+  const GEOCODE_MAX_PER_MIN = 20;
 
   /**
    * THE LIMITER COVERS /api/ ONLY. THE APP SHELL IS NEVER RATE-LIMITED.
@@ -1009,6 +1015,30 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     await attachStopRoutes(stops);
     const body: StopsResponse = { stops, count: stops.length };
     return reply.send(body);
+  });
+
+  // ---------- /api/geocode?q= ----------
+  // Addresses, proxied to Nominatim. See geocode.ts for why this cannot be a client-side
+  // call: the usage policy needs a User-Agent a browser is forbidden to set, and a rate
+  // limit that only a single shared point can honour.
+  //
+  // A geocoder that does not know an address returns an EMPTY list and HTTP 200 — that is
+  // an answer, not a failure, and the sheet says "nothing matches" rather than blaming the
+  // network. Only a genuine upstream failure is a 502, which the client renders with its
+  // ordinary degraded copy.
+  app.get('/api/geocode', { config: routeLimit(GEOCODE_MAX_PER_MIN) }, async (req, reply) => {
+    const q = (req.query as Record<string, string | undefined>).q?.trim() ?? '';
+    if (q.length === 0) return bad(reply, 'q is required');
+    if (q.length > Q_MAX_LEN) return bad(reply, `q too long (max ${Q_MAX_LEN})`);
+    try {
+      const results = await geocode(q);
+      const body: GeocodeResponse = { results, q, attribution: OSM_ATTRIBUTION };
+      return reply.send(body);
+    } catch {
+      // Upstream refused, timed out, or throttled US. Never the rider's fault and never
+      // presented as an empty result, which would read as "this address does not exist".
+      return reply.code(502).send({ statusCode: 502, kind: 'serverError', error: 'geocoder unavailable' });
+    }
   });
 
   // ---------- /api/stops/nearby?lat=&lon=&radius= ----------

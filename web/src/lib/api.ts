@@ -16,6 +16,7 @@
 import type {
   HealthResponse, StopsResponse, ArrivalsResponse, VehiclesResponse, RouteShapeResponse,
   AlertsResponse, GhostFeedResponse, StatsResponse, PlanResponse, ApiError,
+  GeocodeResponse,
 } from '@shared/types';
 
 /** A viewport box in [minLon, minLat, maxLon, maxLat] order (what the API expects). */
@@ -170,6 +171,17 @@ export const api = {
   /** Free-text stop search. `q` is user input, so it is encoded, never concatenated. */
   stops: (q: string, signal?: AbortSignal) =>
     j<StopsResponse>(`/api/stops?q=${encodeURIComponent(q)}`, signal),
+
+  /**
+   * Free-text ADDRESS search, proxied by our server to Nominatim. Never called on every
+   * keystroke — see lib/geocode.ts for when it is worth its cost, and server/src/geocode.ts
+   * for why the call cannot be made from here.
+   *
+   * An empty `results` list is a real answer ("no such address"), not a failure; only a
+   * thrown ApiFailure means the lookup could not be made.
+   */
+  geocode: (q: string, signal?: AbortSignal) =>
+    j<GeocodeResponse>(`/api/geocode?q=${encodeURIComponent(q)}`, signal),
 
   /** Real single-ride options between two points. Multi-leg journeys are out of scope
    *  by design — the response says `outcome: 'transfer'` rather than inventing a leg. */

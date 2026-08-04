@@ -22,7 +22,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { ArrivalsResponse, DepartureDto, StopDto } from '@shared/types';
+import type { ArrivalsResponse, DepartureDto, StopDto, GeocodeResultDto } from '@shared/types';
 import { api } from '@/lib/api';
 import { useLive, liveNow } from '@/hooks/useLive';
 import { useStore, type SearchMode } from '@/store';
@@ -32,6 +32,9 @@ import {
   shapeStopResults, matchRoutes, filterRecents, dedupeAgainst,
   type RecentPlace, type RouteResult, type StopResult,
 } from '@/lib/search';
+import {
+  shouldGeocode, saveRecentGeocode, readRecentGeocodes, filterRecentGeocodes,
+} from '@/lib/geocode';
 import { RouteBadge, StopRoutes } from './Primitives';
 import { SearchIcon, PinIcon, ClockIcon, StarIcon, RouteIcon, FlagIcon } from './icons';
 
@@ -43,10 +46,20 @@ const PEEK_DEBOUNCE_MS = 300;
  *  empty and the next scheduled service is tomorrow morning. One request either way. */
 const PEEK_WINDOW_MIN = 1440;
 
+/**
+ * Nominatim's usage policy asks for at most one request a second. This is the client's
+ * half of honouring it — the server holds the real global gate, because a per-tab debounce
+ * says nothing about a hundred tabs. Deliberately far longer than the stop search's 220 ms:
+ * an address is typed in full before it means anything, so waiting for the typing to stop
+ * costs the rider nothing and costs a free public endpoint a great deal less.
+ */
+const GEOCODE_DEBOUNCE_MS = 1_100;
+
 type Option =
   | { id: string; kind: 'recent'; row: RecentPlace }
   | { id: string; kind: 'stop'; row: StopResult }
-  | { id: string; kind: 'route'; row: RouteResult };
+  | { id: string; kind: 'route'; row: RouteResult }
+  | { id: string; kind: 'address'; row: GeocodeResultDto };
 
 interface Section {
   key: string;
@@ -92,6 +105,17 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
   const [failed, setFailed] = useState(false);
   const [active, setActive] = useState(0);
 
+  // Addresses are a separate feed with a separate failure mode, so they get separate
+  // state: a stop search that worked must not be reported as broken because the geocoder
+  // was not reachable, and vice versa.
+  const [addresses, setAddresses] = useState<GeocodeResultDto[]>([]);
+  const [addrFailed, setAddrFailed] = useState(false);
+  const [addrSearched, setAddrSearched] = useState(false);
+  /** The credit the geocoder itself sent back, shown verbatim whenever its results are. */
+  const [attribution, setAttribution] = useState<string | null>(null);
+  // Read once per opening: the sheet is remounted each time it opens.
+  const [recentAddresses] = useState(() => readRecentGeocodes());
+
   const inputRef = useRef<HTMLInputElement>(null);
   const sheetRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -125,6 +149,42 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
     }, DEBOUNCE_MS);
     return () => { window.clearTimeout(timer); ctrl.abort(); };
   }, [q]);
+
+  // ---------------- addresses ----------------
+  // Runs only where the stop search has not answered the question — see lib/geocode.ts.
+  // Its own generation guard, because it settles on a different clock from the stop search
+  // and a stale address list under a fresh stop list would be worse than none.
+  const geoSeqRef = useRef(0);
+  useEffect(() => {
+    const query = q.trim();
+    // Home and Work store a STOP — that is what the chip on the plan screen carries, and
+    // an address has no stop id to put there. Rather than accept the pick and quietly turn
+    // it into something else, those two modes are not offered addresses at all.
+    if (mode === 'home' || mode === 'work' || !shouldGeocode(query, stops.length)) {
+      geoSeqRef.current += 1;
+      setAddresses([]); setAddrFailed(false); setAddrSearched(false);
+      return;
+    }
+    const seq = ++geoSeqRef.current;
+    const ctrl = new AbortController();
+    const timer = window.setTimeout(() => {
+      api.geocode(query, ctrl.signal)
+        .then((res) => {
+          if (seq !== geoSeqRef.current) return;
+          setAddresses(res.results); setAttribution(res.attribution);
+          setAddrFailed(false); setAddrSearched(true);
+        })
+        .catch(() => {
+          if (seq !== geoSeqRef.current) return;
+          if (ctrl.signal.aborted) return;
+          // Rate-limited, offline, or the geocoder is down. All of them are OUR side of
+          // the wire, and none of them is evidence that the address does not exist — so
+          // the group says it could not look, rather than showing an empty list.
+          setAddresses([]); setAddrFailed(true); setAddrSearched(true);
+        });
+    }, GEOCODE_DEBOUNCE_MS);
+    return () => { window.clearTimeout(timer); ctrl.abort(); };
+  }, [q, stops.length]);
 
   // ---------------- sections ----------------
   const from = geo;
@@ -162,6 +222,19 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
     return matchRoutes(boards, q);
   }, [arrivals, nextService, q, mode]);
 
+  /**
+   * Addresses this device has used before, then whatever the lookup returned. The
+   * remembered ones need no request and appear the instant they match, which is what makes
+   * a re-used address feel instant despite the 1.1s debounce in front of the live lookup.
+   */
+  const addressRows = useMemo<GeocodeResultDto[]>(() => {
+    if (mode === 'home' || mode === 'work') return [];
+    const remembered = filterRecentGeocodes(recentAddresses, q);
+    const key = (r: GeocodeResultDto) => `${r.lat.toFixed(5)},${r.lon.toFixed(5)}`;
+    const seen = new Set(remembered.map(key));
+    return [...remembered, ...addresses.filter((r) => !seen.has(key(r)))];
+  }, [recentAddresses, addresses, q, mode]);
+
   const sections = useMemo<Section[]>(() => {
     const out: Section[] = [];
     if (recents.length > 0) {
@@ -190,9 +263,18 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
           options: routeRows.map((r) => ({ id: `rte-${r.routeId}-${r.directionLabel}`, kind: 'route', row: r })),
         });
       }
+      // ADDRESSES LAST. A stop this app can actually watch is a better answer than a
+      // doorway it can only walk you to, so the group that carries live evidence stays
+      // above the one that does not.
+      if (addressRows.length > 0) {
+        out.push({
+          key: 'addresses', label: t('search.addresses'),
+          options: addressRows.map((r) => ({ id: `adr-${r.lat.toFixed(5)},${r.lon.toFixed(5)}`, kind: 'address', row: r })),
+        });
+      }
     }
     return out;
-  }, [recents, savedRows, stopRows, routeRows, q, t]);
+  }, [recents, savedRows, stopRows, routeRows, addressRows, q, t]);
 
   const flat = useMemo(() => sections.flatMap((s) => s.options), [sections]);
   // A shrinking list must never leave the highlight pointing past the end.
@@ -204,7 +286,9 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
   // Cache and request are both keyed (agency, stopId): two agencies can carry the same
   // stop id, and a bare-id key would hand one agency's board to the other's row.
   const [peek, setPeek] = useState<Record<string, DepartureDto | null>>({});
-  const peekTarget = activeOpt == null || activeOpt.kind === 'route'
+  // Only rows that HAVE a board can peek at one. An address has no stop id and no
+  // departures, so it is excluded here rather than given an empty chip.
+  const peekTarget = activeOpt == null || activeOpt.kind === 'route' || activeOpt.kind === 'address'
     ? null
     : { agency: activeOpt.row.agency, stopId: activeOpt.row.stopId };
   const peekKey = peekTarget ? `${peekTarget.agency}|${peekTarget.stopId}` : null;
@@ -269,7 +353,29 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
     close();
   }, [mode, close]);
 
+  /**
+   * An address is a POINT, not a stop, and it is stored as exactly the thing the map-pick
+   * control already produces: a `pin` planpoint carrying the geocoder's own words as its
+   * label. Everything downstream — nearest boarding stop, a street-following walk leg to
+   * the door — is the planner's ordinary work, unchanged and unaware that a geocoder was
+   * involved.
+   *
+   * It is never written to the recent STOPS list: that list is stops, and a row with an
+   * invented agency and stop id would be dropped on the next boot anyway (see store.ts).
+   * It goes to its own remembered-addresses list instead.
+   */
+  const chooseAddress = useCallback((row: GeocodeResultDto) => {
+    const store = useStore.getState();
+    saveRecentGeocode(row);
+    const point = { kind: 'pin' as const, lat: row.lat, lon: row.lon, label: row.label };
+    if (mode === 'origin') store.setPlanOrigin(point);
+    else store.setPlanTarget(point);
+    store.setTab('plan');
+    close();
+  }, [mode, close]);
+
   const choose = useCallback((opt: Option) => {
+    if (opt.kind === 'address') { chooseAddress(opt.row); return; }
     if (opt.kind === 'route') {
       // A route row IS a departure, so opening it opens the stop that departure leaves
       // from — the one place the app can show a rider something true about it. The
@@ -435,7 +541,8 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
                 {section.options.map((opt) => {
                   const i = flat.indexOf(opt);
                   const isActive = i === activeIdx;
-                  const chip = opt.kind === 'route' ? null : chipFor(opt.row.agency, opt.row.stopId);
+                  const chip = opt.kind === 'route' || opt.kind === 'address'
+                    ? null : chipFor(opt.row.agency, opt.row.stopId);
                   return (
                     <div
                       key={opt.id}
@@ -446,7 +553,9 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
                       onMouseEnter={() => setActive(i)}
                       onClick={() => choose(opt)}
                     >
-                      {opt.kind === 'route' ? (
+                      {opt.kind === 'address' ? (
+                        <AddressRow row={opt.row} />
+                      ) : opt.kind === 'route' ? (
                         <RouteRow row={opt.row} />
                       ) : (
                         <StopRow
@@ -464,6 +573,15 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
                   );
                 })}
               </div>
+              {/* THE ODbL CREDIT, and it is an obligation rather than a courtesy: the
+                  licence requires attribution wherever the data is shown, so it renders
+                  with the group and disappears with it. The wording is the geocoder's
+                  own, carried back in its response, so the credit cannot drift from the
+                  service that actually answered. Untranslated, like every other licence
+                  attribution in this app. */}
+              {section.key === 'addresses' && attribution != null && (
+                <p className="search-attrib" lang="en">{attribution}</p>
+              )}
             </div>
           ))}
 
@@ -475,6 +593,21 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
 
           {failed && (
             <p className="search-note" role="status">{t('search.failed')}</p>
+          )}
+
+          {/* The geocoder could not be REACHED. Distinct from finding nothing, and worded
+              so it never reads as "this address does not exist" — the standard degraded
+              line, about us, never about the rider's typing. */}
+          {addrFailed && !failed && (
+            <p className="search-note" role="status">{t('search.addressesFailed')}</p>
+          )}
+
+          {/* The geocoder WAS reached and knows no such address. An honest empty, and only
+              said when there is nothing else on screen to say it about. */}
+          {addrSearched && !addrFailed && addressRows.length === 0 && flat.length > 0 && (
+            <p className="search-note search-note-quiet" role="status">
+              {t('search.addressesNone', { q: q.trim() })}
+            </p>
           )}
 
           {noResults && !failed && (
@@ -509,6 +642,26 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
         </p>
       </div>
     </div>
+  );
+}
+
+/**
+ * An ADDRESS, and it is drawn so it cannot be mistaken for a stop: no route badges, no
+ * stop code, no next-departure chip — because there is no board here and nothing live to
+ * say about a doorway. The flag glyph is the one the map-pick pin already uses, which is
+ * exactly what this becomes when it is chosen.
+ */
+function AddressRow({ row }: { row: GeocodeResultDto }) {
+  return (
+    <>
+      <span className="search-tile search-tile-addr" aria-hidden>
+        <FlagIcon width={17} height={17} />
+      </span>
+      <span className="search-text">
+        <span className="search-title">{row.title}</span>
+        {row.context !== '' && <span className="search-sub">{row.context}</span>}
+      </span>
+    </>
   );
 }
 
