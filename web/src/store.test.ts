@@ -58,6 +58,24 @@ test('selectStop is what puts a real stop in the store', () => {
 // The map and the plan surface are built by different hands against this contract, so
 // it is pinned here rather than left to agree by accident.
 
+// ------------------------------------------------------------- named places
+
+test('home and work start EMPTY — a seeded Home is a guess about where somebody lives', () => {
+  const n = useStore.getState().named;
+  assert.equal(n.home, null);
+  assert.equal(n.work, null);
+});
+
+test('setting a named place stores it and clearing it empties the slot', () => {
+  const home = { agency: 'ttc', stopId: '1111', name: 'Home Stop', lat: 43.7, lon: -79.4, ts: 0 };
+  useStore.getState().setNamedPlace('home', home);
+  assert.equal(useStore.getState().named.home?.stopId, '1111');
+  // The other slot is not touched: they are two independent places.
+  assert.equal(useStore.getState().named.work, null);
+  useStore.getState().setNamedPlace('home', null);
+  assert.equal(useStore.getState().named.home, null);
+});
+
 // ------------------------------------------------------- the two ends of a trip
 
 const office = {

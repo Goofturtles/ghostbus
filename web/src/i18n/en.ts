@@ -14,6 +14,8 @@ const en = {
     places: 'Places',
     title: 'Search stops and routes',
     originTitle: 'Choose a starting point',
+    setHomeTitle: 'Choose your home stop',
+    setWorkTitle: 'Choose your work stop',
     destinationTitle: 'Choose a destination',
     destinationPlaceholder: 'Where are you going?',
     open: 'Search stops and routes',
@@ -525,6 +527,9 @@ const en = {
     // The origin is a control now. "Reset" returns it to the rider's own position, which
     // is a different act from clearing a destination — hence its own word.
     swapEnds: 'Swap start and destination',
+    // The label states which act the tap performs, because they are two different acts.
+    setHome: 'Set home',
+    setWork: 'Set work',
     originReset: 'Start from my location',
     // The next runs of the SAME route on the same card. "then" is doing real work: it
     // marks these as later departures of this row's route, not alternatives to it.

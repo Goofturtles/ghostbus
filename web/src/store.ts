@@ -22,7 +22,11 @@ export type Pace = 'slow' | 'average' | 'fast';
  */
 export type Tab = 'plan' | 'saved' | 'alerts';
 /** What the search sheet is being opened FOR. Same UI, two destinations for the pick. */
-export type SearchMode = 'stop' | 'destination' | 'origin';
+export type SearchMode = 'stop' | 'destination' | 'origin' | 'home' | 'work';
+
+/** The two places a rider goes often enough to deserve one tap. */
+export type NamedSlot = 'home' | 'work';
+export type NamedPlaces = { [K in NamedSlot]: RecentPlace | null };
 export type AccessProfile = 'none' | 'wheelchair' | 'walker' | 'stroller' | 'lowVision' | 'slower';
 /** Which end of the trip a map pick is being made for. */
 export type MapPickTarget = 'origin' | 'dest';
@@ -112,6 +116,26 @@ function recentPlaces(v: unknown): RecentPlace[] {
   return out.slice(0, RECENTS_CAP);
 }
 const RECENTS_CAP = 8;
+/**
+ * HOME AND WORK, or honestly nothing.
+ *
+ * Reuses the same per-field validation the recents list gets, for the same reason: these
+ * rows are rendered on first paint and fed to the planner as coordinates, and localStorage
+ * is writable by anything. A slot that does not survive validation comes back `null` —
+ * which the UI renders as "Set home", not as a place.
+ *
+ * NOTHING IS EVER SEEDED. The saved-places section already refuses to invent a decorative
+ * "Home · 12 min walk", and these two slots inherit that rule: an unset slot is an empty
+ * slot, because a Home the rider never chose is a guess about where somebody lives.
+ */
+function namedPlaces(v: unknown): NamedPlaces {
+  const empty: NamedPlaces = { home: null, work: null };
+  if (typeof v !== 'object' || v === null) return empty;
+  const r = v as Record<string, unknown>;
+  const one = (x: unknown): RecentPlace | null => recentPlaces([x])[0] ?? null;
+  return { home: one(r.home), work: one(r.work) };
+}
+
 function save(key: string, v: unknown) {
   try {
     localStorage.setItem(key, JSON.stringify(v));
@@ -139,6 +163,8 @@ interface State {
   recentStops: RecentPlace[];
   /** Destinations the rider has planned a trip to, most recent first. */
   recentTrips: RecentPlace[];
+  /** Home and work, each null until the rider sets it. Never seeded — see `namedPlaces`. */
+  named: NamedPlaces;
   settingsOpen: boolean;
   aboutOpen: boolean;
   /** null = closed. 'stop' searches for somewhere to open, 'destination' for
@@ -242,6 +268,8 @@ interface State {
   rememberStop: (p: RecentPlace) => void;
   setPlanTarget: (p: PlanPoint | null) => void;
   setPlanOrigin: (p: PlanPoint) => void;
+  /** Assign or clear one of the two named slots. */
+  setNamedPlace: (slot: NamedSlot, place: RecentPlace | null) => void;
   /** Reverse the two ends. No-op with no destination chosen — see `swapEnds`. */
   swapPlanEnds: () => void;
   setPlanUnresolved: (v: boolean) => void;
@@ -295,6 +323,7 @@ export const useStore = create<State>((set, get) => ({
   savedStops: savedIds(ls<unknown>('gb.saved', [])),
   recentStops: recentPlaces(ls<unknown>('gb.recents', [])),
   recentTrips: recentPlaces(ls<unknown>('gb.trips', [])),
+  named: namedPlaces(ls<unknown>('gb.named', null)),
   settingsOpen: false,
   aboutOpen: false,
   searchMode: null,
@@ -369,6 +398,11 @@ export const useStore = create<State>((set, get) => ({
     }
   },
   setPlanOrigin: (planOrigin) => set({ planOrigin, planUnresolved: false }),
+  setNamedPlace: (slot, place) => {
+    const named = { ...get().named, [slot]: place };
+    save('gb.named', named);
+    set({ named });
+  },
   swapPlanEnds: () => {
     const { planOrigin, planTarget } = get();
     const swapped = swapEnds(planOrigin, planTarget);

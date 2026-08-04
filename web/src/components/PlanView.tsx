@@ -49,7 +49,7 @@ import { SavedPlacesSection } from './SavedPlaces';
 import { OfflineCard } from './OfflineCard';
 import {
   SearchIcon, RouteIcon, FlagIcon, ClockIcon, WarningIcon, PinIcon, LocateIcon,
-  ChevronIcon, CloseIcon, ArrowRightIcon, SwapIcon,
+  ChevronIcon, CloseIcon, ArrowRightIcon, SwapIcon, HomeIcon, BriefcaseIcon,
 } from './icons';
 
 /** How far ahead the first request looks. Matches the departure board's own window. */
@@ -579,6 +579,49 @@ function OutOfCoverageCard() {
   );
 }
 
+/**
+ * HOME AND WORK — one tap to the two trips a rider actually repeats.
+ *
+ * NOTHING IS SEEDED, and that is the whole design. An unset slot reads "Set home" and
+ * does nothing but open the picker; it never shows a plausible-looking row with a walk
+ * time attached to a place nobody chose. This is the same rule `SavedPlacesSection`
+ * already states — no decorative "Home · 12 min walk" — applied to the one surface where
+ * inventing it would be most tempting.
+ *
+ * A set chip PLANS to its place. An unset chip SETS it. Two different acts, and the label
+ * says which one the tap will do before it happens.
+ */
+function NamedChips() {
+  const { t } = useTranslation();
+  const named = useStore((s) => s.named);
+  const openSearch = useStore((s) => s.openSearch);
+  const setPlanTarget = useStore((s) => s.setPlanTarget);
+
+  const slots = [
+    { slot: 'home' as const, place: named.home, glyph: <HomeIcon width={17} height={17} /> },
+    { slot: 'work' as const, place: named.work, glyph: <BriefcaseIcon width={17} height={17} /> },
+  ];
+
+  return (
+    <div className="named-chips">
+      {slots.map(({ slot, place, glyph }) => (
+        <button
+          key={slot}
+          className={`named-chip ${place ? 'named-set' : 'named-unset'}`}
+          onClick={() => (place
+            ? setPlanTarget({ kind: 'stop', place: { ...place, ts: Date.now() } })
+            : openSearch(slot))}
+        >
+          <span className="named-glyph" aria-hidden>{glyph}</span>
+          <span className="named-text truncate">
+            {place ? place.name : t(slot === 'home' ? 'plan.setHome' : 'plan.setWork')}
+          </span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function PlanIdle({ recents }: { recents: ReturnType<typeof useStore.getState>['recentTrips'] }) {
   const { t } = useTranslation();
   const openSearch = useStore((s) => s.openSearch);
@@ -586,6 +629,7 @@ function PlanIdle({ recents }: { recents: ReturnType<typeof useStore.getState>['
 
   return (
     <>
+      <NamedChips />
       {recents.length > 0 && (
         <section className="gb-section plan-recents" aria-labelledby="gb-plan-recents">
           <div className="section-head">

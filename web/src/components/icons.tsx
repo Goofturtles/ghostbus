@@ -75,6 +75,14 @@ export const ArrowRightIcon = (p: P) => (
 export const FlagIcon = (p: P) => (
   <svg {...base(p)}><path d="M6 21V4" /><path d="M6 5h10.5l-1.8 3.5L16.5 12H6" /></svg>
 );
+/** WORK — a briefcase. Paired with HomeIcon for the two named places. */
+export const BriefcaseIcon = (p: P) => (
+  <svg {...base(p)}>
+    <rect x="3" y="7.5" width="18" height="12" rx="2.5" />
+    <path d="M9 7.5V6a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v1.5" />
+    <path d="M3 12.5h18" />
+  </svg>
+);
 export const HomeIcon = (p: P) => (
   <svg {...base(p)}><path d="M4 11 12 4l8 7" /><path d="M6 10v9h12v-9" /></svg>
 );

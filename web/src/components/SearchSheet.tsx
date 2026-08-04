@@ -229,7 +229,10 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
     // A saved stop we have never had coordinates for still has to be plannable. The
     // exact-id branch of /api/stops answers that in one request with the agency's own
     // coordinates — which is a lookup, not an invention.
-    const forPlan = mode === 'destination' || mode === 'origin';
+    const isSlot = mode === 'home' || mode === 'work';
+    // Every one of these needs real coordinates: two are trip ends, and the other two are
+    // stored to BECOME trip ends the moment the rider taps the chip.
+    const forPlan = mode === 'destination' || mode === 'origin' || isSlot;
     if (forPlan && (lat == null || lon == null)) {
       try {
         const res = await api.stops(place.stopId);
@@ -244,9 +247,17 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
       // Without coordinates there is nothing to plan a journey to OR from, so the pick
       // is not accepted at all rather than accepted and then quietly failing.
       if (lat == null || lon == null) return;
-      if (mode === 'origin') store.setPlanOrigin({ kind: 'stop', place: remembered });
-      else store.setPlanTarget({ kind: 'stop', place: remembered });
-      store.setTab('plan');
+      if (isSlot) {
+        // SETTING a place is not GOING there. The chip is filled and the rider is
+        // returned to what they were doing; planning to it is the next, separate tap.
+        store.setNamedPlace(mode, remembered);
+      } else if (mode === 'origin') {
+        store.setPlanOrigin({ kind: 'stop', place: remembered });
+        store.setTab('plan');
+      } else {
+        store.setPlanTarget({ kind: 'stop', place: remembered });
+        store.setTab('plan');
+      }
     } else {
       store.rememberStop(remembered);
       useLive.getState().openStop({ ...place, agency: place.agency, lat, lon });
@@ -350,7 +361,9 @@ function SearchSheetOpen({ mode }: { mode: SearchMode }) {
 
   const title = mode === 'destination' ? t('search.destinationTitle')
     : mode === 'origin' ? t('search.originTitle')
-      : t('search.title');
+      : mode === 'home' ? t('search.setHomeTitle')
+        : mode === 'work' ? t('search.setWorkTitle')
+          : t('search.title');
   const placeholder = mode === 'destination' ? t('search.destinationPlaceholder') : t('search.placeholder');
   const noResults = q.trim() !== '' && !loading && flat.length === 0;
   const nearestKnown = nearby[0]?.name ?? null;

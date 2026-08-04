@@ -87,6 +87,39 @@
    exist, and a control that vanishes is harder to find again than one that is dimmed. */
 .plan-swap:disabled { opacity: 0.4; cursor: default; }
 
+/* HOME / WORK — two chips, one tap each.
+   `1fr 1fr` rather than flex-wrap: the two are peers and should stay the same width at
+   every size, so a long stop name truncates inside its own chip instead of stealing the
+   other's room. min-width:0 on the grid children is what actually lets the ellipsis
+   happen — without it the text's max-content wins and the row overflows. */
+.named-chips {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--s2);
+  margin-bottom: var(--s3);
+}
+.named-chip {
+  min-width: 0;
+  display: flex; align-items: center; gap: var(--s2);
+  min-height: 48px;
+  padding: 0 var(--s3);
+  border-radius: 13px;
+  background: var(--field);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+  text-align: left;
+}
+.named-chip:hover { background: var(--surface-2); }
+.named-chip:active { transform: scale(0.985); }
+.named-glyph { flex: 0 0 auto; display: inline-flex; color: var(--accent); }
+/* line-height 1.35, never 1 — "Définir domicile" and real stop names carry descenders
+   and this box has a border-radius that would clip them. */
+.named-text { flex: 1 1 auto; min-width: 0; font-size: 13.5px; font-weight: 650; line-height: 1.35; }
+/* An unset slot is visibly an invitation, not a place. It must never read as a row
+   describing somewhere the rider actually goes. */
+.named-unset .named-text { color: var(--text-3); font-weight: 600; }
+.named-unset .named-glyph { color: var(--text-3); }
+.named-set .named-text { color: var(--text); }
+
 /* ============================ the options menu ============================ */
 
 .opt-section { display: flex; flex-direction: column; }
