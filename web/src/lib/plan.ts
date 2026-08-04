@@ -227,8 +227,17 @@ export interface ItineraryPlan {
   connectionHolds: boolean;
   /** Every leg's plan, in journey order. `leg1`/`leg2` are `legPlans[0]`/`[1]`. */
   legPlans: RidePlan[];
-  /** One per seam, in journey order — `connections[i]` joins `legPlans[i]` to `[i+1]`. */
-  connections: Array<{ gapSec: number; walkSec: number; waitSec: number; holds: boolean }>;
+  /**
+   * One per seam, in journey order — `connections[i]` joins `legPlans[i]` to `[i+1]`.
+   *
+   * `scheduledSlackSec` is this seam's own answer to the question `scheduledSlackSec`
+   * below answers for the first one, and it is per-seam for the reason the whole field
+   * exists: a three-leg journey has two connections, they are not equally tight, and a
+   * percentage quoted off the first one would speak for a risk the rider is not taking.
+   */
+  connections: Array<{
+    gapSec: number; walkSec: number; waitSec: number; holds: boolean; scheduledSlackSec: number;
+  }>;
   /**
    * THE SLACK AS PUBLISHED — leg 2's scheduled departure, minus leg 1's scheduled arrival,
    * minus the transfer walk at this rider's pace. Seconds.
@@ -281,17 +290,20 @@ export function buildItineraryPlan(it: ItineraryDto, opts: PlanOptions): Itinera
     const alightMs = legPlans[i].boardMs + legPlans[i].rideSec * 1000;
     const gapSec = Math.round((legPlans[i + 1].boardMs - alightMs) / 1000);
     const walkSec = walkLegSeconds('direct', t.distanceM, opts.paceMps);
-    return { gapSec, walkSec, waitSec: Math.max(0, gapSec - walkSec), holds: gapSec >= walkSec };
+    // Published timetable only — see `scheduledSlackSec`'s note. `legs[i].arrivalMs` is
+    // this leg's scheduled arrival at the transfer stop and `legs[i + 1].departureMs` the
+    // next leg's scheduled departure from it, both straight off the agencies' schedules.
+    const scheduledSlackSec = Math.round(
+      (it.legs[i + 1].departureMs - it.legs[i].arrivalMs) / 1000,
+    ) - walkSec;
+    return {
+      gapSec, walkSec, waitSec: Math.max(0, gapSec - walkSec), holds: gapSec >= walkSec,
+      scheduledSlackSec,
+    };
   });
   const transferGapSec = connections[0].gapSec;
   const transferWalkSec = connections[0].walkSec;
-
-  // Published timetable only — see the field's note. `legs[0].arrivalMs` is leg 1's
-  // scheduled arrival at the transfer stop and `legs[1].departureMs` leg 2's scheduled
-  // departure from it, both straight off the agencies' own schedules.
-  const scheduledSlackSec = Math.round(
-    (it.legs[1].departureMs - it.legs[0].arrivalMs) / 1000,
-  ) - transferWalkSec;
+  const scheduledSlackSec = connections[0].scheduledSlackSec;
   // The TIGHTEST seam decides the journey: one broken connection breaks all of it.
   const allConnectionsHold = connections.every((c) => c.holds);
 

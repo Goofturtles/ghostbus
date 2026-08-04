@@ -343,10 +343,27 @@
   white-space: nowrap;
 }
 
+/* Now the FIRST thing under the card's main row rather than the last thing on it — see
+   the note in PlanOptions.tsx. Slightly tighter above than below so it reads as attached
+   to the countdown it qualifies, not as a caption on the axis beneath it. */
 .opt-evidence {
   position: relative;
   display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap;
   padding: 0 var(--s4) var(--s3) calc(4px + var(--s3));
+  margin-top: -2px;
+}
+
+/* "Transfer 1 of 2" — drawn ONLY when a card has more than one seam (the component
+   decides), because on a two-leg trip there is nothing to number.
+   Loaded after app.css on purpose, so this sits with the rest of the options-list rules
+   rather than in the shared `.plan-leg-*` block it borrows its layout from.
+   `line-height: 1.45`, not 1: this is real text inside `.opt-card`, which is
+   `overflow: hidden`, and a tight leading there is how descenders get their tails cut. */
+.plan-leg-seam {
+  margin: 0 0 2px;
+  font-size: 11px; line-height: 1.45; font-weight: 700;
+  letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--text-3);
 }
 
 .opt-detail {
@@ -418,8 +435,15 @@
   text-align: left;
   min-width: 0;
 }
+/* 17 -> 22. The percentage is the second-biggest number on the card, behind only the
+   countdown itself (38px) and ahead of everything else — which is the ranking a rider
+   actually uses: when it leaves, and how much the number can be trusted.
+   `line-height: 1.3` stays. A percent sign has no descender but the digits sit in a box
+   the label's baseline aligns to, and 1 here would clip nothing visible today and a
+   comma-decimal locale tomorrow. */
 .pct-num {
-  font-size: 17px; font-weight: 750; line-height: 1.3;
+  font-size: 22px; font-weight: 800; line-height: 1.3;
+  letter-spacing: -0.01em;
 }
 .pct-label { font-size: 11.5px; font-weight: 600; line-height: 1.4; }
 .pct-detail {

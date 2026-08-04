@@ -901,8 +901,11 @@ function PlanOutcomeView({ res, widened, options, selectedId, onSelect, imperial
       <PlanState
         glyph={<ClockIcon width={24} height={24} />}
         title={t('plan.unreachableTitle')}
-        body={res.outcome === 'twoLeg'
-          ? t('plan.unreachableBodyTwoLeg', { count: res.itineraries.length })
+        body={res.outcome === 'twoLeg' || res.outcome === 'threeLeg'
+          // Both tiers fail the same two ways, and both count itineraries. The sentence
+          // names the tier because "two-ride options" would misdescribe a three-ride one.
+          ? t(res.outcome === 'threeLeg' ? 'plan.unreachableBodyThreeLeg' : 'plan.unreachableBodyTwoLeg',
+            { count: res.itineraries.length })
           : t('plan.unreachableBody', { count: res.candidates.length })}
       />
     );

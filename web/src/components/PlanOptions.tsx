@@ -20,7 +20,7 @@
 //                 every row that has not earned one, and this file renders the ordinary
 //                 evidence line in its place. There is no fallback number anywhere here.
 
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { RideCandidateDto } from '@shared/types';
 import type { Likelihood } from '@/lib/likelihood';
@@ -225,17 +225,24 @@ function OptionDetail({ o, imperial, destinationName }: {
 
   const p = o.plan;
   const it = p.itinerary;
-  const board1 = p.leg1.candidate.board;
-  // Two agencies is a fact about the RISK the rider is taking on, not trivia: two
-  // schedules, and neither operator holds the other's vehicle for a late connection.
+  const board1 = p.legPlans[0].candidate.board;
+  const lastLeg = p.legPlans[p.legPlans.length - 1];
+  // More than one agency is a fact about the RISK the rider is taking on, not trivia:
+  // separate schedules, and no operator holds another's vehicle for a late connection.
+  // The two-leg sentence is left exactly as it shipped; three legs get their own, because
+  // "two agencies" is a claim and a three-leg chain may cross two seams or three operators.
   const crossAgencyNote = it.crossAgency
-    ? <p className="plan-arrive plan-cross-agency">{t('plan.twoLegCrossAgency')}</p>
+    ? (
+      <p className="plan-arrive plan-cross-agency">
+        {t(o.kind === 'threeLeg' ? 'plan.multiLegCrossAgency' : 'plan.twoLegCrossAgency')}
+      </p>
+    )
     : null;
-  const rideLeg = (c: RideCandidateDto, boardMs: number) => {
+  const rideLeg = (c: RideCandidateDto, boardMs: number, key: string) => {
     const destination = parseHeadsign(c.directionLabel).destination || c.directionLabel;
     const rideSec = Math.max(0, Math.round((c.arrivalMs - c.departureMs) / 1000));
     return (
-      <li className="plan-leg plan-leg-ride">
+      <li className="plan-leg plan-leg-ride" key={key}>
         <span className="plan-leg-glyph plan-leg-glyph-ride" aria-hidden><RouteIcon width={18} height={18} /></span>
         <div className="plan-leg-text">
           <p className="plan-leg-line plan-ride-id">
@@ -271,30 +278,50 @@ function OptionDetail({ o, imperial, destinationName }: {
           <p className="plan-leg-sub">{t('plan.leaveBy', { time: fmtClock(p.leaveByMs) })}</p>
         </div>
       </li>
-      {rideLeg(it.legs[0], p.leg1.boardMs)}
-      <li className="plan-leg plan-leg-walk plan-leg-transfer">
-        <span className="plan-leg-glyph" aria-hidden><WalkerIcon width={18} height={18} /></span>
-        <div className="plan-leg-text">
-          <p className="plan-leg-line">
-            {it.transfer.sameStop
-              ? t('plan.transferStayAt', { stop: it.transfer.to.name ?? it.transfer.to.stopId })
-              : t('plan.transferWalkTo', {
-                dist: fmtDistance(it.transfer.distanceM, imperial),
-                min: min(p.transferWalkSec),
-                stop: it.transfer.to.name ?? it.transfer.to.stopId,
-              })}
-          </p>
-          <p className="plan-leg-sub">{t('plan.transferWait', { min: min(p.transferWaitSec) })}</p>
-        </div>
-      </li>
-      {rideLeg(it.legs[1], p.leg2.boardMs)}
+      {/* EVERY leg and EVERY seam, in order — not a hard-coded pair. A three-leg journey
+          is two rides plus a third, and its SECOND connection is exactly as capable of
+          breaking the trip as its first, so both are written out with their own walk and
+          their own wait. Numbered when there is more than one, because "then wait 8 min"
+          twice on one card is otherwise two identical-looking sentences. */}
+      {it.legs.map((c, i) => {
+        const seam = it.transfers[i];
+        return (
+          <Fragment key={`leg-${c.tripId}-${i}`}>
+            {rideLeg(c, p.legPlans[i].boardMs, `ride-${c.tripId}-${i}`)}
+            {seam && (
+              <li className="plan-leg plan-leg-walk plan-leg-transfer">
+                <span className="plan-leg-glyph" aria-hidden><WalkerIcon width={18} height={18} /></span>
+                <div className="plan-leg-text">
+                  {it.transfers.length > 1 && (
+                    <p className="plan-leg-seam">
+                      {t('plan.transferNth', { n: i + 1, total: it.transfers.length })}
+                    </p>
+                  )}
+                  <p className="plan-leg-line">
+                    {seam.sameStop
+                      ? t('plan.transferStayAt', { stop: seam.to.name ?? seam.to.stopId })
+                      : t('plan.transferWalkTo', {
+                        dist: fmtDistance(seam.distanceM, imperial),
+                        min: min(p.connections[i].walkSec),
+                        stop: seam.to.name ?? seam.to.stopId,
+                      })}
+                  </p>
+                  <p className="plan-leg-sub">
+                    {t('plan.transferWait', { min: min(p.connections[i].waitSec) })}
+                  </p>
+                </div>
+              </li>
+            )}
+          </Fragment>
+        );
+      })}
       <li className="plan-leg plan-leg-walk">
         <span className="plan-leg-glyph" aria-hidden><FlagIcon width={18} height={18} /></span>
         <div className="plan-leg-text">
           <p className="plan-leg-line">
             {t('plan.walkFromEst', {
-              dist: fmtDistance(p.leg2.fromStop.distanceM, imperial),
-              min: min(p.leg2.fromStop.seconds),
+              dist: fmtDistance(lastLeg.fromStop.distanceM, imperial),
+              min: min(lastLeg.fromStop.seconds),
               dest: destinationName,
             })}
           </p>
@@ -424,6 +451,10 @@ function OptionCard({ o, expanded, onToggle, imperial, destinationName, now, axi
             {t('plan.doorToDoor', { min: min(o.plan.totalSec) })}
             {' · '}
             {t('plan.arriveAt', { time: fmtClock(doorMs) })}
+            {/* How many times they have to get off and get on again — the fact that
+                separates two rows whose badges a rider has not read yet. Counted off the
+                legs actually on this card, so a three-leg journey cannot print "1". */}
+            {legs.length > 1 && ` · ${t('plan.transfersCount', { count: legs.length - 1 })}`}
             {!sameDay && <span className="plan-date"> · {fmtServiceDate(boardMs)}</span>}
           </span>
 
@@ -469,15 +500,22 @@ function OptionCard({ o, expanded, onToggle, imperial, destinationName, now, axi
         </span>
       </button>
 
-      {/* This option laid on the list's shared clock. Null when the menu is too spread out
-          to draw honestly — see `buildTimeAxis`. */}
-      {axis && <OptionAxis axis={axis} o={o} destinationName={destinationName} />}
-
-      {/* The percentage where the observations paid for one; the plain evidence line where
-          they did not. Never both, and never a substitute number. */}
+      {/* THE PERCENTAGE, DIRECTLY UNDER THE BIG NUMERAL — the first thing under the
+          countdown rather than the last thing before the fold.
+          It used to sit below the time axis, which put a card's single most decision-
+          relevant fact ("92% on time") beneath a drawing, and on a short viewport below
+          the fold entirely. A rider comparing rows is comparing minutes and confidence,
+          and those two now read as one block.
+          Unchanged: WHEN it appears. `optionLikelihood` still returns null for every row
+          the observations did not pay for, and this still renders the ordinary evidence
+          line there instead. Moving a number up the card is not permission to invent one. */}
       <div className="opt-evidence">
         {likelihood ? <LikelihoodChip l={likelihood} /> : <LegEvidence c={lead} />}
       </div>
+
+      {/* This option laid on the list's shared clock. Null when the menu is too spread out
+          to draw honestly — see `buildTimeAxis`. */}
+      {axis && <OptionAxis axis={axis} o={o} destinationName={destinationName} />}
 
       {expanded && (
         <div className="opt-detail">
@@ -489,10 +527,12 @@ function OptionCard({ o, expanded, onToggle, imperial, destinationName, now, axi
           <p className="plan-basis">
             {t('plan.basisRide')}
             {' '}
-            {(o.kind === 'ride' ? o.plan.boardIsPredicted : o.plan.leg1.boardIsPredicted)
+            {(o.kind === 'ride' ? o.plan.boardIsPredicted : o.plan.legPlans[0].boardIsPredicted)
               ? t('plan.basisPredicted')
               : t('plan.basisScheduled')}
-            {o.kind === 'twoLeg' && ` ${t('plan.basisTransfer')}`}
+            {/* One sentence per number of connections, because the sentence is a claim
+                about how many of them were checked. */}
+            {o.kind !== 'ride' && ` ${t(o.plan.connections.length > 1 ? 'plan.basisTransfers' : 'plan.basisTransfer')}`}
             {' '}{t('plan.basisSingleRide')}
           </p>
 

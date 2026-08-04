@@ -31,6 +31,11 @@ const en = {
     coverageNear: 'GhostBus covers {{agencies}}. The nearest stop it can see is {{area}}.',
     failed: "Couldn't reach the stop search just now.",
     defaultLocationNote: 'Distances are measured from a default location until you share yours.',
+    // Addresses come from OpenStreetMap via Nominatim, and are labelled as ADDRESSES so
+    // no rider mistakes a doorway for a stop this app can watch. See lib/geocode.ts.
+    addresses: 'Addresses',
+    addressesFailed: "Couldn't reach the address search just now.",
+    addressesNone: 'No address matches “{{q}}”.',
     hintMove: 'move',
     hintOpen: 'open',
     hintClose: 'close',
@@ -547,6 +552,8 @@ const en = {
     unreachableBody: 'All {{count}} direct rides GhostBus found depart before you could walk to their stop at your pace.',
     unreachableBodyTwoLeg: 'The one two-ride option GhostBus found either leaves before you could walk to the first stop at your pace, or no longer connects once the first ride’s delay is counted.',
     unreachableBodyTwoLeg_other: 'All {{count}} two-ride options GhostBus found either leave before you could walk to the first stop at your pace, or no longer connect once the first ride’s delay is counted.',
+    unreachableBodyThreeLeg: 'The one three-ride option GhostBus found either leaves before you could walk to the first stop at your pace, or no longer connects once a ride’s delay is counted.',
+    unreachableBodyThreeLeg_other: 'All {{count}} three-ride options GhostBus found either leave before you could walk to the first stop at your pace, or no longer connect once a ride’s delay is counted.',
     resultLabel: 'Your single-ride plan',
     summaryEyebrow: 'Best single ride',
     nextServiceEyebrow: 'Next scheduled service',
@@ -573,7 +580,10 @@ const en = {
     basisRide: 'Walking times marked ≈ are straight lines at your pace, padded by a 1.25 route factor for the detours a straight line ignores. The rest are measured along a real walking route.',
     basisScheduled: 'The boarding time and the running time are both the agency’s published schedule.',
     basisPredicted: 'The boarding time is GhostBus’s live estimate; the running time after it is the agency’s published schedule, which assumes the trip keeps to it.',
-    basisSingleRide: 'GhostBus joins at most two rides with one short walk — never more.',
+    // Corrected when the third tier shipped. The old wording ("at most two rides with one
+    // short walk") became false the moment a three-ride itinerary could appear, and a
+    // stated limit the app then exceeds is worse than no limit at all.
+    basisSingleRide: 'GhostBus joins at most three rides with a short walk between each — never more, and it only looks for a third when no two can do it.',
     defaultLocationNote: 'Planned from a default location until you share yours.',
     // ---- two-leg tier ----
     twoLegResultLabel: 'Your two-ride plan',
@@ -583,6 +593,14 @@ const en = {
     transferStayAt: 'Stay at {{stop}}',
     transferWait: 'Then wait {{min}} min',
     basisTransfer: 'The connection is checked against both published schedules at a slow walking pace, with 90 seconds to spare — so it holds even if you are not hurrying.',
+    // ---- three-leg tier ----
+    // "Two agencies" is a count, and a three-ride chain can cross two operators or three,
+    // so this one states the fact the rider needs without asserting a number.
+    multiLegCrossAgency: 'More than one agency, separate schedules',
+    basisTransfers: 'Both connections are checked against the published schedules at a slow walking pace, with 90 seconds to spare at each — and neither seam is given looser rules than the other.',
+    transferNth: 'Transfer {{n}} of {{total}}',
+    transfersCount: '{{count}} transfer',
+    transfersCount_other: '{{count}} transfers',
     // ---- the options menu ----
     fromYou: 'From your location',
     fromNoLocation: 'No location yet',

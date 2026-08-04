@@ -29,17 +29,19 @@ import { onTimeLikelihood, connectionLikelihood, type Likelihood } from './likel
 
 export type PlanOption =
   | { kind: 'ride'; id: string; plan: RidePlan }
-  | { kind: 'twoLeg'; id: string; plan: ItineraryPlan };
+  | { kind: 'twoLeg'; id: string; plan: ItineraryPlan }
+  /** Three rides and two walks. Same `ItineraryPlan`; the kind is named separately
+   *  because the card and the basis line make a different promise about it. */
+  | { kind: 'threeLeg'; id: string; plan: ItineraryPlan };
 
 /** How many options the list shows. Beyond this the rider is reading a timetable, not
  *  choosing; the count of what is not shown is stated rather than hidden. */
 export const MAX_OPTIONS = 6;
 
-/** The rides an option is made of, in order. One for a single ride, two for an itinerary. */
+/** The rides an option is made of, in order. One for a single ride, two or three for an
+ *  itinerary — never a fixed pair, so a third leg cannot be silently dropped off a card. */
 export function optionLegs(o: PlanOption): RideCandidateDto[] {
-  return o.kind === 'ride'
-    ? [o.plan.candidate]
-    : [o.plan.itinerary.legs[0], o.plan.itinerary.legs[1]];
+  return o.kind === 'ride' ? [o.plan.candidate] : o.plan.itinerary.legs;
 }
 
 /** The instant this option's FIRST vehicle is expected to leave its boarding stop. */
@@ -68,21 +70,39 @@ export function optionIsLive(o: PlanOption): boolean {
  * The percentage this option has earned, or null when it has earned none.
  *
  * Two different questions, because the two option kinds carry two different risks:
- *   twoLeg — will the connection survive? Measured on leg 1's observed lateness against
- *            the slack both published timetables leave for it.
- *   ride   — does this departure keep its promise? Measured on the same distribution
- *            against the on-time threshold.
+ *   itinerary — will the connection survive? Measured on each feeding leg's observed
+ *               lateness against the slack both published timetables leave for that seam.
+ *   ride      — does this departure keep its promise? Measured on the same distribution
+ *               against the on-time threshold.
+ *
+ * WITH TWO SEAMS, THE WEAKEST ONE SPEAKS. A three-leg journey is exactly as good as its
+ * tightest connection — miss either one and the plan is over — so the number on the card
+ * is the minimum, never the first seam's and never an average of them. And if ANY seam
+ * has not earned a percentage the whole card gets none: quoting the one seam we happen to
+ * have observations for, as though it were the journey's odds, would be the same
+ * confident-sounding fiction as inventing the missing one.
+ *
+ * Two-leg behaviour is unchanged by construction — one seam, so the minimum is it.
  *
  * Null is a first-class answer and the UI must render the schedule-only evidence line for
  * it, never a substitute number. See lib/likelihood.ts for every gate that produces one.
  */
 export function optionLikelihood(o: PlanOption): Likelihood | null {
-  if (o.kind === 'twoLeg') {
-    const leg1 = o.plan.itinerary.legs[0];
-    return connectionLikelihood(leg1, leg1.departureMs, o.plan.scheduledSlackSec);
+  if (o.kind === 'ride') {
+    const c = o.plan.candidate;
+    return onTimeLikelihood(c, c.departureMs);
   }
-  const c = o.plan.candidate;
-  return onTimeLikelihood(c, c.departureMs);
+  const legs = o.plan.itinerary.legs;
+  let weakest: Likelihood | null = null;
+  for (let i = 0; i < o.plan.connections.length; i++) {
+    const feeder = legs[i];
+    const l = connectionLikelihood(
+      feeder, feeder.departureMs, o.plan.connections[i].scheduledSlackSec,
+    );
+    if (l == null) return null;
+    if (weakest == null || l.percent < weakest.percent) weakest = l;
+  }
+  return weakest;
 }
 
 /**
@@ -93,7 +113,7 @@ export function optionLikelihood(o: PlanOption): Likelihood | null {
  * different stops (see PLAN_PAIRS_PER_TRIP), which are genuinely different options.
  */
 const rideId = (c: RideCandidateDto): string => `${c.tripId}@${c.board.stopId}>${c.alight.stopId}`;
-const itineraryId = (it: ItineraryDto): string => `${rideId(it.legs[0])}+${rideId(it.legs[1])}`;
+const itineraryId = (it: ItineraryDto): string => it.legs.map(rideId).join('+');
 
 /**
  * THE RANKED MENU, from one planner response.
@@ -194,14 +214,19 @@ export function buildOptions(res: PlanResponse, opts: PlanOptions): OptionList {
       seen.add(plan.candidate.tripId);
       all.push({ kind: 'ride', id: rideId(plan.candidate), plan });
     }
-  } else if (res.outcome === 'twoLeg') {
+  } else if (res.outcome === 'twoLeg' || res.outcome === 'threeLeg') {
     const seen = new Set<string>();
     for (const plan of allItineraryPlans(res.itineraries, opts)) {
       if (!plan.reachable) continue;
-      const pair = `${plan.itinerary.legs[0].tripId}+${plan.itinerary.legs[1].tripId}`;
-      if (seen.has(pair)) continue;
-      seen.add(pair);
-      all.push({ kind: 'twoLeg', id: itineraryId(plan.itinerary), plan });
+      // Every trip in the chain, not the first two: two three-leg itineraries that share
+      // their first two vehicles and differ on the third are two different journeys.
+      const chain = plan.itinerary.legs.map((l) => l.tripId).join('+');
+      if (seen.has(chain)) continue;
+      seen.add(chain);
+      // Read off the ITINERARY, not the outcome. The outcome names the tier the server
+      // answered from; the card has to describe the journey in front of it.
+      const kind = plan.itinerary.legs.length > 2 ? 'threeLeg' : 'twoLeg';
+      all.push({ kind, id: itineraryId(plan.itinerary), plan });
     }
   }
 
@@ -292,7 +317,7 @@ export interface JourneyStep {
 }
 
 export interface Journey {
-  kind: 'ride' | 'twoLeg';
+  kind: PlanOption['kind'];
   /** the option this was built from, so GO mode can re-read its evidence and percentage. */
   option: PlanOption;
   steps: JourneyStep[];
@@ -338,33 +363,42 @@ export function journeySteps(option: PlanOption, destinationName: string): Journ
       toName: destinationName,
     });
   } else {
+    // WALK, then (ride, transfer) for every seam, then the last ride and the walk out —
+    // five steps for two legs, seven for three, and not a line of it written twice. The
+    // instants are `legPlans`' own, so a third leg is timed by exactly the arithmetic the
+    // first two are.
     const p = option.plan;
-    const [c1, c2] = p.itinerary.legs;
-    const leg1AlightMs = p.leg1.boardMs + p.leg1.rideSec * 1000;
-    const leg2AlightMs = p.leg2.boardMs + p.leg2.rideSec * 1000;
+    const legs = p.itinerary.legs;
+    const plans = p.legPlans;
+    const first = plans[0];
+    const last = plans[plans.length - 1];
+    const alightMs = (i: number) => plans[i].boardMs + plans[i].rideSec * 1000;
+
     steps.push({
       kind: 'walkToStop',
-      startMs: p.leg1.leaveByMs, endMs: p.leg1.boardMs,
-      distanceM: p.leg1.toStop.distanceM, walkKind: p.leg1.toStop.kind,
-      toName: stopName(c1.board), toStopId: c1.board.stopId,
+      startMs: first.leaveByMs, endMs: first.boardMs,
+      distanceM: first.toStop.distanceM, walkKind: first.toStop.kind,
+      toName: stopName(legs[0].board), toStopId: legs[0].board.stopId,
     });
+    for (let i = 0; i < legs.length; i++) {
+      const c = legs[i];
+      steps.push({
+        kind: 'ride', startMs: plans[i].boardMs, endMs: alightMs(i),
+        candidate: c, toName: stopName(c.alight), toStopId: c.alight.stopId,
+      });
+      const seam = p.itinerary.transfers[i];
+      if (!seam) continue;
+      steps.push({
+        kind: 'transfer', startMs: alightMs(i), endMs: plans[i + 1].boardMs,
+        distanceM: seam.distanceM, walkKind: 'direct',
+        // THIS seam's own wait, at this rider's pace — see `ItineraryPlan.connections`.
+        waitSec: p.connections[i].waitSec, sameStop: seam.sameStop,
+        toName: stopName(seam.to), toStopId: seam.to.stopId,
+      });
+    }
     steps.push({
-      kind: 'ride', startMs: p.leg1.boardMs, endMs: leg1AlightMs,
-      candidate: c1, toName: stopName(c1.alight), toStopId: c1.alight.stopId,
-    });
-    steps.push({
-      kind: 'transfer', startMs: leg1AlightMs, endMs: p.leg2.boardMs,
-      distanceM: p.itinerary.transfer.distanceM, walkKind: 'direct',
-      waitSec: p.transferWaitSec, sameStop: p.itinerary.transfer.sameStop,
-      toName: stopName(p.itinerary.transfer.to), toStopId: p.itinerary.transfer.to.stopId,
-    });
-    steps.push({
-      kind: 'ride', startMs: p.leg2.boardMs, endMs: leg2AlightMs,
-      candidate: c2, toName: stopName(c2.alight), toStopId: c2.alight.stopId,
-    });
-    steps.push({
-      kind: 'walkToDest', startMs: leg2AlightMs, endMs: p.doorMs,
-      distanceM: p.leg2.fromStop.distanceM, walkKind: p.leg2.fromStop.kind,
+      kind: 'walkToDest', startMs: alightMs(plans.length - 1), endMs: p.doorMs,
+      distanceM: last.fromStop.distanceM, walkKind: last.fromStop.kind,
       toName: destinationName,
     });
   }

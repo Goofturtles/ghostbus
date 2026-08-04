@@ -537,3 +537,127 @@ test('every step of every option lies inside the axis it was laid out on', () =>
     }
   }
 });
+
+// ------------------------------------------------------------------ three legs
+//
+// The third tier is the server's (see server/src/itinerary.ts). What is under test here
+// is the only thing the CLIENT can get wrong about it: silently describing a three-ride
+// journey as a two-ride one. Every assertion below is a count — three badges, two seams,
+// seven steps, both waits — because every defect this tier can produce on a card is a
+// missing item in a list that used to be a fixed pair.
+
+/** Three rides, two seams, in journey order. Leg 2 is the middle: it touches transfer
+ *  ground at BOTH ends, which is why both its walk distances are zero. */
+function threeLegItinerary(o: {
+  dep1: number; arr1: number; dep2: number; arr2: number; dep3: number; arr3: number;
+  leg1?: RideCandidateDto; leg2?: RideCandidateDto;
+}): ItineraryDto {
+  const leg1 = o.leg1 ?? candidate({
+    tripId: 'T1', departureMs: o.dep1, arrivalMs: o.arr1, alightStopId: 'X1',
+  });
+  const leg2 = o.leg2 ?? candidate({
+    tripId: 'T2', departureMs: o.dep2, arrivalMs: o.arr2,
+    boardStopId: 'X2', alightStopId: 'X3', boardDistanceM: 0,
+    routeId: '505', shortName: '505', color: '00A650',
+  });
+  const leg3 = candidate({
+    tripId: 'T3', departureMs: o.dep3, arrivalMs: o.arr3,
+    boardStopId: 'X4', alightStopId: 'A3', boardDistanceM: 0,
+    routeId: '506', shortName: '506', color: '0072BC',
+  });
+  const seam = (from: RideCandidateDto, to: RideCandidateDto, distanceM: number) => ({
+    from: { ...from.alight, distanceM: 0 },
+    to: { ...to.board, distanceM: 0 },
+    distanceM,
+    sameStop: false,
+    waitSec: Math.round((to.departureMs - from.arrivalMs) / 1000),
+  });
+  const legs = [
+    { ...leg1, alight: { ...leg1.alight, stopId: 'X1', distanceM: 0 } },
+    { ...leg2, alight: { ...leg2.alight, stopId: 'X3', distanceM: 0 } },
+    leg3,
+  ];
+  const transfers = [seam(legs[0], legs[1], 130), seam(legs[1], legs[2], 90)];
+  return {
+    legs,
+    transfers,
+    transfer: transfers[0],
+    transferWaitSec: transfers[0].waitSec,
+    crossAgency: true,
+  };
+}
+
+const threeLegRes = (itineraries: ItineraryDto[]): PlanResponse => ({
+  from: { lat: 43.64, lon: -79.39 }, to: { lat: 43.65, lon: -79.45 },
+  serverNowMs: T0, atMs: T0, windowMinutes: 90, radiusM: 500,
+  outcome: 'threeLeg', candidates: [], itineraries,
+});
+
+const THREE = {
+  dep1: T0 + 600_000, arr1: T0 + 1_200_000,
+  dep2: T0 + 1_500_000, arr2: T0 + 2_100_000,
+  dep3: T0 + 3_000_000, arr3: T0 + 3_600_000,
+};
+
+test('a threeLeg response becomes an option carrying all THREE route badges', () => {
+  const { options, totalCount } = buildOptions(threeLegRes([threeLegItinerary(THREE)]), opts);
+  assert.equal(totalCount, 1);
+  assert.equal(options[0].kind, 'threeLeg');
+  // What the card's badge row draws, in order. Two of these would be a card that leaves
+  // a whole vehicle off a journey the rider is being asked to commit to.
+  assert.deepEqual(optionLegs(options[0]).map((c) => c.shortName), ['504', '505', '506']);
+  // The countdown is still the FIRST vehicle's departure, not the chain's.
+  assert.equal(optionBoardMs(options[0]), THREE.dep1);
+});
+
+test('the timeline walks all seven steps — walk, ride, transfer, ride, transfer, ride, walk', () => {
+  const { options } = buildOptions(threeLegRes([threeLegItinerary(THREE)]), opts);
+  const steps = journeySteps(options[0], 'Somewhere');
+  assert.deepEqual(steps.map((s) => s.kind), [
+    'walkToStop', 'ride', 'transfer', 'ride', 'transfer', 'ride', 'walkToDest',
+  ]);
+  // Contiguous and ordered, the same guarantee the two-leg timeline carries.
+  for (let i = 1; i < steps.length; i++) assert.equal(steps[i].startMs, steps[i - 1].endMs);
+  // BOTH waits are real, separately measured numbers — not one repeated.
+  const waits = steps.filter((s) => s.kind === 'transfer').map((s) => s.waitSec);
+  assert.equal(waits.length, 2);
+  for (const w of waits) assert.ok(typeof w === 'number' && w > 0);
+});
+
+test('door-to-door is measured to the LAST leg, so a third ride cannot be dropped', () => {
+  const { options } = buildOptions(threeLegRes([threeLegItinerary(THREE)]), opts);
+  const j = toJourney(options[0], 'Somewhere', T0);
+  const steps = journeySteps(options[0], 'Somewhere');
+  assert.equal(j.doorMs, steps[steps.length - 1].endMs);
+  assert.ok(j.doorMs > THREE.arr3, 'the door is past the third ride, not the second');
+  assert.equal(j.totalSec, Math.round((j.doorMs - j.leaveByMs) / 1000));
+});
+
+test('the WEAKEST seam speaks for the card, and one bare seam silences the number', () => {
+  const punctualLeg1 = withEvidence(candidate({
+    tripId: 'T1', departureMs: THREE.dep1, arrivalMs: THREE.arr1, alightStopId: 'X1',
+  }), -30, 0, 30);
+  const leg2 = (p25: number, p50: number, p75: number) => withEvidence(candidate({
+    tripId: 'T2', departureMs: THREE.dep2, arrivalMs: THREE.arr2,
+    boardStopId: 'X2', alightStopId: 'X3', boardDistanceM: 0,
+    routeId: '505', shortName: '505', color: '00A650',
+  }), p25, p50, p75);
+  const pctOf = (leg1: RideCandidateDto, mid?: RideCandidateDto) => optionLikelihood(buildOptions(
+    threeLegRes([threeLegItinerary({ ...THREE, leg1, leg2: mid })]), opts,
+  ).options[0]);
+
+  // ONE BARE SEAM SILENCES THE WHOLE CARD. Leg 2 here carries no observations, so seam 2
+  // has no odds — and quoting seam 1's as the journey's would be a number for a risk the
+  // rider is not taking.
+  assert.equal(pctOf(punctualLeg1), null);
+
+  // Both seams observed, so the card has earned a number — and it is the PESSIMISTIC
+  // seam's. A chronically late middle leg must drag the card down even though the first
+  // seam is comfortable.
+  const good = pctOf(punctualLeg1, leg2(-30, 0, 30));
+  const dragged = pctOf(punctualLeg1, leg2(240, 420, 900));
+  assert.ok(good && dragged);
+  assert.ok(dragged.percent < good.percent,
+    `weakest seam must speak: ${dragged.percent}% should be below ${good.percent}%`);
+  assert.equal(dragged.kind, 'connection');
+});
