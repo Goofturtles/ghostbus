@@ -52,3 +52,54 @@ test('selectStop is what puts a real stop in the store', () => {
   useStore.getState().selectStop('');
   assert.equal(useStore.getState().selectedStopId, '');
 });
+
+// ---------------------------------------------------------------- choose on map
+//
+// The map and the plan surface are built by different hands against this contract, so
+// it is pinned here rather than left to agree by accident.
+
+test('map pick is off at cold start', () => {
+  assert.equal(useStore.getState().mapPick, null);
+});
+
+test('beginMapPick carries which end of the trip is being picked', () => {
+  useStore.getState().beginMapPick('origin');
+  assert.deepEqual(useStore.getState().mapPick, { target: 'origin' });
+  // A second begin REPLACES the first — one crosshair, not two.
+  useStore.getState().beginMapPick('dest');
+  assert.deepEqual(useStore.getState().mapPick, { target: 'dest' });
+  useStore.getState().cancelMapPick();
+});
+
+test('picking takes the map, so it closes the sheets that would cover it', () => {
+  useStore.getState().openSettings(true);
+  useStore.getState().openStopSheet(true);
+  useStore.getState().openSearch('destination');
+  useStore.getState().beginMapPick('dest');
+  const s = useStore.getState();
+  assert.equal(s.settingsOpen, false);
+  assert.equal(s.aboutOpen, false);
+  assert.equal(s.stopSheet, false);
+  assert.equal(s.searchMode, null);
+  useStore.getState().cancelMapPick();
+});
+
+test('cancel and complete both end pick mode', () => {
+  useStore.getState().beginMapPick('origin');
+  useStore.getState().cancelMapPick();
+  assert.equal(useStore.getState().mapPick, null);
+
+  useStore.getState().beginMapPick('dest');
+  useStore.getState().completeMapPick({ lat: 43.6465, lon: -79.39, label: 'King St W' });
+  assert.equal(useStore.getState().mapPick, null);
+});
+
+test('a completed pick must not be written to the persisted trips list', () => {
+  // A map-picked point has no agency and no stop id, so a `RecentPlace` built from one
+  // is dropped by `recentPlaces` on the next boot. Writing it anyway would put rows in
+  // localStorage that exist only to be discarded — see the note on `completeMapPick`.
+  const before = useStore.getState().recentTrips.length;
+  useStore.getState().beginMapPick('dest');
+  useStore.getState().completeMapPick({ lat: 43.6465, lon: -79.39, label: '43.64650, -79.39000' });
+  assert.equal(useStore.getState().recentTrips.length, before);
+});

@@ -23,6 +23,17 @@ export type Tab = 'plan' | 'saved' | 'alerts';
 /** What the search sheet is being opened FOR. Same UI, two destinations for the pick. */
 export type SearchMode = 'stop' | 'destination';
 export type AccessProfile = 'none' | 'wheelchair' | 'walker' | 'stroller' | 'lowVision' | 'slower';
+/** Which end of the trip a map pick is being made for. */
+export type MapPickTarget = 'origin' | 'dest';
+/**
+ * A point the rider chose ON THE MAP, and the label the map could honestly put on it.
+ *
+ * `label` is never invented. It is, in order of preference, a real agency stop name, a
+ * named place the vector tiles actually carry, the street the pin landed on, or — when
+ * the map knows nothing about that spot — the coordinates themselves. There is no
+ * geocoder behind this and nothing here pretends there is.
+ */
+export interface MapPickPlace { lat: number; lon: number; label: string }
 
 const PACE_MPS: Record<Pace, number> = { slow: 3.6 / 3.6, average: 4.8 / 3.6, fast: 6 / 3.6 };
 /** Always a usable speed. `pace` is restored from localStorage, which anything can
@@ -189,6 +200,17 @@ interface State {
    * board, and the clock. Session-only, for the same reason `planTarget` is.
    */
   journey: Journey | null;
+  /**
+   * CHOOSE ON MAP. Non-null while the map is in pick mode, and `target` says which end
+   * of the trip the pick is for. Session-only, and deliberately a single slot: a rider
+   * is picking one point at a time, and a second `beginMapPick` replaces the first
+   * rather than stacking a second crosshair on the map.
+   *
+   * The map owns the interaction (crosshair, fine-drag, the context chip); this is only
+   * the intent, so the plan surface and the map agree on what the pick is FOR without
+   * either of them reaching into the other.
+   */
+  mapPick: { target: MapPickTarget } | null;
 
   setTab: (t: Tab) => void;
   selectStop: (id: string) => void;
@@ -215,6 +237,9 @@ interface State {
   openStopSheet: (v: boolean) => void;
   startJourney: (j: Journey) => void;
   endJourney: () => void;
+  beginMapPick: (target: MapPickTarget) => void;
+  cancelMapPick: () => void;
+  completeMapPick: (place: MapPickPlace) => void;
 }
 
 export const useStore = create<State>((set, get) => ({
@@ -267,6 +292,7 @@ export const useStore = create<State>((set, get) => ({
   locale: (localStorage.getItem('gb.lang') as LocaleId) || 'en',
   stopSheet: false,
   journey: null,
+  mapPick: null,
 
   setTab: (tab) => set({ tab }),
   selectStop: (selectedStopId) => set({ selectedStopId }),
@@ -341,6 +367,35 @@ export const useStore = create<State>((set, get) => ({
     journey, stopSheet: false, settingsOpen: false, aboutOpen: false, searchMode: null,
   }),
   endJourney: () => set({ journey: null }),
+
+  /**
+   * CHOOSE ON MAP — the three actions the map and the plan surface share.
+   *
+   * Picking takes the map, so it closes every sheet that could sit on top of it, for
+   * the same reason `startJourney` does: a crosshair the rider cannot see is not a
+   * crosshair. Nothing else about the plan is disturbed — the destination they already
+   * had stays, so cancelling returns them to exactly the planner they left.
+   */
+  beginMapPick: (target) => set({
+    mapPick: { target },
+    stopSheet: false, settingsOpen: false, aboutOpen: false, searchMode: null,
+  }),
+  cancelMapPick: () => set({ mapPick: null }),
+  /**
+   * The pick is finished. Pick mode ends here, and that is ALL this does today.
+   *
+   * TODO(plan-ui): the plan surface owns where a completed pick lands. Route `place`
+   * into `planOrigin` / `planTarget` off `get().mapPick?.target` here — this action is
+   * the agreed seam, and the map already calls it with a real coordinate and an honest
+   * label (see `MapPickPlace`). Deliberately NOT routed through `setPlanTarget` in the
+   * meantime: that pushes a `RecentPlace` onto the persisted trips list, and a
+   * map-picked point has no agency and no stop id, so every such row would be written
+   * to localStorage only to be discarded by `recentPlaces` on the next boot.
+   *
+   * Until that lands the map shows the confirmed point itself, so the flow is real and
+   * demoable end to end without this store guessing at fields it does not own.
+   */
+  completeMapPick: (_place) => set({ mapPick: null }),
 }));
 
 // ---- side effects that touch <html> ----
