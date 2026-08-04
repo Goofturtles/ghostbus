@@ -5,7 +5,7 @@ import { useTick } from '@/hooks/useTick';
 import { SignalIcon } from './icons';
 // The contrast maths lives in lib/contrast.ts so it can be unit-tested without the i18n
 // runtime this file drags in. Re-exported because the rest of the app imports it here.
-import { readableOn } from '@/lib/contrast';
+import { readableOn, onBrandPair } from '@/lib/contrast';
 
 export { readableOn, onBrandPair, AA_NORMAL, type BrandPair } from '@/lib/contrast';
 
@@ -19,10 +19,29 @@ export function Wordmark({ className }: { className?: string }) {
   );
 }
 
+/**
+ * A ROUTE BADGE THAT CAN ACTUALLY BE READ.
+ *
+ * This used to be `background: route_color` with `readableOn` picking the foreground, and
+ * measurement on production said that is not enough: a TTC 504 badge composited to
+ * **4.382:1**, under AA, with no foreground able to rescue it. `readableOn` maximises over
+ * white and near-black, and that maximum bottoms out around relative luminance 0.198 —
+ * exactly where the TTC's red sits. Picking the better of two bad options is still bad.
+ *
+ * `onBrandPair` keeps the HUE and nudges the lightness until the pair genuinely clears,
+ * and it only moves colours that fail: of the eight real agency colours on screen here,
+ * six pass through untouched and the 504's red moves ED1C24 → D01018. So this is not a
+ * repaint of the app's route furniture, it is the two or three badges that were failing
+ * quietly being made legible.
+ *
+ * lib/contrast.ts deferred this as "an app-wide change". It is now made, deliberately and
+ * in one place, so every badge in the app clears AA by construction rather than by luck of
+ * which agency picked which red. contrast.test.ts is the proof.
+ */
 export function RouteBadge({ color, short, size = 'md' }: { color: string; short: string; size?: 'sm' | 'md' | 'lg' }) {
-  const bg = `#${color.replace('#', '')}`;
+  const pair = onBrandPair(color);
   return (
-    <span className={`route-badge rb-${size}`} style={{ background: bg, color: readableOn(color) }}>
+    <span className={`route-badge rb-${size}`} style={{ background: pair.bg, color: pair.fg }}>
       {short}
     </span>
   );
