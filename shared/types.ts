@@ -446,7 +446,9 @@ export interface RideCandidateDto {
 export type PlanOutcome =
   | 'ride' | 'transfer' | 'noService' | 'noStopsNearYou' | 'noStopsNearDestination'
   /** No single ride does it, but TWO rides joined by a walk do — `itineraries`. */
-  | 'twoLeg';
+  | 'twoLeg'
+  /** Not even two — but three rides and two walks do. Same `itineraries` array. */
+  | 'threeLeg';
 
 /**
  * The walk between the two rides of a two-leg itinerary.
@@ -464,7 +466,7 @@ export interface TransferWalkDto {
 }
 
 /**
- * Two rides and the walk between them.
+ * Two or three rides and the walks between them.
  *
  * Each leg is a full `RideCandidateDto`, carrying its OWN evidence — live, honest ETA,
  * grade, ghost risk — because the two legs are routinely not equally knowable: leg 1 may
@@ -472,16 +474,30 @@ export interface TransferWalkDto {
  * one confidence for the itinerary would hide exactly the thing a rider needs to know
  * before committing to a connection.
  */
-export interface ItineraryDto {
-  legs: [RideCandidateDto, RideCandidateDto];
-  transfer: TransferWalkDto;
+export interface ItineraryTransferDto extends TransferWalkDto {
   /**
-   * Seconds between leg 1's scheduled arrival and leg 2's scheduled departure. Always
-   * at least the walk, because a connection that cannot be made is not offered — see
-   * TRANSFER_MIN_SLACK_S. Stated out loud in the UI rather than folded into a total.
+   * Seconds between the previous leg's scheduled arrival and the next leg's scheduled
+   * departure. Always at least the walk, because a connection that cannot be made is not
+   * offered — see TRANSFER_MIN_SLACK_S. Stated out loud in the UI rather than folded into
+   * a total, and stated PER SEAM so a rider can see which connection is the tight one.
    */
+  waitSec: number;
+}
+
+export interface ItineraryDto {
+  /** two legs, or three. `transfers[i]` is the seam between `legs[i]` and `legs[i+1]`. */
+  legs: RideCandidateDto[];
+  /** always `legs.length - 1`, in journey order. */
+  transfers: ItineraryTransferDto[];
+  /**
+   * The FIRST seam, kept because the two-leg wire shipped with it and every existing
+   * reader is written against it. Identical to `transfers[0]` — new readers should use
+   * `transfers`, the only field that describes a three-leg journey completely.
+   */
+  transfer: TransferWalkDto;
+  /** @see transfer — the first seam's wait. Identical to `transfers[0].waitSec`. */
   transferWaitSec: number;
-  /** true when the two legs belong to different agencies (e.g. MiWay -> TTC). */
+  /** true when the legs are not all the same agency (e.g. MiWay -> GO -> Durham). */
   crossAgency: boolean;
 }
 
@@ -496,7 +512,7 @@ export interface PlanResponse {
   outcome: PlanOutcome;
   /** soonest departure first; empty unless `outcome === 'ride'`. */
   candidates: RideCandidateDto[];
-  /** soonest arrival first; empty unless `outcome === 'twoLeg'`. */
+  /** soonest arrival first; empty unless `outcome` is `'twoLeg'` or `'threeLeg'`. */
   itineraries: ItineraryDto[];
 }
 

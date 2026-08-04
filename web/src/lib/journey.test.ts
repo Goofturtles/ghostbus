@@ -100,6 +100,14 @@ function itinerary(o: {
       sameStop,
     },
     transferWaitSec: Math.round((o.leg2Dep - o.leg1Arr) / 1000),
+    // Both spellings of the same seam — see the note on ItineraryDto.transfer.
+    transfers: [{
+      from: { ...leg1.alight, stopId: 'X1', distanceM: 0 },
+      to: { ...leg2.board, distanceM: 0 },
+      distanceM: sameStop ? 0 : transferM,
+      sameStop,
+      waitSec: Math.round((o.leg2Dep - o.leg1Arr) / 1000),
+    }],
     crossAgency: false,
   };
 }

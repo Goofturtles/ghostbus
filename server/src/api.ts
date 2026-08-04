@@ -22,7 +22,10 @@ import { selectEvidence, type Agg } from './eta.ts';
 import { WINDOW_DAYS } from './aggregate.ts';
 import { activeServiceIds, type CalendarRow, type CalendarDateRow } from './gtfs.ts';
 import { torontoDay, torontoMidnightEpoch, hourOfWeek, torontoParts } from './tz.ts';
-import { stitchItineraries, type StitchStop } from './itinerary.ts';
+import {
+  stitchItineraries, stitchThreeLeg, withinTransferWalk, TRANSFER_MAX_WALK_M,
+  type StitchStop,
+} from './itinerary.ts';
 import type {
   HealthResponse, VehiclesResponse, VehicleDto, StopsResponse, StopDto, StopRouteDto,
   ArrivalsResponse, DepartureDto, StatsResponse, FeedId,
@@ -88,6 +91,20 @@ const TWO_LEG_SQL_ROW_LIMIT = 3000;
 const TWO_LEG_HORIZON_MS = 120 * 60_000;
 /** Itineraries returned. A menu, like the ride tier's — not a verdict. */
 const PLAN_MAX_ITINERARIES = 5;
+/**
+ * Three-leg itineraries returned — deliberately fewer than two-leg ones.
+ *
+ * Not a performance number. A third leg compounds a second schedule assumption, so the
+ * honest thing is to show the few journeys that clearly work rather than a long menu that
+ * invites the rider to pick the marginal one.
+ */
+const PLAN_MAX_THREE_LEG = 3;
+/**
+ * The widest stop set a three-leg search will consider as transfer ground. Bounds the one
+ * unbounded thing in the tier: a middle leg touches no query point, so its candidate stops
+ * come from a bounding box rather than a radius around the rider.
+ */
+const THREE_LEG_STOP_LIMIT = 4000;
 /**
  * The pace the SERVER times a transfer walk at, to decide whether a connection can be
  * made at all — the SLOW end of the client's three settings (3.6 km/h), not the average.
@@ -1407,13 +1424,14 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
            LIMIT 1`, [planAgency, idsFor(boardStops, planAgency), idsFor(alightStops, planAgency)])).rows.length > 0;
         if (hit) { anyDirect = true; break; }
       }
-      // TIER 2. No single vehicle does it — but two joined by a walk often do, and this
+      // TIERS 2 AND 3. No single vehicle does it — but two joined by a walk often do,
+      // and across the region's agency boundaries sometimes only three do. This
       // is the only place that question gets asked. Strictly additive: it runs only on a
       // journey the planner was already about to refuse, so the ride tier above cannot
       // be affected by anything below. An empty result falls through to the refusal that
       // shipped before this tier existed, word for word.
-      const itineraries = await findTwoLeg();
-      if (itineraries.length > 0) return answer('twoLeg', [], itineraries);
+      const stitched = await findItineraries();
+      if (stitched) return answer(stitched.outcome, [], stitched.itineraries);
       return answer(anyDirect ? 'noService' : 'transfer');
     }
 
@@ -1627,13 +1645,17 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
     }
 
     /**
-     * Two rides joined by a walkable transfer, or nothing.
+     * Two rides joined by a walkable transfer — or three joined by two — or nothing.
      *
-     * The stitching rules — the slack floor, the walk cap, the wait ceiling, ranking by
-     * arrival — all live in `itinerary.ts`, pure and tested. This function's whole job is
-     * to feed it real board rows and turn what comes back into wire DTOs.
+     * The stitching rules — the slack floor, the walk cap, the wait ceiling, the total-time
+     * budget, ranking by arrival — all live in `itinerary.ts`, pure and tested. This
+     * function's whole job is to feed it real board rows and turn what comes back into
+     * wire DTOs.
+     *
+     * TWO IS TRIED FIRST AND THREE ONLY IF TWO FAILS, which is not an optimisation but the
+     * honesty rule: a journey that can be done with one transfer is never shown with two.
      */
-    async function findTwoLeg(): Promise<ItineraryDto[]> {
+    async function findItineraries(): Promise<{ outcome: 'twoLeg' | 'threeLeg'; itineraries: ItineraryDto[] } | null> {
       // Deliberately NOT `planAgencies`: that set is agencies with stops at BOTH ends,
       // which is exactly the wrong filter here. The journey this tier exists for is
       // MiWay to the edge of Toronto and TTC onwards, and neither agency has stops at
@@ -1644,82 +1666,261 @@ export async function buildApi(opts: BuildApiOptions): Promise<FastifyInstance> 
       // the planner issues and they run on EVERY journey the ride tier refuses, which on
       // a multi-agency deployment is most cross-boundary ones — serialising ten of them
       // made the refusal path the slowest thing in the app. They are independent reads.
-      const [leg1Sets, leg2Sets] = await Promise.all([
+      const [leg1Sets, legLastSets] = await Promise.all([
         Promise.all(fromAgencies.map((a) => legRides(a, idsFor(boardStops, a), 'board', windowMs))),
         Promise.all(toAgencies.map((a) => legRides(a, idsFor(alightStops, a), 'alight', windowMs + TWO_LEG_HORIZON_MS))),
       ]);
       const leg1 = leg1Sets.flat();
-      const leg2 = leg2Sets.flat();
-      if (leg1.length === 0 || leg2.length === 0) return [];
+      const legLast = legLastSets.flat();
+      if (leg1.length === 0 || legLast.length === 0) return null;
 
-      // Coordinates for every stop a transfer could happen at — the free end of each
-      // leg. One query, both agencies' worth, keyed by (agency, stop) because two
-      // agencies routinely number different stops the same.
-      const wanted = new Map<string, { agency: string; stopId: string }>();
-      for (const r of leg1) wanted.set(metaKey(r.agency, r.alightStopId), { agency: r.agency, stopId: r.alightStopId });
-      for (const r of leg2) wanted.set(metaKey(r.agency, r.boardStopId), { agency: r.agency, stopId: r.boardStopId });
-      const byAgency = new Map<string, string[]>();
-      for (const w of wanted.values()) {
-        const list = byAgency.get(w.agency);
-        if (list) list.push(w.stopId); else byAgency.set(w.agency, [w.stopId]);
-      }
+      // Coordinates for every stop a transfer could happen at. Keyed by (agency, stop)
+      // because two agencies routinely number different stops the same.
       const transferById = new Map<string, PlanStopDto>();
       const stitchStops: StitchStop[] = [];
-      for (const [agencyId, ids] of byAgency) {
-        for (const r of (await db.query<{ stop_id: string; name: string | null; lat: number | null; lon: number | null; wheelchair_boarding: number | null }>(
-          `SELECT stop_id, name, lat, lon, wheelchair_boarding FROM stops
-           WHERE agency = $1 AND stop_id = ANY($2::text[])`, [agencyId, ids])).rows) {
-          if (r.lat == null || r.lon == null) continue;
-          transferById.set(metaKey(agencyId, r.stop_id), {
-            agency: agencyId, stopId: r.stop_id, name: r.name,
-            lat: Number(r.lat), lon: Number(r.lon),
-            wheelchairBoarding: r.wheelchair_boarding == null ? null : Number(r.wheelchair_boarding),
-            // ZERO ON PURPOSE: `distanceM` means "from the query point this stop belongs
-            // to", and a transfer stop belongs to no query point. The walk that matters
-            // here is between the two transfer stops, and it is stated once, in
-            // `transfer.distanceM`, rather than half-implied twice.
-            distanceM: 0,
-          });
-          stitchStops.push({ agency: agencyId, stopId: r.stop_id, lat: Number(r.lat), lon: Number(r.lon) });
+      const stitchByKey = new Map<string, StitchStop>();
+      /**
+       * Resolve (agency, stop) ids into transfer ground, skipping anything already known.
+       * Additive on purpose: every stop learned here stays available to every later stitch
+       * in this request, so the three-leg search never re-reads the two-leg search's stops.
+       */
+      async function learnStops(wanted: Iterable<{ agency: string; stopId: string }>): Promise<StitchStop[]> {
+        const byAgency = new Map<string, string[]>();
+        for (const w of wanted) {
+          if (transferById.has(metaKey(w.agency, w.stopId))) continue;
+          const list = byAgency.get(w.agency);
+          if (list) list.push(w.stopId); else byAgency.set(w.agency, [w.stopId]);
         }
+        const learned: StitchStop[] = [];
+        for (const [agencyId, ids] of byAgency) {
+          for (const r of (await db.query<{ stop_id: string; name: string | null; lat: number | null; lon: number | null; wheelchair_boarding: number | null }>(
+            `SELECT stop_id, name, lat, lon, wheelchair_boarding FROM stops
+             WHERE agency = $1 AND stop_id = ANY($2::text[])`, [agencyId, ids])).rows) {
+            if (r.lat == null || r.lon == null) continue;
+            const k = metaKey(agencyId, r.stop_id);
+            if (transferById.has(k)) continue;
+            transferById.set(k, {
+              agency: agencyId, stopId: r.stop_id, name: r.name,
+              lat: Number(r.lat), lon: Number(r.lon),
+              wheelchairBoarding: r.wheelchair_boarding == null ? null : Number(r.wheelchair_boarding),
+              // ZERO ON PURPOSE: `distanceM` means "from the query point this stop belongs
+              // to", and a transfer stop belongs to no query point. The walk that matters
+              // here is between two transfer stops, and it is stated once PER SEAM in
+              // `transfers[i].distanceM` rather than half-implied twice.
+              distanceM: 0,
+            });
+            const st = { agency: agencyId, stopId: r.stop_id, lat: Number(r.lat), lon: Number(r.lon) };
+            stitchStops.push(st);
+            stitchByKey.set(k, st);
+            learned.push(st);
+          }
+        }
+        return learned;
       }
 
-      const stitched = stitchItineraries(leg1, leg2, stitchStops, {
+      const seam = new Map<string, { agency: string; stopId: string }>();
+      for (const r of leg1) seam.set(metaKey(r.agency, r.alightStopId), { agency: r.agency, stopId: r.alightStopId });
+      for (const r of legLast) seam.set(metaKey(r.agency, r.boardStopId), { agency: r.agency, stopId: r.boardStopId });
+      await learnStops(seam.values());
+
+      const two = stitchItineraries(leg1, legLast, stitchStops, {
         paceMps: TRANSFER_PACE_MPS, limit: PLAN_MAX_ITINERARIES,
       });
-      if (stitched.length === 0) return [];
+      if (two.length > 0) {
+        const itineraries = await toItineraryDtos(two);
+        if (itineraries.length > 0) return { outcome: 'twoLeg', itineraries };
+      }
 
-      // Both legs through the SAME enrichment the ride tier uses, so a leg's evidence
-      // line means exactly what it means on a departure board.
-      const leg1Cands = await buildCandidates(stitched.map((s) => s.leg1), (r) => r.agency,
-        (r) => boardById.get(metaKey(r.agency, r.boardStopId)),
-        (r) => transferById.get(metaKey(r.agency, r.alightStopId)));
-      const leg2Cands = await buildCandidates(stitched.map((s) => s.leg2), (r) => r.agency,
-        (r) => transferById.get(metaKey(r.agency, r.boardStopId)),
-        (r) => alightById.get(metaKey(r.agency, r.alightStopId)));
-      const cand = (list: RideCandidateDto[], r: RawRide) =>
-        list.find((c) => c.tripId === r.tripId && c.boardStopSequence === r.boardStopSequence);
+      // TIER 3. No single vehicle, and no single transfer either. A middle leg touches
+      // NEITHER query point, so its candidate stops cannot come from a radius around the
+      // rider — they come from the transfer ground the outer legs already reach, expanded
+      // by exactly one walk cap and no further. That expansion is the only thing keeping
+      // this from being a region-wide graph search, so the bounding box below is narrowed
+      // to the REAL cap by `withinTransferWalk` before a single ride is asked for.
+      const anchorsIn: StitchStop[] = [];
+      for (const r of leg1) { const st = stitchByKey.get(metaKey(r.agency, r.alightStopId)); if (st) anchorsIn.push(st); }
+      const anchorsOut: StitchStop[] = [];
+      for (const r of legLast) { const st = stitchByKey.get(metaKey(r.agency, r.boardStopId)); if (st) anchorsOut.push(st); }
+      if (anchorsIn.length === 0 || anchorsOut.length === 0) return null;
 
-      const out: ItineraryDto[] = [];
-      for (const s of stitched) {
-        const a = cand(leg1Cands, s.leg1);
-        const b = cand(leg2Cands, s.leg2);
-        const from = transferById.get(metaKey(s.transferFrom.agency, s.transferFrom.stopId));
-        const to = transferById.get(metaKey(s.transferTo.agency, s.transferTo.stopId));
-        // Any leg that could not be enriched is dropped whole. Half an itinerary is not
-        // a lesser answer, it is a wrong one.
-        if (!a || !b || !from || !to) continue;
-        out.push({
-          legs: [a, b],
-          transfer: {
-            from, to,
-            distanceM: s.transferWalkM,
-            sameStop: s.transferFrom.agency === s.transferTo.agency
-              && s.transferFrom.stopId === s.transferTo.stopId,
-          },
-          transferWaitSec: s.transferWaitSec,
-          crossAgency: s.crossAgency,
-        });
+      /** Every stop within one transfer walk of these anchors, learned and returned. */
+      async function walkableFrom(anchors: readonly StitchStop[]): Promise<StitchStop[]> {
+        const lats = anchors.map((a) => a.lat);
+        const lons = anchors.map((a) => a.lon);
+        const dLat = TRANSFER_MAX_WALK_M / 111_320;
+        const dLon = TRANSFER_MAX_WALK_M / (111_320 * Math.max(0.01, Math.cos(lats[0] * Math.PI / 180)));
+        const rows = (await db.query<{ agency: string; stop_id: string; lat: number | null; lon: number | null }>(
+          `SELECT /* three-leg:transfer-ground */ agency, stop_id, lat, lon FROM stops
+           WHERE agency = ANY($1::text[]) AND lat BETWEEN $2 AND $3 AND lon BETWEEN $4 AND $5
+           LIMIT $6`,
+          [seeded, Math.min(...lats) - dLat, Math.max(...lats) + dLat,
+            Math.min(...lons) - dLon, Math.max(...lons) + dLon, THREE_LEG_STOP_LIMIT])).rows;
+        const cands: StitchStop[] = [];
+        for (const r of rows) {
+          if (r.lat == null || r.lon == null) continue;
+          cands.push({ agency: r.agency, stopId: r.stop_id, lat: Number(r.lat), lon: Number(r.lon) });
+        }
+        // The bounding box is a superset of the cap — this is the line that makes it the cap.
+        const near = withinTransferWalk(anchors, cands);
+        await learnStops(near.map((s) => ({ agency: s.agency, stopId: s.stopId })));
+        return near;
+      }
+
+      const [midBoardStops, midAlightStops] = await Promise.all([
+        walkableFrom(anchorsIn), walkableFrom(anchorsOut),
+      ]);
+      if (midBoardStops.length === 0 || midAlightStops.length === 0) return null;
+
+      // A middle leg is ONE vehicle, so like every other leg it cannot cross agencies:
+      // only an agency present at both ends of the middle can supply one.
+      const midAgencies = seeded.filter((a) =>
+        midBoardStops.some((s) => s.agency === a) && midAlightStops.some((s) => s.agency === a));
+      const midSets = await Promise.all(midAgencies.map((a) => midRides(
+        a,
+        midBoardStops.filter((s) => s.agency === a).map((s) => s.stopId),
+        midAlightStops.filter((s) => s.agency === a).map((s) => s.stopId),
+      )));
+      const mid = midSets.flat();
+      if (mid.length === 0) return null;
+
+      const three = stitchThreeLeg(leg1, mid, legLast, stitchStops, {
+        paceMps: TRANSFER_PACE_MPS, limit: PLAN_MAX_THREE_LEG,
+      });
+      if (three.length === 0) return null;
+      const itineraries = await toItineraryDtos(three);
+      return itineraries.length > 0 ? { outcome: 'threeLeg', itineraries } : null;
+
+      /**
+       * Stitched chains into wire DTOs, whatever their length.
+       *
+       * Every leg goes through the SAME enrichment the ride tier uses, so a leg's evidence
+       * line means exactly what it means on a departure board. Which stop set a leg's ends
+       * resolve against depends only on the leg's POSITION: the first boards at the rider's
+       * own stop, the last alights at the destination's, and everything between touches
+       * transfer ground on both sides.
+       */
+      async function toItineraryDtos(
+        stitched: ReadonlyArray<{
+          legs: RawRide[];
+          transfers: Array<{ from: StitchStop; to: StitchStop; walkM: number; walkSec: number; waitSec: number }>;
+          crossAgency: boolean;
+        }>,
+      ): Promise<ItineraryDto[]> {
+        if (stitched.length === 0) return [];
+        const lastIdx = stitched[0].legs.length - 1;
+        const perPosition: RideCandidateDto[][] = [];
+        for (let i = 0; i <= lastIdx; i++) {
+          perPosition.push(await buildCandidates(
+            stitched.map((s) => s.legs[i]), (r) => r.agency,
+            (r) => (i === 0 ? boardById : transferById).get(metaKey(r.agency, r.boardStopId)),
+            (r) => (i === lastIdx ? alightById : transferById).get(metaKey(r.agency, r.alightStopId)),
+          ));
+        }
+        const cand = (list: RideCandidateDto[], r: RawRide) =>
+          list.find((c) => c.tripId === r.tripId && c.boardStopSequence === r.boardStopSequence);
+
+        const out: ItineraryDto[] = [];
+        for (const s of stitched) {
+          const legs: RideCandidateDto[] = [];
+          for (let i = 0; i <= lastIdx; i++) {
+            const c = cand(perPosition[i], s.legs[i]);
+            if (c) legs.push(c);
+          }
+          const transfers: Array<{ from: PlanStopDto; to: PlanStopDto; distanceM: number; sameStop: boolean; waitSec: number } | null> =
+            s.transfers.map((t) => {
+              const from = transferById.get(metaKey(t.from.agency, t.from.stopId));
+              const to = transferById.get(metaKey(t.to.agency, t.to.stopId));
+              return from && to ? {
+                from, to, distanceM: t.walkM,
+                sameStop: t.from.agency === t.to.agency && t.from.stopId === t.to.stopId,
+                waitSec: t.waitSec,
+              } : null;
+            });
+          // Any leg or any seam that could not be resolved drops the itinerary WHOLE. Half
+          // an itinerary is not a lesser answer, it is a wrong one.
+          if (legs.length !== lastIdx + 1) continue;
+          if (transfers.some((t) => t == null)) continue;
+          const resolved = transfers.filter((t): t is NonNullable<typeof t> => t != null);
+          out.push({
+            legs,
+            transfers: resolved,
+            // The first seam, stated twice, for the readers written before three legs
+            // existed. Identical data — see the note on ItineraryDto.transfer.
+            transfer: {
+              from: resolved[0].from, to: resolved[0].to,
+              distanceM: resolved[0].distanceM, sameStop: resolved[0].sameStop,
+            },
+            transferWaitSec: resolved[0].waitSec,
+            crossAgency: s.crossAgency,
+          });
+        }
+        return out;
+      }
+    }
+
+    /**
+     * The middle leg of a three-leg journey: BOTH ends constrained, because neither of
+     * them is at a query point.
+     *
+     * The two-leg halves leave one end free — that is exactly what enumerates transfer
+     * candidates. A middle leg has no free end at all: it must start where a first leg can
+     * be walked from and finish where a last leg can be walked to, and both of those sets
+     * were narrowed to one walk cap before this ran. Without that narrowing this statement
+     * is a self-join over every trip in the region, which is why it is not optional.
+     */
+    async function midRides(
+      agencyId: string, boardIds: string[], alightIds: string[],
+    ): Promise<RawRide[]> {
+      if (boardIds.length === 0 || alightIds.length === 0) return [];
+      const out: RawRide[] = [];
+      const horizonMs = windowMs + TWO_LEG_HORIZON_MS;
+      for (const day of dayList) {
+        const svc = activeServicesFor(agencyId, day.ymd, day.dow);
+        if (svc.length === 0) continue;
+        const midnight = midnightFor(day.ymd);
+        const loSec = Math.floor((atMs - midnight) / 1000);
+        const hiSec = Math.ceil((atMs + horizonMs - midnight) / 1000);
+        if (hiSec < 0) continue;
+        const rows = (await db.query<{
+          trip_id: string; route_id: string | null; headsign: string | null; direction_id: number | null;
+          board_stop: string; board_seq: number; board_s: number | null;
+          alight_stop: string; alight_seq: number; alight_s: number | null;
+        }>(
+          `SELECT /* three-leg:middle */ b.trip_id, t.route_id, t.headsign, t.direction_id,
+                  b.stop_id AS board_stop, b.stop_sequence AS board_seq,
+                  COALESCE(b.departure_s, b.arrival_s) AS board_s,
+                  a.stop_id AS alight_stop, a.stop_sequence AS alight_seq,
+                  COALESCE(a.arrival_s, a.departure_s) AS alight_s
+           FROM stop_times b
+           JOIN stop_times a ON a.agency = b.agency AND a.trip_id = b.trip_id
+                            AND a.stop_sequence > b.stop_sequence
+           JOIN trips t ON t.agency = b.agency AND t.trip_id = b.trip_id
+           WHERE b.agency = $1
+             AND b.stop_id = ANY($2::text[])
+             AND a.stop_id = ANY($3::text[])
+             AND t.service_id = ANY($4::text[])
+             AND COALESCE(b.departure_s, b.arrival_s) BETWEEN $5 AND $6
+           ORDER BY COALESCE(b.departure_s, b.arrival_s), b.trip_id, a.stop_sequence
+           LIMIT $7`,
+          [agencyId, boardIds, alightIds, svc, Math.max(0, loSec), hiSec, TWO_LEG_SQL_ROW_LIMIT])).rows;
+        for (const r of rows) {
+          if (r.board_s == null || r.alight_s == null) continue;
+          const departureMs = midnight + Number(r.board_s) * 1000;
+          const arrivalMs = midnight + Number(r.alight_s) * 1000;
+          if (departureMs < atMs || departureMs > atMs + horizonMs) continue;
+          if (arrivalMs <= departureMs) continue;
+          out.push({
+            agency: agencyId,
+            tripId: r.trip_id, routeId: r.route_id, headsign: r.headsign,
+            directionId: r.direction_id == null ? null : Number(r.direction_id),
+            boardStopId: r.board_stop, boardStopSequence: Number(r.board_seq), departureMs,
+            alightStopId: r.alight_stop, alightStopSequence: Number(r.alight_seq), arrivalMs,
+            // BOTH ends are transfer ground on a middle leg, so neither carries a walk to
+            // a query point — the seams state those, once each.
+            boardDistanceM: 0, alightDistanceM: 0,
+            departureS: Math.round(departureMs / 1000),
+          });
+        }
       }
       return out;
     }

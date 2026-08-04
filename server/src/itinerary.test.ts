@@ -6,7 +6,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  stitchItineraries, TRANSFER_MAX_WALK_M, TRANSFER_MIN_SLACK_S, TRANSFER_MAX_WAIT_S,
+  stitchItineraries, stitchThreeLeg,
+  TRANSFER_MAX_WALK_M, TRANSFER_MIN_SLACK_S, TRANSFER_MAX_WAIT_S,
   type StitchRide, type StitchStop,
 } from './itinerary.ts';
 
@@ -35,12 +36,12 @@ test('a known two-leg journey is found: MiWay to the hub, walk, TTC onward', () 
 
   const [it] = stitchItineraries(leg1, leg2, STOPS, opts);
   assert.ok(it, 'the connection exists and must be offered');
-  assert.equal(it.leg1.tripId, 'M1');
-  assert.equal(it.leg2.tripId, 'T1');
+  assert.equal(it.legs[0].tripId, 'M1');
+  assert.equal(it.legs[1].tripId, 'T1');
   assert.equal(it.crossAgency, true, 'MiWay -> TTC is exactly the case this tier adds');
   assert.equal(it.arrivalMs, T0 + min(40));
-  assert.equal(it.transferWaitSec, 7 * 60, 'the wait is stated, not folded into a total');
-  assert.ok(it.transferWalkM > 0 && it.transferWalkM <= TRANSFER_MAX_WALK_M);
+  assert.equal(it.transfers[0].waitSec, 7 * 60, 'the wait is stated, not folded into a total');
+  assert.ok(it.transfers[0].walkM > 0 && it.transfers[0].walkM <= TRANSFER_MAX_WALK_M);
 });
 
 test('RULE 1: a connection that cannot physically be made is refused', () => {
@@ -60,7 +61,7 @@ test('RULE 1: the slack floor is real — one second under it is still refused',
     leg1,
     [ride({ agency: 'ttc', tripId: 'T0', boardStopId: 'HUB_B', alightStopId: 'WORK', departureMs: T0 + min(30), arrivalMs: T0 + min(40) })],
     STOPS, opts,
-  )[0].transferWalkSec;
+  )[0].transfers[0].walkSec;
   const at = (extraS: number) => [ride({
     agency: 'ttc', tripId: 'T1', boardStopId: 'HUB_B', alightStopId: 'WORK',
     departureMs: T0 + min(15) + extraS * 1000, arrivalMs: T0 + min(40),
@@ -111,11 +112,11 @@ test('RULE 4: ranked by ARRIVAL, and the earliest catchable leg 2 is the one off
 
   const out = stitchItineraries(leg1, leg2, STOPS, opts);
   assert.equal(out[0].arrivalMs, T0 + min(45), 'the soonest ARRIVAL leads, not the soonest departure');
-  assert.equal(out[0].leg1.tripId, 'LATER',
+  assert.equal(out[0].legs[0].tripId, 'LATER',
     'and among equal arrivals the rider waits at home, not at the transfer stop');
   // EARLY can catch SLOW (20 min mark) — the earliest catchable, so SLOW is what EARLY
   // is paired with, never the later FAST as well.
-  assert.ok(out.every((i) => !(i.leg1.tripId === 'EARLY' && i.leg2.tripId === 'FAST')),
+  assert.ok(out.every((i) => !(i.legs[0].tripId === 'EARLY' && i.legs[1].tripId === 'FAST')),
     'one itinerary per first leg: the earliest leg 2 it can actually catch');
 });
 
@@ -134,6 +135,107 @@ test('a same-stop transfer needs no walk, only a wait', () => {
 
   const [it] = stitchItineraries(leg1, leg2, stops, opts);
   assert.ok(it);
-  assert.equal(it.transferWalkM, 0);
+  assert.equal(it.transfers[0].walkM, 0);
   assert.equal(it.crossAgency, false);
+});
+
+// ---------------------------------------------------------------------------
+// THREE LEGS. The fixture is the journey the two-leg tier was built to refuse:
+// Burlington to Oshawa, opposite ends of the GTA, which no single agency and no
+// single transfer connects. Same rules, twice.
+// ---------------------------------------------------------------------------
+
+/** Burlington -> Oshawa across three agencies, plus the stops that must be refused. */
+const GTA: StitchStop[] = [
+  { agency: 'burlington', stopId: 'BURL_LOCAL', lat: 43.3220, lon: -79.7990 },
+  // Burlington Transit's bay and GO's platform: ~150 m apart, a real transfer.
+  { agency: 'burlington', stopId: 'BURL_GO_BT', lat: 43.3348, lon: -79.8085 },
+  { agency: 'go', stopId: 'BURL_GO', lat: 43.3350, lon: -79.8067 },
+  // Oshawa GO and the Durham bay outside it: ~145 m.
+  { agency: 'go', stopId: 'OSH_GO', lat: 43.8735, lon: -78.8480 },
+  { agency: 'durham', stopId: 'OSH_GO_DRT', lat: 43.8737, lon: -78.8462 },
+  { agency: 'durham', stopId: 'OSH_DEST', lat: 43.8975, lon: -78.8658 },
+  // A second GO platform at Burlington and a second Oshawa pair, so the budget test can
+  // build two genuinely different journeys rather than two spellings of one.
+  { agency: 'go', stopId: 'BURL_GO_2', lat: 43.3350, lon: -79.8102 },
+  { agency: 'go', stopId: 'OSH_GO_2', lat: 43.8735, lon: -78.8560 },
+  { agency: 'durham', stopId: 'OSH_DRT_2', lat: 43.8737, lon: -78.8578 },
+  // 3 km from the Durham bay: past the cap, and the SECOND seam must refuse it.
+  { agency: 'go', stopId: 'OSH_FAR', lat: 43.8735, lon: -78.8100 },
+];
+
+const BT_1 = ride({ agency: 'burlington', tripId: 'BT-1', boardStopId: 'BURL_LOCAL', alightStopId: 'BURL_GO_BT', departureMs: T0, arrivalMs: T0 + min(18) });
+const GO_1 = ride({ agency: 'go', tripId: 'GO-LSW-1', boardStopId: 'BURL_GO', alightStopId: 'OSH_GO', departureMs: T0 + min(25), arrivalMs: T0 + min(90) });
+const DRT_1 = ride({ agency: 'durham', tripId: 'DRT-1', boardStopId: 'OSH_GO_DRT', alightStopId: 'OSH_DEST', departureMs: T0 + min(100), arrivalMs: T0 + min(120) });
+
+const opts3 = { paceMps: 1.3, limit: 3 };
+
+test('THREE LEGS: Burlington to Oshawa resolves — local bus, GO train, Durham bus', () => {
+  const [it] = stitchThreeLeg([BT_1], [GO_1], [DRT_1], GTA, opts3);
+  assert.ok(it, 'three real legs exist and the app must stop refusing this journey');
+  assert.deepEqual(it.legs.map((l) => l.tripId), ['BT-1', 'GO-LSW-1', 'DRT-1']);
+  assert.equal(it.crossAgency, true);
+  assert.equal(it.arrivalMs, T0 + min(120));
+
+  // N-1 transfers, each stated on its own — never one number for the whole journey.
+  assert.equal(it.transfers.length, 2);
+  assert.equal(it.transfers[0].from.stopId, 'BURL_GO_BT');
+  assert.equal(it.transfers[0].to.stopId, 'BURL_GO');
+  assert.equal(it.transfers[0].waitSec, 7 * 60, '12:18 off the bus, 12:25 on the train');
+  assert.equal(it.transfers[1].from.stopId, 'OSH_GO');
+  assert.equal(it.transfers[1].to.stopId, 'OSH_GO_DRT');
+  assert.equal(it.transfers[1].waitSec, 10 * 60);
+
+  // Rule 1 holds at BOTH seams: every wait covers its own walk plus the slack floor.
+  for (const t of it.transfers) {
+    assert.ok(t.walkM > 0 && t.walkM <= TRANSFER_MAX_WALK_M, `walk ${t.walkM} m inside the cap`);
+    assert.ok(t.waitSec >= t.walkSec + TRANSFER_MIN_SLACK_S,
+      `a ${t.waitSec}s connection must cover a ${t.walkSec}s walk plus slack`);
+  }
+});
+
+test('THREE LEGS: the walk cap is enforced at the SECOND seam, not just the first', () => {
+  const far = ride({ agency: 'go', tripId: 'GO-FAR', boardStopId: 'BURL_GO', alightStopId: 'OSH_FAR', departureMs: T0 + min(25), arrivalMs: T0 + min(90) });
+  assert.deepEqual(stitchThreeLeg([BT_1], [far], [DRT_1], GTA, opts3), [],
+    'a 3 km hike between the last two legs is not a transfer, whichever seam it is on');
+});
+
+test('THREE LEGS: an unmakeable second connection is refused, timetable or not', () => {
+  // The Durham bus leaves 30 s after the train lands. The board permits it; a rider cannot.
+  const tooSoon = ride({ agency: 'durham', tripId: 'DRT-SPRINT', boardStopId: 'OSH_GO_DRT', alightStopId: 'OSH_DEST', departureMs: T0 + min(90) + 30_000, arrivalMs: T0 + min(110) });
+  assert.deepEqual(stitchThreeLeg([BT_1], [GO_1], [tooSoon], GTA, opts3), []);
+});
+
+test('THREE LEGS: a truly impossible journey still refuses — nothing is fabricated', () => {
+  // The middle leg lands nowhere near anything the last leg departs from.
+  const orphan = ride({ agency: 'go', tripId: 'GO-ORPHAN', boardStopId: 'BURL_GO', alightStopId: 'OSH_FAR', departureMs: T0 + min(25), arrivalMs: T0 + min(90) });
+  const stranded = ride({ agency: 'durham', tripId: 'DRT-STRANDED', boardStopId: 'OSH_DEST', alightStopId: 'OSH_GO_DRT', departureMs: T0 + min(100), arrivalMs: T0 + min(120) });
+  assert.deepEqual(stitchThreeLeg([BT_1], [orphan], [stranded], GTA, opts3), []);
+
+  // And the degenerate inputs, which must be silence rather than a throw.
+  assert.deepEqual(stitchThreeLeg([], [GO_1], [DRT_1], GTA, opts3), []);
+  assert.deepEqual(stitchThreeLeg([BT_1], [], [DRT_1], GTA, opts3), []);
+  assert.deepEqual(stitchThreeLeg([BT_1], [GO_1], [], GTA, opts3), []);
+  assert.deepEqual(stitchThreeLeg([BT_1], [GO_1], [DRT_1], [], opts3), []);
+});
+
+test('THREE LEGS: the same vehicle is never two legs of its own journey', () => {
+  const back = ride({ agency: 'go', tripId: 'GO-LSW-1', boardStopId: 'OSH_GO_DRT', alightStopId: 'OSH_DEST', departureMs: T0 + min(100), arrivalMs: T0 + min(120) });
+  assert.deepEqual(stitchThreeLeg([BT_1], [GO_1], [back], GTA, opts3), [],
+    'trip GO-LSW-1 cannot also be the leg the rider transfers onto');
+});
+
+test('THREE LEGS: the total-time budget drops a detour, and keeps a merely slower option', () => {
+  // A second path to Oshawa through its own pair of stops, so the frontier prune (which
+  // keeps the earliest arrival PER STOP) cannot be what decides this — only the budget can.
+  const slowMid = (arriveMin: number) => ride({ agency: 'go', tripId: 'GO-MILKRUN', boardStopId: 'BURL_GO_2', alightStopId: 'OSH_GO_2', departureMs: T0 + min(25), arrivalMs: T0 + min(arriveMin) });
+  const slowLast = (departMin: number) => ride({ agency: 'durham', tripId: 'DRT-2', boardStopId: 'OSH_DRT_2', alightStopId: 'OSH_DEST', departureMs: T0 + min(departMin), arrivalMs: T0 + min(departMin + 20) });
+
+  // Best span is 120 min, so the budget is max(120 x 1.6, 120 + 45) = 192 min.
+  const kept = stitchThreeLeg([BT_1], [GO_1, slowMid(120)], [DRT_1, slowLast(130)], GTA, opts3);
+  assert.equal(kept.length, 2, 'a 150-minute alternative is inside the budget and is offered');
+
+  const dropped = stitchThreeLeg([BT_1], [GO_1, slowMid(210)], [DRT_1, slowLast(220)], GTA, opts3);
+  assert.deepEqual(dropped.map((i) => i.legs[1].tripId), ['GO-LSW-1'],
+    'a 240-minute journey against a 120-minute one is a detour, not a second option');
 });

@@ -225,6 +225,10 @@ export interface ItineraryPlan {
    * second one leaves. The card would print leg 1 alighting AFTER leg 2 boards.
    */
   connectionHolds: boolean;
+  /** Every leg's plan, in journey order. `leg1`/`leg2` are `legPlans[0]`/`[1]`. */
+  legPlans: RidePlan[];
+  /** One per seam, in journey order — `connections[i]` joins `legPlans[i]` to `[i+1]`. */
+  connections: Array<{ gapSec: number; walkSec: number; waitSec: number; holds: boolean }>;
   /**
    * THE SLACK AS PUBLISHED — leg 2's scheduled departure, minus leg 1's scheduled arrival,
    * minus the transfer walk at this rider's pace. Seconds.
@@ -255,18 +259,32 @@ export interface ItineraryPlan {
  * promotes an unmakeable connection into a makeable one.
  */
 export function buildItineraryPlan(it: ItineraryDto, opts: PlanOptions): ItineraryPlan {
-  const leg1 = buildRidePlan(it.legs[0], opts);
-  // The second leg is never re-timed on a MEASURED walk: `boardWalk` belongs to the
-  // rider's own first leg, and letting it match here would apply a path measured under
-  // the rider's feet to a stop somewhere out in the network.
-  const leg2 = buildRidePlan(it.legs[1], { ...opts, boardWalk: null });
+  // EVERY leg, not two: an itinerary is two legs or three, and the arithmetic below is
+  // stated per PAIR so a third leg cannot slip through unjudged. Only the first leg is
+  // re-timed on a MEASURED walk — `boardWalk` belongs to the rider's own first leg, and
+  // letting it match a later one would apply a path measured under the rider's feet to a
+  // stop somewhere out in the network.
+  const legPlans = it.legs.map((leg, i) =>
+    buildRidePlan(leg, i === 0 ? opts : { ...opts, boardWalk: null }));
+  const leg1 = legPlans[0];
+  const leg2 = legPlans[1];
+  const last = legPlans[legPlans.length - 1];
 
-  // The gap measured on the instants this plan is ACTUALLY built on. `leg1.boardMs` is
-  // the predicted boarding where there is a prediction, and the ride time after it is the
-  // agency's, so this is when the rider really steps off the first vehicle.
-  const leg1AlightMs = leg1.boardMs + leg1.rideSec * 1000;
-  const transferGapSec = Math.round((leg2.boardMs - leg1AlightMs) / 1000);
-  const transferWalkSec = walkLegSeconds('direct', it.transfer.distanceM, opts.paceMps);
+  /**
+   * One connection per leg pair, each judged on its own.
+   *
+   * The gap is measured on the instants this plan is ACTUALLY built on: `boardMs` is the
+   * predicted boarding where there is a prediction, and the ride time after it is the
+   * agency's, so this is when the rider really steps off that vehicle.
+   */
+  const connections = it.transfers.map((t, i) => {
+    const alightMs = legPlans[i].boardMs + legPlans[i].rideSec * 1000;
+    const gapSec = Math.round((legPlans[i + 1].boardMs - alightMs) / 1000);
+    const walkSec = walkLegSeconds('direct', t.distanceM, opts.paceMps);
+    return { gapSec, walkSec, waitSec: Math.max(0, gapSec - walkSec), holds: gapSec >= walkSec };
+  });
+  const transferGapSec = connections[0].gapSec;
+  const transferWalkSec = connections[0].walkSec;
 
   // Published timetable only — see the field's note. `legs[0].arrivalMs` is leg 1's
   // scheduled arrival at the transfer stop and `legs[1].departureMs` leg 2's scheduled
@@ -274,31 +292,35 @@ export function buildItineraryPlan(it: ItineraryDto, opts: PlanOptions): Itinera
   const scheduledSlackSec = Math.round(
     (it.legs[1].departureMs - it.legs[0].arrivalMs) / 1000,
   ) - transferWalkSec;
+  // The TIGHTEST seam decides the journey: one broken connection breaks all of it.
+  const allConnectionsHold = connections.every((c) => c.holds);
 
   return {
     itinerary: it,
     leg1,
     leg2,
+    legPlans,
+    connections,
     transferWalkSec,
     transferGapSec,
     scheduledSlackSec,
     // Floored at zero so a broken connection cannot render as a negative wait; the
     // itinerary is refused by `connectionHolds` below rather than shown with a 0.
     transferWaitSec: Math.max(0, transferGapSec - transferWalkSec),
-    connectionHolds: transferGapSec >= transferWalkSec,
+    connectionHolds: allConnectionsHold,
     leaveByMs: leg1.leaveByMs,
-    doorMs: leg2.doorMs,
+    doorMs: last.doorMs,
     // Travel only, on the same definition `RidePlan.totalSec` uses and for the same
     // reason: measured from `leaveByMs`, so an itinerary whose first leg is tomorrow
     // morning does not report as a sixteen-hour journey.
-    totalSec: Math.max(0, Math.round((leg2.doorMs - leg1.leaveByMs) / 1000)),
+    totalSec: Math.max(0, Math.round((last.doorMs - leg1.leaveByMs) / 1000)),
     // TWO ways an itinerary stops being one. The rider cannot reach the first stop in
     // time — or they can, and the first leg's own predicted delay has since eaten the
     // connection. The server judged the second question against the published schedule
     // at a slow pace; it could not have judged it against a prediction that did not
     // exist yet. Both are refusals, because itinerary.ts's first rule is the same on
     // this side of the wire: a connection the rider cannot make is not a connection.
-    reachable: leg1.reachable && transferGapSec >= transferWalkSec,
+    reachable: leg1.reachable && allConnectionsHold,
   };
 }
 
