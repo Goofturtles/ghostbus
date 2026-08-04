@@ -58,6 +58,51 @@ test('selectStop is what puts a real stop in the store', () => {
 // The map and the plan surface are built by different hands against this contract, so
 // it is pinned here rather than left to agree by accident.
 
+// ------------------------------------------------------- the two ends of a trip
+
+const office = {
+  kind: 'stop' as const,
+  place: { agency: 'ttc', stopId: '999', name: 'Office', lat: 43.66, lon: -79.4, ts: 0 },
+};
+
+test('the trip starts at the rider until they say otherwise', () => {
+  assert.equal(useStore.getState().planOrigin.kind, 'here');
+  assert.equal(useStore.getState().planTarget, null);
+});
+
+test('swapPlanEnds actually reverses the two ends', () => {
+  // THE REGRESSION THIS EXISTS FOR: `swapEnds` answers in {origin, target} and the store
+  // holds {planOrigin, planTarget}. Spreading the result set two keys nothing reads and
+  // left both ends untouched — a button that type-checked, shipped, and did nothing.
+  const s = useStore.getState();
+  s.setPlanTarget(office);
+  s.swapPlanEnds();
+  assert.equal(useStore.getState().planOrigin.kind, 'stop');
+  assert.equal(useStore.getState().planTarget?.kind, 'here');
+  // Its own inverse.
+  useStore.getState().swapPlanEnds();
+  assert.equal(useStore.getState().planOrigin.kind, 'here');
+  assert.equal(useStore.getState().planTarget?.kind, 'stop');
+  useStore.getState().setPlanTarget(null);
+});
+
+test('only a real stop is written to the persisted recents', () => {
+  const s = useStore.getState();
+  const before = useStore.getState().recentTrips.length;
+  // A map pin has no agency and no stop id: remembering it would write a row that
+  // `recentPlaces` discards on the next boot.
+  s.setPlanTarget({ kind: 'pin', lat: 43.7, lon: -79.5, label: 'Dropped pin' });
+  assert.equal(useStore.getState().recentTrips.length, before);
+  // A stop this file has not used yet — `pushRecent` de-duplicates, so reusing `office`
+  // would leave the length unchanged for the RIGHT reason and prove nothing.
+  s.setPlanTarget({
+    kind: 'stop',
+    place: { agency: 'ttc', stopId: '4242', name: 'Somewhere Else', lat: 43.7, lon: -79.41, ts: 0 },
+  });
+  assert.equal(useStore.getState().recentTrips.length, before + 1);
+  useStore.getState().setPlanTarget(null);
+});
+
 test('map pick is off at cold start', () => {
   assert.equal(useStore.getState().mapPick, null);
 });

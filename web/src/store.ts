@@ -371,9 +371,14 @@ export const useStore = create<State>((set, get) => ({
   setPlanOrigin: (planOrigin) => set({ planOrigin, planUnresolved: false }),
   swapPlanEnds: () => {
     const { planOrigin, planTarget } = get();
-    // Reversing the question invalidates the answer AND the geometry drawn for it, the
-    // same way picking a new destination does.
-    set({ ...swapEnds(planOrigin, planTarget), planUnresolved: false });
+    const swapped = swapEnds(planOrigin, planTarget);
+    // NAMED EXPLICITLY, NOT SPREAD. `swapEnds` answers in {origin, target} and the store
+    // holds {planOrigin, planTarget}; spreading it wrote two keys nothing reads and left
+    // both ends exactly as they were, so the button was inert on production while every
+    // type checked. Shipped and caught by the prod verification pass, not by the compiler.
+    // Reversing the question also invalidates the answer AND the geometry drawn for it,
+    // the same way picking a new destination does.
+    set({ planOrigin: swapped.origin, planTarget: swapped.target, planUnresolved: false });
   },
   setMapExpanded: (mapExpanded) => set({ mapExpanded }),
   // The board replaces the other sheets for the same reason About replaces Settings and
