@@ -77,7 +77,14 @@ function usePointLabel() {
   const geoStatus = useLive((s) => s.geoStatus);
   return (p: PlanPoint | null): string => {
     if (p == null) return t('plan.chooseDestination');
-    if (p.kind === 'here') return geoStatus === 'granted' ? t('plan.fromYou') : t('plan.fromDefault');
+    if (p.kind === 'here') {
+      if (geoStatus === 'granted') return t('plan.fromYou');
+      // "A default location" claims we HAVE one. After a denial or a timeout we have
+      // nothing — `geo` is deliberately left null — and naming a default we never
+      // adopted is the last residue of the fallback this wave removed.
+      if (isGeoFailure(geoStatus)) return t('plan.fromNoLocation');
+      return t('plan.fromDefault');
+    }
     if (p.kind === 'pin') return p.label;
     return p.place.name;
   };

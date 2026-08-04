@@ -582,6 +582,7 @@ const en = {
     basisTransfer: 'The connection is checked against both published schedules at a slow walking pace, with 90 seconds to spare — so it holds even if you are not hurrying.',
     // ---- the options menu ----
     fromYou: 'From your location',
+    fromNoLocation: 'No location yet',
     fromDefault: 'From a default location',
     optionsEyebrow: '{{count}} way to get there',
     optionsEyebrow_other: '{{count}} ways to get there',

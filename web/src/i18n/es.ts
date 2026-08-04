@@ -521,6 +521,7 @@ const es: Dict = {
     defaultLocationNote: 'Planificado desde una ubicación predeterminada hasta que compartas la tuya.',
     // ---- el menú de opciones ----
     fromYou: 'Desde tu ubicación',
+    fromNoLocation: 'Sin ubicación todavía',
     fromDefault: 'Desde una ubicación predeterminada',
     optionsEyebrow: '{{count}} forma de llegar',
     optionsEyebrow_other: '{{count}} formas de llegar',

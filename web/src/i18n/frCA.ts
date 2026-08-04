@@ -521,6 +521,7 @@ const frCA: Dict = {
     defaultLocationNote: 'Planifié depuis une position par défaut tant que vous ne partagez pas la vôtre.',
     // ---- le menu d’options ----
     fromYou: 'Depuis votre position',
+    fromNoLocation: 'Aucune position pour l’instant',
     fromDefault: 'Depuis une position par défaut',
     optionsEyebrow: '{{count}} façon de s’y rendre',
     optionsEyebrow_other: '{{count}} façons de s’y rendre',
